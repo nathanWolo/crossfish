@@ -7,7 +7,9 @@ from scipy import stats
 from operations import ops
 from board import board_obj
 import vis_tools
-from bots import random_bot, line_completer_bot, minimax_ref, ab_pruning_ref, transposition_table, two_in_a_row_eval, tt_cutoffs, tt_move_ordering
+from bots import (random_bot, line_completer_bot, minimax_ref, 
+                  ab_pruning_ref, transposition_table, two_in_a_row_eval, 
+                  tt_cutoffs, tt_move_ordering, non_tt_move_ordering)
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
     for i in range(n_moves):
@@ -112,45 +114,27 @@ def play_single_game(agent1, agent2):
         legal_moves = ops.get_valid_moves(my_board)
         move = legal_moves[np.random.choice(len(legal_moves))]
         ops.make_move(my_board, move)
-
-    for _ in range(81): # up to 81 moves per game.
-        ''' ------ agent 1 turn ------'''
-        # get dictionary 
-        temp_dict = ops.pull_dictionary(my_board)
-        # give dict to agent, calculate move
-        agent1_move = agent1.move(temp_dict)
-        # validate the move
-        if not ops.check_move_is_valid(my_board, agent1_move):
-            raise Exception(f'invalid move selected by p1, {agent1_move}')
-
-        # make the move
-        ops.make_move(my_board, agent1_move)
-        # check whether game is finished
-        if ops.check_game_finished(my_board):
-            if 'agent 1' in ops.get_winner(my_board):
-                win += 1
+    start_pos = copy.deepcopy(my_board)
+    for j in range(2):
+        my_board = start_pos
+        for i in range(81): # up to 81 moves per game.
+            #alternate who goes first
+            temp_dict = ops.pull_dictionary(my_board)
+            if i % 2 == j:
+                move = agent1.move(temp_dict)
             else:
-                draw += 1
-            break
-
-        ''' agent 2 turn '''
-        # get dictionary 
-        temp_dict = ops.pull_dictionary(my_board)
-        # give dict to agent, calculate move
-        agent2_move = agent2.move(temp_dict)
-
-        # validate the move
-        if not ops.check_move_is_valid(my_board, agent2_move):
-            raise Exception(f'invalid move selected by p2, {agent2_move}')
-        # make the move
-        ops.make_move(my_board, agent2_move)
-        # check whether game is finished
-        if ops.check_game_finished(my_board):
-            if 'agent 2' in ops.get_winner(my_board):
-                loss += 1
-            else:
-                draw += 1
-            break
+                move = agent2.move(temp_dict)
+            ops.make_move(my_board, move)
+            if ops.check_game_finished(my_board):
+                #get winner
+                winner = ops.get_winner(my_board)
+                if "agent 1" in winner:
+                    win += 1
+                elif "agent 2" in winner:
+                    loss += 1
+                else:
+                    draw += 1
+                break
     return win, loss, draw
 import os
 def calc_elo_diff(wins,losses,draws):
@@ -231,5 +215,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
     d = {'win':total_wins, 'loss':total_losses, 'draw':total_draws, 'elo_diff':elo_diff, 'elo_conf_interval +/-': diff/2}
     print(d)
     return d
-faceoff_sequential(tt_move_ordering(), line_completer_bot(), ngames=20, visualize=True, n_random_moves=4)
-# faceoff_parallel(tt_move_ordering, tt_cutoffs, ngames=10000, njobs=-1)
+# faceoff_sequential(non_tt_move_ordering(), tt_move_ordering(), ngames=20, visualize=True, n_random_moves=4)
+faceoff_parallel(non_tt_move_ordering, tt_move_ordering, ngames=10000, njobs=-1)
