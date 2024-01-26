@@ -7,7 +7,7 @@ from scipy import stats
 from operations import ops
 from board import board_obj
 import vis_tools
-from bots import random_bot, line_completer_bot, minimax_ref, ab_pruning_ref, transposition_table, two_in_a_row_eval, tt_cutoffs
+from bots import random_bot, line_completer_bot, minimax_ref, ab_pruning_ref, transposition_table, two_in_a_row_eval, tt_cutoffs, tt_move_ordering
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
     for i in range(n_moves):
@@ -155,7 +155,10 @@ def calc_elo_diff(wins,losses,draws):
     draw_rate = draws / total_games
     loss_rate = losses / total_games
     E = win_rate + 0.5 * draw_rate
-    elo_diff = -400 * math.log10(1 / E - 1)
+    try:
+        elo_diff = -400 * math.log10(1 / E - 1)
+    except ValueError:
+        elo_diff = np.inf
 
     #ci formula from view-source:https://3dkingdoms.com/chess/elo.htm
     percentage = (wins + draws / 2) / total_games
@@ -223,5 +226,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
     d = {'win':total_wins, 'loss':total_losses, 'draw':total_draws, 'elo_diff':elo_diff, 'elo_conf_interval +/-': diff/2}
     print(d)
     return d
-# faceoff_sequential(tt_cutoffs(), line_completer_bot(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(tt_cutoffs, two_in_a_row_eval, ngames=10000, njobs=-1)
+# faceoff_sequential(tt_move_ordering(), line_completer_bot(), ngames=20, visualize=True, n_random_moves=4)
+faceoff_parallel(tt_move_ordering, tt_cutoffs, ngames=10000, njobs=-1)
