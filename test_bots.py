@@ -7,7 +7,7 @@ from scipy import stats
 from operations import ops
 from board import board_obj
 import vis_tools
-from bots import random_bot, line_completer_bot, minimax_ref, ab_pruning_ref, transposition_table, two_in_a_row_eval
+from bots import random_bot, line_completer_bot, minimax_ref, ab_pruning_ref, transposition_table, two_in_a_row_eval, tt_cutoffs
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
     for i in range(n_moves):
@@ -223,5 +223,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
     d = {'win':total_wins, 'loss':total_losses, 'draw':total_draws, 'elo_diff':elo_diff, 'elo_conf_interval +/-': diff/2}
     print(d)
     return d
-# faceoff_sequential(two_in_a_row_eval(), line_completer_bot(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(two_in_a_row_eval, transposition_table, ngames=10000, njobs=-1)
+# faceoff_sequential(tt_cutoffs(), line_completer_bot(), ngames=20, visualize=True, n_random_moves=4)
+faceoff_parallel(tt_cutoffs, two_in_a_row_eval, ngames=10000, njobs=-1)

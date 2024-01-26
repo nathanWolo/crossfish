@@ -653,3 +653,304 @@ class two_in_a_row_eval(transposition_table):
 
         
         return minibox_scores
+
+class tt_cutoffs:
+    def __init__(self, name: str = 'Transposition Table'):
+        self.name = name
+        self.thinking_time = 0.1
+        self.root_best_move = None
+        self.start_time = None
+        self.score = 0
+        self.maximizing_idx = 0
+        self.transposition_table = dict()
+    def move(self, board_dict: dict) -> tuple:
+        ''' wrapper
+        apply the logic and returns the desired move
+        '''
+        b_obj = board_obj()
+        b_obj.build_from_dict_gamestate(board_dict)
+        self.maximizing_idx = b_obj.n_moves % 2
+        return self.get_best_move(b_obj)
+    
+    def get_best_move(self, board: board_obj):
+        depth = 1
+        self.start_time = time.time()
+        while time.time() - self.start_time < self.thinking_time:
+            self.search(board, depth, True, 0)
+            depth += 1
+        # print(f'reached depth {depth-1} in {time.time() - self.start_time} seconds with score {self.score}')
+        return self.root_best_move
+    
+    def hash_position(self, board: board_obj) -> bytes:
+        # int_markers = board.markers.astype(np.uint8)
+        # uniboard = int_markers[:,:,self.maximizing_idx] - int_markers[:,:,((self.maximizing_idx + 1) % 2)]
+        # return uniboard.tobytes() + board.hist[board.n_moves-1][1].tobytes()
+        return board.markers.tobytes() + board.hist[board.n_moves-1][1].tobytes() #consider switching to above on performance testing. Uses less space but more time
+    def pull_mini_boards(self, markers: np.array) -> np.array:
+        ''' returns a (3,3,2) array of the miniboards '''
+        # Reshape and transpose the markers array to get the desired shape
+        return markers.reshape(3, 3, 3, 3, 2).transpose(0, 2, 1, 3, 4).reshape(9,3,3,2)
+
+    
+    def search(self, board:board_obj, depth:int, maximizing_player:bool, ply: int, alpha: int = -np.inf, beta: int = np.inf) -> int:
+        '''simple minimax search'''
+        if ops.check_game_finished(board):
+            if np.all(np.any(board.miniboxes,axis=2)):
+                return 0 #draw
+            else:
+                if maximizing_player:
+                    return -100 + ply
+                else:
+                    return 100 - ply
+        try:
+            tt_entry = self.transposition_table[self.hash_position(board)]
+            if tt_entry[1] >= depth and (tt_entry[2] == 0 #exact score
+                                          or tt_entry[2] == 2 and tt_entry[0] >= beta #lower bound
+                                          or tt_entry[2] == 1 and tt_entry[0] <= alpha #upper bound
+                                          ): 
+                return tt_entry[0]
+        except KeyError:
+            pass
+        
+        if depth == 0:
+            return self.evaluate(board)
+        if time.time() - self.start_time > self.thinking_time:
+            if maximizing_player:
+                return np.inf
+            else:
+                return -np.inf
+        if maximizing_player:
+            max_value = -np.inf
+            legal_moves = ops.get_valid_moves(board)
+            for move in legal_moves:
+                ops.make_move(board, move)
+                max_value = max(max_value, self.search(board, depth-1, False, ply+1, alpha, beta))
+                ops.undo_move(board)
+                if max_value > beta:
+                    break
+                if max_value > alpha:
+                    alpha = max_value
+                    if ply == 0:
+                        self.root_best_move = move
+                        self.score = max_value
+            entry_bound_flag = 0
+            if max_value <= alpha:
+                entry_bound_flag = 1
+            elif max_value >= beta:
+                entry_bound_flag = 2
+            self.transposition_table[self.hash_position(board)] = (max_value, depth, entry_bound_flag)
+            return max_value
+        else:
+            value = np.inf
+            legal_moves = ops.get_valid_moves(board)
+            for move in legal_moves:
+                ops.make_move(board, move)
+                value = min(value, self.search(board, depth-1, True, ply+1, alpha, beta))
+                ops.undo_move(board)
+                if value < alpha:
+                    break
+                beta = min(beta, value)
+            entry_bound_flag = 0
+            if value <= alpha:
+                entry_bound_flag = 1
+            elif value >= beta:
+                entry_bound_flag = 2
+            self.transposition_table[self.hash_position(board)] = (value, depth, entry_bound_flag)
+            return value
+    def evaluate(self, board):
+        '''simple evaluation function'''
+        return self.minibox_score(board)
+
+    def minibox_score(self, board):
+        scores = [np.sum(board.miniboxes[:, :, p]) for p in range(2)]
+        minibox_scores = scores[self.maximizing_idx] - scores[(self.maximizing_idx + 1) % 2]
+        #add in a bonus for unblocked two in a rows
+        #structure: first element is the attacking pattern (two in a row), second element is the blocking pattern
+        two_in_a_row_masks = np.array([
+                                        [[[1,1,0],
+                                        [0,0,0],
+                                        [0,0,0]],
+                                        [[0,0,1],
+                                        [0,0,0],
+                                        [0,0,0]]
+                                        ],
+                                        [[[1,0,1],
+                                        [0,0,0],
+                                        [0,0,0]],
+                                        [[0,1,0],
+                                        [0,0,0],
+                                        [0,0,0]]
+                                        ],
+
+                                        [[[0,0,0],
+                                        [1,1,0],
+                                        [0,0,0]],
+                                        [[0,0,0],
+                                        [0,0,1],
+                                        [0,0,0]]
+                                        ],
+                                        [[[0,0,0],
+                                        [1,0,1],
+                                        [0,0,0]],
+                                        [[0,0,0],
+                                        [0,1,0],
+                                        [0,0,0]]
+                                        ],
+
+                                        [[[0,0,0],
+                                        [0,0,0],
+                                        [1,1,0]],
+                                        [[0,0,0],
+                                        [0,0,0],
+                                        [0,0,1]]],
+
+                                        [[[0,0,0],
+                                        [0,0,0],
+                                        [1,0,1]],
+                                        [[0,0,0],
+                                        [0,0,0],
+                                        [0,1,0]]],
+
+                                        [[[0,1,1],
+                                        [0,0,0],
+                                        [0,0,0]],
+                                        [[1,0,0],
+                                        [0,0,0],
+                                        [0,0,0]]],
+                                        
+               
+                                        [[[0,0,0],
+                                        [0,1,1],
+                                        [0,0,0]],
+                                        [[0,0,0],
+                                        [1,0,0],
+                                        [0,0,0]]],
+
+                                        [[[0,0,0],
+                                        [0,0,0],
+                                        [0,1,1]],
+                                        [[0,0,0],
+                                        [0,0,0],
+                                        [1,0,0]]],
+
+                                        [[[1,0,0],
+                                         [1,0,0],       
+                                         [0,0,0]],
+                                         [[0,0,0],
+                                         [0,0,0],
+                                         [1,0,0]]],
+
+                                        [[[0,1,0],
+                                         [0,1,0],
+                                         [0,0,0]],
+                                         [[0,0,0],
+                                         [0,0,0],
+                                         [0,1,0]]],
+                                        [[[0,1,0],
+                                         [0,0,0],
+                                         [0,1,0]],
+                                         [[0,0,0],
+                                         [0,1,0],
+                                         [0,0,0]]],
+
+                                        [[[0,0,1],
+                                         [0,0,1],
+                                         [0,0,0]],
+                                         [[0,0,0],
+                                         [0,0,0],
+                                         [0,0,1]],],
+
+                                        [[[0,0,1],
+                                         [0,0,0],
+                                         [0,0,1]],
+                                         [[0,0,0],
+                                         [0,0,1],
+                                         [0,0,0]],],
+
+                                         [[[0,0,0],
+                                         [1,0,0],
+                                         [1,0,0]],
+                                         [[1,0,0],
+                                         [0,0,0],
+                                         [0,0,0]]],
+
+                                         [[[1,0,0],
+                                         [0,0,0],
+                                         [1,0,0]],
+                                         [[0,0,0],
+                                         [1,0,0],
+                                         [0,0,0]]],
+
+                                        [[[0,0,0],
+                                         [0,1,0],
+                                         [0,1,0]],
+                                         [[0,1,0],
+                                         [0,0,0],
+                                         [0,0,0]],],
+
+                                        [[[0,0,0],
+                                         [0,0,1],
+                                         [0,0,1]],
+                                         [[0,0,1],
+                                         [0,0,0],
+                                         [0,0,0]]],
+
+                                        [[[1,0,0],
+                                        [0,1,0],
+                                        [0,0,0]],
+                                        [[0,0,0],
+                                        [0,0,0],
+                                        [0,0,1]]],
+
+                                        [[[0,0,0],
+                                        [0,1,0],
+                                        [0,0,1]],
+                                        [[1,0,0],
+                                        [0,0,0],
+                                        [0,0,0]]],
+
+                                        [[[0,0,1],
+                                        [0,1,0],
+                                        [0,0,0]],
+                                       [[0,0,0],
+                                        [0,0,0],
+                                        [1,0,0]] ],
+
+                                        [[[0,0,1],
+                                        [0,0,0],
+                                        [1,0,0]],
+                                       [[0,0,0],
+                                        [0,1,0],
+                                        [0,0,0]] ],
+
+                                        [[[0,0,0],
+                                        [0,1,0],
+                                        [1,0,0]],
+                                        [[0,0,1],
+                                        [0,0,0],
+                                        [0,0,0]]],
+
+                                        [[[0,0,1],
+                                        [0,0,0],
+                                        [1,0,0]],
+                                        [[0,0,0],
+                                        [0,1,0],
+                                        [0,0,0]]],
+
+                                         ]).astype(bool)
+        miniboards = self.pull_mini_boards(board.markers)
+        close_to_win_scores = np.zeros(2)
+        boxes_in_play = ~board.miniboxes[:,:,0] & ~board.miniboxes[:,:,1] & ~board.miniboxes[:,:,2]
+        '''TODO: FIND A WAY TO OPTIMIZE THIS'''
+        for p in range(2):
+            for miniboard in miniboards[boxes_in_play.flatten()]:
+                for mask in two_in_a_row_masks:
+                    attacker = mask[0]
+                    blocker = mask[1]
+                    if np.all(miniboard[:,:, p][attacker]) and not np.any(miniboard[:,:,(p + 1) % 2][blocker]):
+                        close_to_win_scores[p] += 0.5
+                        break
+        minibox_scores += close_to_win_scores[self.maximizing_idx] - close_to_win_scores[(self.maximizing_idx + 1) % 2]
+
+        
+        return minibox_scores
