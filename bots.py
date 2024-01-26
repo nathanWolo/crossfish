@@ -958,7 +958,7 @@ class tt_cutoffs:
 class tt_move_ordering:
     def __init__(self, name: str = 'Transposition Table'):
         self.name = name
-        self.thinking_time = 0.4
+        self.thinking_time = 0.1
         self.root_best_move = None
         self.start_time = None
         self.score = 0
