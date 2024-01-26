@@ -1,5 +1,5 @@
-from tqdm import tqdm
 import numpy as np
+import copy
 import matplotlib.pyplot as plt
 import matplotlib
 import math
@@ -24,10 +24,15 @@ def faceoff_sequential(agent1, agent2, ngames=100, visualize=False, n_random_mov
         plt.ion()
         fig, ax = plt.subplots()
         score_text = ax.text(0,-2, '', transform=ax.transAxes) 
+    last_start_pos = board_obj()
     for j in range(ngames):
         my_board = board_obj()
         #make first 4 moves randomly
-        play_random_moves(my_board, n_random_moves)
+        if j % 2 == 0:
+            play_random_moves(my_board, n_random_moves)
+        else:
+            my_board = last_start_pos
+        last_start_pos = copy.deepcopy(my_board)
 
         for i in range(81): # up to 81 moves per game.
             d = ops.pull_dictionary(my_board)
@@ -43,7 +48,7 @@ def faceoff_sequential(agent1, agent2, ngames=100, visualize=False, n_random_mov
                 score_text.set_text(f'Agent 1 Wins: {win_counter}\nAgent 2 Wins: {loss_counter}\nDraws: {draw_counter}\nAgent 1 plays: {"O" if j % 2 == 0 % 2 else "X"}')
                 vis_tools.fancy_draw_board(my_board)  # Draw new state
                 plt.draw()
-                plt.pause(0.05)
+                plt.pause(0.2)
             if ops.check_game_finished(my_board):
                 #check if agent1 won
                 if j % 2 == i % 2:
@@ -226,5 +231,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
     d = {'win':total_wins, 'loss':total_losses, 'draw':total_draws, 'elo_diff':elo_diff, 'elo_conf_interval +/-': diff/2}
     print(d)
     return d
-# faceoff_sequential(tt_move_ordering(), line_completer_bot(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(tt_move_ordering, tt_cutoffs, ngames=10000, njobs=-1)
+faceoff_sequential(tt_move_ordering(), line_completer_bot(), ngames=20, visualize=True, n_random_moves=4)
+# faceoff_parallel(tt_move_ordering, tt_cutoffs, ngames=10000, njobs=-1)
