@@ -10,7 +10,7 @@ import vis_tools
 from bots import (random_bot, line_completer_bot, minimax_ref, 
                   ab_pruning_ref, transposition_table, two_in_a_row_eval, 
                   tt_cutoffs, tt_move_ordering, non_tt_move_ordering, move_ordering_v3,
-                  smaller_tt_entries_v1, negamax_v1, negamax_v2)
+                  smaller_tt_entries_v1, negamax_v1, negamax_v2, killers_v1)
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
     for i in range(n_moves):
@@ -230,5 +230,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
     d = {'win':total_wins, 'loss':total_losses, 'draw':total_draws, 'elo_diff':elo_diff, 'elo_conf_interval +/-': diff/2}
     print(d)
     return d
-# faceoff_sequential(negamax_v2(), negamax_v1(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(negamax_v2, negamax_v1, ngames=10000, njobs=-1)
+# faceoff_sequential(killers_v1(), negamax_v2(), ngames=20, visualize=True, n_random_moves=4)
+faceoff_parallel(killers_v1, negamax_v2, ngames=10000, njobs=-1)
