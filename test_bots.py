@@ -10,7 +10,7 @@ import vis_tools
 from bots import (random_bot, line_completer_bot, minimax_ref, 
                   ab_pruning_ref, transposition_table, two_in_a_row_eval, 
                   tt_cutoffs, tt_move_ordering, non_tt_move_ordering, move_ordering_v3,
-                  smaller_tt_entries_v1)
+                  smaller_tt_entries_v1, negamax_v1)
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
     for i in range(n_moves):
@@ -51,7 +51,7 @@ def faceoff_sequential(agent1, agent2, ngames=100, visualize=False, n_random_mov
                 score_text.set_text(f'Agent 1 Wins: {win_counter}\nAgent 2 Wins: {loss_counter}\nDraws: {draw_counter}\nAgent 1 plays: {"O" if j % 2 == 0 % 2 else "X"}')
                 vis_tools.fancy_draw_board(my_board)  # Draw new state
                 plt.draw()
-                plt.pause(0.2)
+                plt.pause(0.1)
             if ops.check_game_finished(my_board):
                 #check if agent1 won
                 if j % 2 == i % 2:
@@ -169,7 +169,7 @@ def calc_elo_diff(wins,losses,draws):
         diff = (-400 * math.log10(1 / max_dev - 1)) - (-400 * math.log10(1 / min_dev - 1)) 
     except ValueError:
         diff = np.inf
-    return {'elo_diff':elo_diff, 'elo_diff_ci +/': diff}
+    return {'elo_diff':elo_diff, 'ci': diff}
 
 
 
@@ -187,9 +187,14 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
         batch_size = os.cpu_count()
     for i in range(ngames // batch_size):
         results.extend(Parallel(n_jobs=batch_size, backend="loky")(delayed(play_single_game)(agent1(), agent2()) for _ in range(batch_size)))
+        t_wins = sum(result[0] for result in results)
+        t_losses = sum(result[1] for result in results)
+        t_draws = sum(result[2] for result in results)
         elo_info = calc_elo_diff(sum(result[0] for result in results), sum(result[1] for result in results), sum(result[2] for result in results))
-
-        print(f'batch {i}/{ngames//batch_size} completed, p1 W: {sum(result[0] for result in results)}, p2 W: {sum(result[1] for result in results)}, D: {sum(result[2] for result in results)}, elo diff: {elo_info["elo_diff"]} +/- {elo_info["elo_diff_ci +/"]}, LOS: {calc_los(sum(result[0] for result in results), sum(result[1] for result in results))}')
+        formatted_los = "{:.2f}".format(calc_los(sum(result[0] for result in results), sum(result[1] for result in results)))
+        formatted_elo = "{:.2f}".format(elo_info['elo_diff'])
+        formatted_ci = "{:.2f}".format(elo_info['ci'])
+        print(f'batch {i}/{ngames//batch_size}, W: {t_wins}, L: {t_losses}, D: {t_draws}, elo diff: {formatted_elo} +/- {formatted_ci}, LOS: {formatted_los}')
 
     # Aggregate results
     total_wins = sum(result[0] for result in results)
@@ -225,5 +230,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
     d = {'win':total_wins, 'loss':total_losses, 'draw':total_draws, 'elo_diff':elo_diff, 'elo_conf_interval +/-': diff/2}
     print(d)
     return d
-# faceoff_sequential(move_ordering_v3(), line_completer_bot(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(smaller_tt_entries_v1, move_ordering_v3, ngames=10000, njobs=-1)
+# faceoff_sequential(negamax_v1(), smaller_tt_entries_v1(), ngames=20, visualize=True, n_random_moves=4)
+faceoff_parallel(negamax_v1, smaller_tt_entries_v1, ngames=10000, njobs=-1)
