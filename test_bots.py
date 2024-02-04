@@ -7,11 +7,19 @@ from scipy import stats
 from operations import ops
 from board import board_obj
 import vis_tools
+import time
 from bots import (random_bot, line_completer_bot, minimax_ref, 
                   ab_pruning_ref, transposition_table, two_in_a_row_eval, 
                   tt_cutoffs, tt_move_ordering, non_tt_move_ordering, move_ordering_v3,
                   smaller_tt_entries_v1, negamax_v1, negamax_v2, killers_v1, history_v1,
-                  faster_eval_v1, faster_eval_v2)
+                  faster_eval_v1, crossfish_v1, crossfish_v2, crossfish_v3, crossfish_v4, 
+                  crossfish_v5,  #aspiration windows
+                  crossfish_v6,  #null move pruning
+                  crossfish_v7, #futility pruning
+                    crossfish_v8, #reverse futility pruning
+                  )
+from crossfish import crossfish_v9
+from n_def_bot import defense_bot
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
     for i in range(n_moves):
@@ -169,7 +177,7 @@ def calc_elo_diff(wins,losses,draws):
     try:
         diff = (-400 * math.log10(1 / max_dev - 1)) - (-400 * math.log10(1 / min_dev - 1)) 
     except ValueError:
-        diff = np.inf
+        diff = np.inffaster_eval_v2
     return {'elo_diff':elo_diff, 'ci': diff}
 
 
@@ -196,40 +204,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
         formatted_elo = "{:.2f}".format(elo_info['elo_diff'])
         formatted_ci = "{:.2f}".format(elo_info['ci'])
         print(f'batch {i}/{ngames//batch_size}, W: {t_wins}, L: {t_losses}, D: {t_draws}, elo diff: {formatted_elo} +/- {formatted_ci}, LOS: {formatted_los}')
-
-    # Aggregate results
-    total_wins = sum(result[0] for result in results)
-    total_losses = sum(result[1] for result in results)
-    total_draws = sum(result[2] for result in results)
-
-    # Calculate Elo difference
-    total_games = total_wins + total_losses + total_draws
-    win_rate = total_wins / total_games
-    draw_rate = total_draws / total_games
-    loss_rate = total_losses / total_games
-    E = win_rate + 0.5 * draw_rate
-    elo_diff = -400 * math.log10(1 / E - 1)
-
-    #ci formula from view-source:https://3dkingdoms.com/chess/elo.htm
-    percentage = (total_wins + total_draws / 2) / total_games
-    
-    wins_dev = win_rate * (1- percentage)**2
-    draws_dev = draw_rate * (0.5 - percentage)**2
-    losses_dev = loss_rate * (0 - percentage)**2
-
-    std_dev = math.sqrt(wins_dev + draws_dev + losses_dev) / math.sqrt(total_games)
-
-    confidence = 0.95
-    min_confidence = (1- confidence) / 2
-    max_confidence = 1 - min_confidence
-
-    min_dev = percentage + stats.norm.ppf(min_confidence) * std_dev
-    max_dev = percentage + stats.norm.ppf(max_confidence) * std_dev
-    diff = (-400 * math.log10(1 / max_dev - 1)) - (-400 * math.log10(1 / min_dev - 1)) 
-    
-
-    d = {'win':total_wins, 'loss':total_losses, 'draw':total_draws, 'elo_diff':elo_diff, 'elo_conf_interval +/-': diff/2}
-    print(d)
-    return d
-# faceoff_sequential(faster_eval_v2(), faster_eval_v1(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(faster_eval_v2, faster_eval_v1, ngames=10000, njobs=-1)
+# faceoff_sequential(crossfish_v9(), crossfish_v8(), ngames=20, visualize=True, n_random_moves=4)
+faceoff_parallel(crossfish_v9, crossfish_v5, ngames=200000, njobs=-1)
