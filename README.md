@@ -1,2 +1,2 @@
-# utt_entry
- entry for uvicai uttt tournament
+# crossfish
+ entry for uvicai uttt tournament. Won first place
