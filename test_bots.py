@@ -14,11 +14,9 @@ from bots import (random_bot, line_completer_bot, minimax_ref,
                   smaller_tt_entries_v1, negamax_v1, negamax_v2, killers_v1, history_v1,
                   faster_eval_v1, crossfish_v1, crossfish_v2, crossfish_v3, crossfish_v4, 
                   crossfish_v5,  #aspiration windows
-                  crossfish_v6,  #null move pruning
-                  crossfish_v7, #futility pruning
-                    crossfish_v8, #reverse futility pruning
+                  crossfish_v9, #codingame rules
                   )
-from crossfish import crossfish_v9
+from crossfish import crossfish_v10
 from n_def_bot import defense_bot
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
@@ -120,7 +118,13 @@ def play_single_game(agent1, agent2):
     win, draw, loss = 0, 0, 0
     my_board = board_obj()
     #make first 4 moves randomly
-    for _ in range(4):
+    #generate random num of random moves between 4 and 10
+    num_random_moves = np.random.randint(4, 10)
+    for n in range(num_random_moves):
+        if n == 0: #play center center with p = 0.2
+            if np.random.rand() < 0.2:
+                ops.make_move(my_board, (4,4))
+                continue
         legal_moves = ops.get_valid_moves(my_board)
         move = legal_moves[np.random.choice(len(legal_moves))]
         ops.make_move(my_board, move)
@@ -205,4 +209,4 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
         formatted_ci = "{:.2f}".format(elo_info['ci'])
         print(f'batch {i}/{ngames//batch_size}, W: {t_wins}, L: {t_losses}, D: {t_draws}, elo diff: {formatted_elo} +/- {formatted_ci}, LOS: {formatted_los}')
 # faceoff_sequential(crossfish_v9(), crossfish_v8(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(crossfish_v9, crossfish_v5, ngames=200000, njobs=-1)
+faceoff_parallel(crossfish_v10, crossfish_v9, ngames=200000, njobs=-1)

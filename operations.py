@@ -181,6 +181,13 @@ class ops():
 
         # check stale
         if np.all(np.any(board_obj.miniboxes,axis=2)): # if all miniboards are filled with something
-            return 'stale'
+            # return 'stale'
+            #check who has more miniboards
+            if np.sum(board_obj.miniboxes[:,:,0]) > np.sum(board_obj.miniboxes[:,:,1]):
+                return 'agent 1 wins'
+            elif np.sum(board_obj.miniboxes[:,:,0]) < np.sum(board_obj.miniboxes[:,:,1]):
+                return 'agent 2 wins'
+            else:
+                return 'stale'
 
         return 'game is ongoing'

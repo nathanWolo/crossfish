@@ -1,11 +1,12 @@
 from __future__ import annotations
 import time
 import numpy as np
-class crossfish_v9:
-    '''This version adds late move reduction'''
+class crossfish_v10:
+    '''This version adds futility pruning
+    '''
     def __init__(self, name: str = 'Crossfish'):
         self.name = name
-        self.thinking_time = 0.45
+        self.thinking_time = 0.095
         self.root_best_move = None
         self.start_time = None
         self.score = 0
@@ -61,18 +62,19 @@ class crossfish_v9:
         if time.time() - self.start_time > self.thinking_time:
             return -np.inf
         self.nodes += 1
-        pv_node = (alpha + 0.1 == beta)
-        can_null = can_null and ply > 0 and not pv_node
+        # pv_node = (alpha + 0.1 == beta)
+        can_null = can_null and ply > 0
         if self.check_game_finished(board):
-            if self.check_win(board.miniboxes, (board.n_moves + 1) % 2):
+            if self.check_win_via_line(board.miniboxes, (board.n_moves + 1) % 2):
                 return -100 + ply
             else:
-                return 0
+                #if global board is stale, winner is the player with the most boxes
+                return (-1)**(board.n_moves) * (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1]))
         tt_move = None
         try:
             tt_entry = self.transposition_table[self.hash_position(board)]
             tt_move = tt_entry[3]
-            if tt_entry[1] >= depth and not pv_node: 
+            if tt_entry[1] >= depth: 
                 if (tt_entry[2] == 0): #exact score 
                     return tt_entry[0]
                 elif tt_entry[2] == 2:
@@ -86,27 +88,27 @@ class crossfish_v9:
         
         if depth == 0:
             return self.evaluate(board)
-        can_futility_prune = False
-        if not pv_node:
-            stand_pat = self.evaluate(board)
+        # can_futility_prune = False
+        # if not pv_node:
+            # stand_pat = self.evaluate(board)
 
             # #reverse futility pruning
-            r_margin = 1
-            if stand_pat - r_margin * depth >= beta:
-                return beta
+            # r_margin = 1
+            # if stand_pat - r_margin * depth >= beta:
+            #     return beta
 
-            #futility pruning
-            f_margin = 1
-            can_futility_prune = (stand_pat + f_margin * depth) <= alpha
+            # #futility pruning
+            # f_margin = 1
+            # can_futility_prune = (stand_pat + f_margin * depth) <= alpha
 
             #null move pruning
             # if not can_futility_prune:
-            if depth > 2 and can_null:
-                self.make_null_move(board)
-                null_move_score = -self.search(board, depth//2, ply+1, -beta, -beta+1, can_null=False)
-                self.undo_move(board)
-                if null_move_score >= beta:
-                    return beta
+        if depth > 2 and can_null:
+            self.make_null_move(board)
+            null_move_score = -self.search(board, depth//2, ply+1, -beta, -alpha, can_null=False)
+            self.undo_move(board)
+            if null_move_score >= beta:
+                return beta
 
 
         legal_moves_and_scores = self.get_sorted_moves_and_scores(board, tt_move, ply)
@@ -115,20 +117,16 @@ class crossfish_v9:
         max_val = -np.inf
         for move_idx in range(len(legal_moves_and_scores)):
             move = legal_moves_and_scores[move_idx][0]
-            move_score = legal_moves_and_scores[move_idx][1]
-            if can_futility_prune and move_idx > 0 and move_score <= 0:
-                continue
+            # move_score = legal_moves_and_scores[move_idx][1]
+            # if can_futility_prune and move_idx > 0 and move_score <= 0:
+            #     continue
             self.make_move(board, move)
-            if move_idx == 0:
-                val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
-            else:
-                #lmr value
-                lmr_value = 1
-                if move_score <= 0:
-                    lmr_value = int(np.log2(move_idx) + 1)
-                val = -self.search(board,max(depth- lmr_value, 0), ply+1, -alpha-0.1, -alpha, can_null=can_null)
-                if alpha < val and val < beta:
-                    val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
+            # if move_idx == 0:
+            val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
+            # else:
+            #     val = -self.search(board, depth-1, ply+1, -alpha-0.1, -alpha, can_null=can_null)
+            #     if alpha < val and val < beta:
+            #         val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
             self.undo_move(board)
             if val > max_val:
                 max_val = val
@@ -216,7 +214,7 @@ class crossfish_v9:
         # Reshape and transpose the markers array to get the desired shape
         return markers.reshape(3, 3, 3, 3, 2).transpose(0, 2, 1, 3, 4).reshape(9,3,3,2)
     
-    def check_win(self, miniboxes:np.ndarray, p:int) -> bool:
+    def check_win_via_line(self, miniboxes:np.ndarray, p:int) -> bool:
         '''Check if player p has won the game'''
         for i in range(3):
             if np.sum(miniboxes[:,i, p]) == 3: return True # horizontal
@@ -431,12 +429,20 @@ class crossfish_v9:
         for _line in self.lines_mask:
             if np.all(board_obj.miniboxes[:,:,1] * _line == _line):
                 return 'agent 2 wins'
-
-        # check stale
+        #check stale
         if np.all(np.any(board_obj.miniboxes,axis=2)): # if all miniboards are filled with something
-            return 'stale'
+            # return 'stale'
+            #check who has more miniboards
+            if np.sum(board_obj.miniboxes[:,:,0]) > np.sum(board_obj.miniboxes[:,:,1]):
+                return 'agent 1 wins'
+            elif np.sum(board_obj.miniboxes[:,:,0]) < np.sum(board_obj.miniboxes[:,:,1]):
+                return 'agent 2 wins'
+            else:
+                return 'stale'
+
 
         return 'game is ongoing'
+
 class board_obj:
     def __init__(self):
         # the full board: two channels, one per player
