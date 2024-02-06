@@ -14,9 +14,11 @@ from bots import (random_bot, line_completer_bot, minimax_ref,
                   smaller_tt_entries_v1, negamax_v1, negamax_v2, killers_v1, history_v1,
                   faster_eval_v1, crossfish_v1, crossfish_v2, crossfish_v3, crossfish_v4, 
                   crossfish_v5,  #aspiration windows
-                  crossfish_v9, #codingame rules
+                  crossfish_v9, #codingame rules + NMP
+                  crossfish_v10, #futility pruning
+                    crossfish_v11, #futility pruning
                   )
-from crossfish import crossfish_v10
+from crossfish import crossfish_v12
 from n_def_bot import defense_bot
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
@@ -209,4 +211,4 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
         formatted_ci = "{:.2f}".format(elo_info['ci'])
         print(f'batch {i}/{ngames//batch_size}, W: {t_wins}, L: {t_losses}, D: {t_draws}, elo diff: {formatted_elo} +/- {formatted_ci}, LOS: {formatted_los}')
 # faceoff_sequential(crossfish_v9(), crossfish_v8(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(crossfish_v10, crossfish_v9, ngames=200000, njobs=-1)
+faceoff_parallel(crossfish_v12, crossfish_v11, ngames=200000, njobs=-1)

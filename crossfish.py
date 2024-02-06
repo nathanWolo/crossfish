@@ -1,8 +1,31 @@
-from __future__ import annotations
 import time
 import numpy as np
-class crossfish_v10:
-    '''This version adds futility pruning
+import sys #used in codingame environment, not used here
+class board_obj:
+    def __init__(self):
+        # the full board: two channels, one per player
+        self.markers = np.zeros((9,9,2)).astype(bool)
+        # an "open" location is calculated by ORing
+        
+        # the overall miniboard status
+        self.miniboxes = np.zeros((3,3,3)).astype(bool)
+        # channels: p1, p2, stale
+        
+        # board history
+        self.hist = np.zeros((82,2),dtype=np.uint8)
+        self.n_moves = 0
+    def build_from_dict_gamestate(self, gamestate: dict):
+        self.markers = gamestate['markers']
+        self.miniboxes = gamestate['miniboxes']
+        self.hist = gamestate['history']
+        #add one extra element at the end of the history, to support null move pruning
+        row_to_append = np.array([[0, 0]])
+        # Append row to arr
+        self.hist = np.vstack((self.hist, row_to_append))
+        self.n_moves = gamestate['n_moves']
+class crossfish_v12:
+    '''This version adds reverse futility pruning
+    test results: W: 2028, L: 1641, D: 291, elo diff: 34.06 +/- 20.93, LOS: 100.00
     '''
     def __init__(self, name: str = 'Crossfish'):
         self.name = name
@@ -88,21 +111,21 @@ class crossfish_v10:
         
         if depth == 0:
             return self.evaluate(board)
-        # can_futility_prune = False
+        can_futility_prune = False
         # if not pv_node:
-            # stand_pat = self.evaluate(board)
+        stand_pat = self.evaluate(board)
 
-            # #reverse futility pruning
-            # r_margin = 1
-            # if stand_pat - r_margin * depth >= beta:
-            #     return beta
+        #reverse futility pruning
+        rfp_margin = 2
+        if stand_pat - rfp_margin * depth >= beta:
+            return beta
 
-            # #futility pruning
-            # f_margin = 1
-            # can_futility_prune = (stand_pat + f_margin * depth) <= alpha
-
-            #null move pruning
-            # if not can_futility_prune:
+        # #futility pruning
+        f_margin = 2
+        can_futility_prune = (stand_pat + f_margin * depth) <= alpha
+        
+        #Null Move Pruning
+        #TODO: twiddle with depth reduction formula
         if depth > 2 and can_null:
             self.make_null_move(board)
             null_move_score = -self.search(board, depth//2, ply+1, -beta, -alpha, can_null=False)
@@ -110,16 +133,15 @@ class crossfish_v10:
             if null_move_score >= beta:
                 return beta
 
-
         legal_moves_and_scores = self.get_sorted_moves_and_scores(board, tt_move, ply)
         best_move = legal_moves_and_scores[0][0]
         alpha_orig = alpha
         max_val = -np.inf
         for move_idx in range(len(legal_moves_and_scores)):
             move = legal_moves_and_scores[move_idx][0]
-            # move_score = legal_moves_and_scores[move_idx][1]
-            # if can_futility_prune and move_idx > 0 and move_score <= 0:
-            #     continue
+            move_score = legal_moves_and_scores[move_idx][1]
+            if can_futility_prune and move_idx > 0 and move_score <= 0:
+                continue
             self.make_move(board, move)
             # if move_idx == 0:
             val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
@@ -443,26 +465,4 @@ class crossfish_v10:
 
         return 'game is ongoing'
 
-class board_obj:
-    def __init__(self):
-        # the full board: two channels, one per player
-        self.markers = np.zeros((9,9,2)).astype(bool)
-        # an "open" location is calculated by ORing
-        
-        # the overall miniboard status
-        self.miniboxes = np.zeros((3,3,3)).astype(bool)
-        # channels: p1, p2, stale
-        
-        # board history
-        self.hist = np.zeros((82,2),dtype=np.uint8)
-        self.n_moves = 0
-    def build_from_dict_gamestate(self, gamestate: dict):
-        self.markers = gamestate['markers']
-        self.miniboxes = gamestate['miniboxes']
-        self.hist = gamestate['history']
-        #add one extra element at the end of the history, to support null move pruning
-        row_to_append = np.array([[0, 0]])
-        # Append row to arr
-        self.hist = np.vstack((self.hist, row_to_append))
-        self.n_moves = gamestate['n_moves']
     
