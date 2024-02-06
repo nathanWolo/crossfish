@@ -24,8 +24,8 @@ class board_obj:
         self.hist = np.vstack((self.hist, row_to_append))
         self.n_moves = gamestate['n_moves']
 class crossfish_v12:
-    '''This version adds reverse futility pruning
-    test results: W: 2028, L: 1641, D: 291, elo diff: 34.06 +/- 20.93, LOS: 100.00
+    '''This version adds PVS
+    Test Result: W: 4115, L: 3486, D: 511, elo diff: 26.99 +/- 14.68, LOS: 100.00
     '''
     def __init__(self, name: str = 'Crossfish'):
         self.name = name
@@ -85,7 +85,7 @@ class crossfish_v12:
         if time.time() - self.start_time > self.thinking_time:
             return -np.inf
         self.nodes += 1
-        # pv_node = (alpha + 0.1 == beta)
+        pv_node = (alpha + 0.1 == beta)
         can_null = can_null and ply > 0
         if self.check_game_finished(board):
             if self.check_win_via_line(board.miniboxes, (board.n_moves + 1) % 2):
@@ -97,7 +97,7 @@ class crossfish_v12:
         try:
             tt_entry = self.transposition_table[self.hash_position(board)]
             tt_move = tt_entry[3]
-            if tt_entry[1] >= depth: 
+            if tt_entry[1] >= depth and not pv_node: 
                 if (tt_entry[2] == 0): #exact score 
                     return tt_entry[0]
                 elif tt_entry[2] == 2:
@@ -112,26 +112,28 @@ class crossfish_v12:
         if depth == 0:
             return self.evaluate(board)
         can_futility_prune = False
-        # if not pv_node:
-        stand_pat = self.evaluate(board)
+        if not pv_node:
 
-        #reverse futility pruning
-        rfp_margin = 2
-        if stand_pat - rfp_margin * depth >= beta:
-            return beta
+            # if not pv_node:
+            stand_pat = self.evaluate(board)
 
-        # #futility pruning
-        f_margin = 2
-        can_futility_prune = (stand_pat + f_margin * depth) <= alpha
-        
-        #Null Move Pruning
-        #TODO: twiddle with depth reduction formula
-        if depth > 2 and can_null:
-            self.make_null_move(board)
-            null_move_score = -self.search(board, depth//2, ply+1, -beta, -alpha, can_null=False)
-            self.undo_move(board)
-            if null_move_score >= beta:
+            #reverse futility pruning
+            rfp_margin = 2
+            if stand_pat - rfp_margin * depth >= beta:
                 return beta
+
+            # #futility pruning
+            f_margin = 2
+            can_futility_prune = (stand_pat + f_margin * depth) <= alpha
+            
+            #Null Move Pruning
+            #TODO: twiddle with depth reduction formula
+            if depth > 2 and can_null:
+                self.make_null_move(board)
+                null_move_score = -self.search(board, depth//2, ply+1, -beta, -alpha, can_null=False)
+                self.undo_move(board)
+                if null_move_score >= beta:
+                    return beta
 
         legal_moves_and_scores = self.get_sorted_moves_and_scores(board, tt_move, ply)
         best_move = legal_moves_and_scores[0][0]
@@ -143,12 +145,12 @@ class crossfish_v12:
             if can_futility_prune and move_idx > 0 and move_score <= 0:
                 continue
             self.make_move(board, move)
-            # if move_idx == 0:
-            val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
-            # else:
-            #     val = -self.search(board, depth-1, ply+1, -alpha-0.1, -alpha, can_null=can_null)
-            #     if alpha < val and val < beta:
-            #         val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
+            if move_idx == 0:
+                val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
+            else:
+                val = -self.search(board, depth-1, ply+1, -alpha-0.1, -alpha, can_null=can_null)
+                if alpha < val and val < beta:
+                    val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
             self.undo_move(board)
             if val > max_val:
                 max_val = val
