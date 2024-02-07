@@ -23,9 +23,10 @@ class board_obj:
         # Append row to arr
         self.hist = np.vstack((self.hist, row_to_append))
         self.n_moves = gamestate['n_moves']
-class crossfish_v12:
-    '''This version adds PVS
-    Test Result: W: 4115, L: 3486, D: 511, elo diff: 26.99 +/- 14.68, LOS: 100.00
+class crossfish_v15:
+    '''
+    tweak rfp margin: 2->3
+    test result: W: 3035, L: 2450, D: 371, elo diff: 34.82 +/- 17.31, LOS: 100.00
     '''
     def __init__(self, name: str = 'Crossfish'):
         self.name = name
@@ -38,15 +39,14 @@ class crossfish_v12:
         self.killer_moves = np.zeros((128, 2), dtype=np.int8) #depth, move
         self.history_table = np.zeros((2, 9, 9), dtype=np.uint16) #player (0 or 1), miniboard, move
         self.nodes = 0
-        self.instance_b = board_obj()
         self.lines_mask = np.array([[1,1,1,0,0,0,0,0,0], # horizontals
-                       [0,0,0,1,1,1,0,0,0],
-                       [0,0,0,0,0,0,1,1,1],
-                       [1,0,0,1,0,0,1,0,0], # verticals
-                       [0,1,0,0,1,0,0,1,0],
-                       [0,0,1,0,0,1,0,0,1],
-                       [1,0,0,0,1,0,0,0,1], # diagonals
-                       [0,0,1,0,1,0,1,0,0]],dtype=bool).reshape(-1,3,3)
+                                    [0,0,0,1,1,1,0,0,0],
+                                    [0,0,0,0,0,0,1,1,1],
+                                    [1,0,0,1,0,0,1,0,0], # verticals
+                                    [0,1,0,0,1,0,0,1,0],
+                                    [0,0,1,0,0,1,0,0,1],
+                                    [1,0,0,0,1,0,0,0,1], # diagonals
+                                    [0,0,1,0,1,0,1,0,0]],dtype=bool).reshape(-1,3,3)
                                              
     def move(self, board_dict: dict) -> tuple:
         ''' wrapper
@@ -92,7 +92,7 @@ class crossfish_v12:
                 return -100 + ply
             else:
                 #if global board is stale, winner is the player with the most boxes
-                return (-1)**(board.n_moves) * (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1]))
+                return 50 *((-1)**(board.n_moves) * (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1]))) 
         tt_move = None
         try:
             tt_entry = self.transposition_table[self.hash_position(board)]
@@ -118,12 +118,12 @@ class crossfish_v12:
             stand_pat = self.evaluate(board)
 
             #reverse futility pruning
-            rfp_margin = 2
+            rfp_margin = 1
             if stand_pat - rfp_margin * depth >= beta:
                 return beta
 
             # #futility pruning
-            f_margin = 2
+            f_margin = 1
             can_futility_prune = (stand_pat + f_margin * depth) <= alpha
             
             #Null Move Pruning
@@ -175,7 +175,7 @@ class crossfish_v12:
         '''simple evaluation function'''
         return self.minibox_score(board)
     def minibox_score(self, board):
-        score = (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1])) * 2
+        score = (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1])) * 3
         # '''TODO: FIND A WAY TO OPTIMIZE THIS'''
         miniboards = self.pull_mini_boards(board.markers)
         boxes_in_play = ~board.miniboxes[:,:,0] & ~board.miniboxes[:,:,1] & ~board.miniboxes[:,:,2]
