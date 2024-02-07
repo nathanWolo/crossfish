@@ -214,5 +214,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
         formatted_elo = "{:.2f}".format(elo_info['elo_diff'])
         formatted_ci = "{:.2f}".format(elo_info['ci'])
         print(f'batch {i}/{ngames//batch_size}, W: {t_wins}, L: {t_losses}, D: {t_draws}, elo diff: {formatted_elo} +/- {formatted_ci}, LOS: {formatted_los}')
-# faceoff_sequential(crossfish_v9(), crossfish_v8(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(crossfish_v15, crossfish_v14, ngames=200000, njobs=-1)
+# faceoff_sequential(crossfish_v16(), crossfish_v5(), ngames=20, visualize=True, n_random_moves=4)
+faceoff_parallel(crossfish_v16, crossfish_v15, ngames=200000, njobs=-1)    

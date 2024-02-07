@@ -25,8 +25,8 @@ class board_obj:
         self.n_moves = gamestate['n_moves']
 class crossfish_v16:
     '''
-    tweak rfp margin: 2->3
-    test result: W: 3035, L: 2450, D: 371, elo diff: 34.82 +/- 17.31, LOS: 100.00
+    adding lmr
+    test result: W: 4107, L: 3335, D: 478, elo diff: 33.97 +/- 14.90, LOS: 100.00
     '''
     def __init__(self, name: str = 'Crossfish'):
         self.name = name
@@ -77,7 +77,7 @@ class crossfish_v16:
                 beta = self.score + aspiration
                 depth += 1
 
-            # print(f'depth: {depth-1} in {time.time() - self.start_time:.4f}s, score: {self.score}, nps: {self.nodes / (time.time() - self.start_time + 1e-5):.2f}')
+        # print(f'depth: {depth-1}, score: {self.score}, node: {self.nodes}')
         return self.root_best_move
     
     def search(self, board:board_obj, depth:int, ply: int, alpha: int, beta: int, can_null:bool) -> int:
@@ -155,7 +155,11 @@ class crossfish_v16:
             if move_idx == 0:
                 val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
             else:
-                val = -self.search(board, depth-1, ply+1, -alpha-0.1, -alpha, can_null=can_null)
+                lmr_val = 1 #late move reductions, TODO: twiddle with this
+                #idea: moves that are at the end of the sorted list are likely to be bad, so reduce their depth
+                if move_score <= 0 and depth > 2:
+                    lmr_val += int(np.log2(move_idx + 1))
+                val = -self.search(board, max(0, depth - lmr_val), ply+1, -alpha-0.1, -alpha, can_null=can_null)
                 if alpha < val and val < beta:
                     val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
             self.undo_move(board)
