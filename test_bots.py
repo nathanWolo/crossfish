@@ -20,8 +20,9 @@ from bots import (random_bot, line_completer_bot, minimax_ref,
                     crossfish_v12, #pvs
                     crossfish_v13, #eval tweak
                     crossfish_v14, #fp margin tweak
+                    crossfish_v15, #rfp margin tweak
                   )
-from crossfish import crossfish_v15
+from crossfish import crossfish_v16
 from n_def_bot import defense_bot
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''

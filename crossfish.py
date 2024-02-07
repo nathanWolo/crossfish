@@ -23,7 +23,7 @@ class board_obj:
         # Append row to arr
         self.hist = np.vstack((self.hist, row_to_append))
         self.n_moves = gamestate['n_moves']
-class crossfish_v15:
+class crossfish_v16:
     '''
     tweak rfp margin: 2->3
     test result: W: 3035, L: 2450, D: 371, elo diff: 34.82 +/- 17.31, LOS: 100.00
@@ -84,15 +84,18 @@ class crossfish_v15:
         '''negamax with alpha beta pruning'''
         if time.time() - self.start_time > self.thinking_time:
             return -np.inf
+        
         self.nodes += 1
         pv_node = (alpha + 0.1 == beta)
         can_null = can_null and ply > 0
+        
         if self.check_game_finished(board):
             if self.check_win_via_line(board.miniboxes, (board.n_moves + 1) % 2):
                 return -100 + ply
             else:
                 #if global board is stale, winner is the player with the most boxes
                 return 50 *((-1)**(board.n_moves) * (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1]))) 
+        
         tt_move = None
         try:
             tt_entry = self.transposition_table[self.hash_position(board)]
@@ -111,10 +114,12 @@ class crossfish_v15:
         
         if depth == 0:
             return self.evaluate(board)
+        
         can_futility_prune = False
+        
+        #dont do risky pruning stuff inside PV nodes
         if not pv_node:
 
-            # if not pv_node:
             stand_pat = self.evaluate(board)
 
             #reverse futility pruning
@@ -139,6 +144,8 @@ class crossfish_v15:
         best_move = legal_moves_and_scores[0][0]
         alpha_orig = alpha
         max_val = -np.inf
+        
+        #main search loop
         for move_idx in range(len(legal_moves_and_scores)):
             move = legal_moves_and_scores[move_idx][0]
             move_score = legal_moves_and_scores[move_idx][1]
@@ -174,6 +181,7 @@ class crossfish_v15:
     def evaluate(self, board):
         '''simple evaluation function'''
         return self.minibox_score(board)
+    
     def minibox_score(self, board):
         score = (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1])) * 3
         # '''TODO: FIND A WAY TO OPTIMIZE THIS'''
@@ -224,6 +232,7 @@ class crossfish_v15:
 
         
         score += two_in_a_row_eval[0] - two_in_a_row_eval[1]
+        #score is from perspective of player to move
         if board.n_moves % 2 == 1:
             score = -score      
         return score
@@ -231,6 +240,7 @@ class crossfish_v15:
     def hash_position(self, board: board_obj) -> bytes:
         int_markers = board.markers.astype(np.int8)
         uniboard = int_markers[:,:,self.root_player] - int_markers[:,:,((self.root_player + 1) % 2)]
+        #information needed to fully describe a board: markers and active square
         return uniboard.tobytes() + board.hist[board.n_moves-1][1].tobytes()    
     
     def pull_mini_boards(self, markers: np.array) -> np.array:
@@ -251,7 +261,6 @@ class crossfish_v15:
     
     def get_sorted_moves_and_scores(self, board: board_obj, tt_move: tuple, ply:int) -> list:
         legal_moves = self.get_valid_moves(board)
-        # legal_moves.sort(key=lambda move: self.score_move(board, move, tt_move, ply), reverse=True)
         legal_moves_and_scores = [(move, self.score_move(board, move, tt_move, ply)) for move in legal_moves]
         legal_moves_and_scores.sort(key=lambda x: x[1], reverse=True)
         return legal_moves_and_scores
@@ -275,9 +284,9 @@ class crossfish_v15:
         # 0 1 2
         # 3 4 5
         # 6 7 8
-        if move[1] % 4 == 0 and np.sum(target_miniboard.diagonal()) == 2:
+        if move[1] % 4 == 0 and np.sum(target_miniboard.diagonal()) == 2: #diagonal, left to right
             score += 10
-        elif move[1] % 2 == 0 and np.sum(np.fliplr(target_miniboard).diagonal()) == 2:
+        elif move[1] % 2 == 0 and np.sum(np.fliplr(target_miniboard).diagonal()) == 2: #diagonal, right to left
             score += 10
         #if a move sends the opponent to a completed box (i.e lets them go anywhere), give it a negative score
         done_boxes = board.miniboxes[:, :, 0] & board.miniboxes[:, :, 1] & board.miniboxes[:,:, 2]
@@ -285,8 +294,10 @@ class crossfish_v15:
             score -= 50
         
         return score
+   
     def get_player(self, board_obj: board_obj) -> int:
         return board_obj.n_moves%2 
+    
     def make_move(self, board_obj: board_obj, move:tuple) -> None:
         # NOTE: there is no safety check in here, we deal with error handling elsewhere.
         
