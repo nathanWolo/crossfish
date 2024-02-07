@@ -21,8 +21,9 @@ from bots import (random_bot, line_completer_bot, minimax_ref,
                     crossfish_v13, #eval tweak
                     crossfish_v14, #fp margin tweak
                     crossfish_v15, #rfp margin tweak
+                    crossfish_v16 #lmr
                   )
-from crossfish import crossfish_v16
+from crossfish import crossfish_v17
 from n_def_bot import defense_bot
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
@@ -214,5 +215,5 @@ def faceoff_parallel(agent1, agent2, ngames=100, njobs=-1):
         formatted_elo = "{:.2f}".format(elo_info['elo_diff'])
         formatted_ci = "{:.2f}".format(elo_info['ci'])
         print(f'batch {i}/{ngames//batch_size}, W: {t_wins}, L: {t_losses}, D: {t_draws}, elo diff: {formatted_elo} +/- {formatted_ci}, LOS: {formatted_los}')
-# faceoff_sequential(crossfish_v16(), crossfish_v5(), ngames=20, visualize=True, n_random_moves=4)
-faceoff_parallel(crossfish_v16, crossfish_v15, ngames=200000, njobs=-1)    
+# faceoff_sequential(crossfish_v17(), crossfish_v5(), ngames=20, visualize=True, n_random_moves=4)
+faceoff_parallel(crossfish_v17, crossfish_v16, ngames=200000, njobs=-1)    

@@ -23,18 +23,16 @@ class board_obj:
         # Append row to arr
         self.hist = np.vstack((self.hist, row_to_append))
         self.n_moves = gamestate['n_moves']
-class crossfish_v16:
+class crossfish_v17:
     '''
-    adding lmr
-    test result: W: 4107, L: 3335, D: 478, elo diff: 33.97 +/- 14.90, LOS: 100.00
+    removed complicated hce in favor of simple minibox score
+    test result:  W: 62974, L: 52620, D: 4814, elo diff: 29.95 +/- 3.86, LOS: 100.00
     '''
-    def __init__(self, name: str = 'Crossfish'):
-        self.name = name
+    def __init__(self):
         self.thinking_time = 0.095
         self.root_best_move = None
         self.start_time = None
         self.score = 0
-        self.root_player = 0
         self.transposition_table = dict()
         self.killer_moves = np.zeros((128, 2), dtype=np.int8) #depth, move
         self.history_table = np.zeros((2, 9, 9), dtype=np.uint16) #player (0 or 1), miniboard, move
@@ -54,7 +52,6 @@ class crossfish_v16:
         '''
         b_obj = board_obj()
         b_obj.build_from_dict_gamestate(board_dict)
-        self.root_player = b_obj.n_moves % 2
         return self.get_best_move(b_obj)
     
     def get_best_move(self, board: board_obj):
@@ -158,7 +155,7 @@ class crossfish_v16:
                 lmr_val = 1 #late move reductions, TODO: twiddle with this
                 #idea: moves that are at the end of the sorted list are likely to be bad, so reduce their depth
                 if move_score <= 0 and depth > 2:
-                    lmr_val += int(np.log2(move_idx + 1))
+                    lmr_val += depth // 2
                 val = -self.search(board, max(0, depth - lmr_val), ply+1, -alpha-0.1, -alpha, can_null=can_null)
                 if alpha < val and val < beta:
                     val = -self.search(board, depth-1, ply+1, -beta, -alpha, can_null=can_null)
@@ -187,63 +184,12 @@ class crossfish_v16:
         return self.minibox_score(board)
     
     def minibox_score(self, board):
-        score = (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1])) * 3
-        # '''TODO: FIND A WAY TO OPTIMIZE THIS'''
-        miniboards = self.pull_mini_boards(board.markers)
-        boxes_in_play = ~board.miniboxes[:,:,0] & ~board.miniboxes[:,:,1] & ~board.miniboxes[:,:,2]
-        two_in_a_row_eval = np.zeros(2, dtype=np.int8)
-        for p in range(2):
-            q = (p + 1) % 2  # Opponent's index
-            for b in miniboards[boxes_in_play.flatten()]:
-                b_p = b[:, :, p]
-                b_q = b[:, :, q]
-
-                # Precompute sums
-                sum_b_p_rows = np.sum(b_p, axis=1)
-                sum_b_q_rows = np.sum(b_q, axis=1)
-                sum_b_p_cols = np.sum(b_p, axis=0)
-                sum_b_q_cols = np.sum(b_q, axis=0)
-
-                # Diagonal checks
-                if np.trace(b_p) - np.trace(b_q) == 2 or \
-                np.trace(np.fliplr(b_p)) - np.trace(np.fliplr(b_q)) == 2:
-                    two_in_a_row_eval[p] += 1
-                    continue
-
-                # Row and Column checks
-                for i in range(3):
-                    if (sum_b_p_rows[i] - sum_b_q_rows[i] == 2) or \
-                    (sum_b_p_cols[i] - sum_b_q_cols[i] == 2):
-                        two_in_a_row_eval[p] += 1
-                        break
-            #check if there are any two in a row among the completed miniboards
-            b_p = board.miniboxes[:, :, p]
-            b_q = board.miniboxes[:, :, q]
-            # Precompute sums
-            sum_b_p_rows = np.sum(b_p, axis=1)
-            sum_b_q_rows = np.sum(b_q, axis=1)
-            sum_b_p_cols = np.sum(b_p, axis=0)
-            sum_b_q_cols = np.sum(b_q, axis=0)
-            # Diagonal checks
-            if np.trace(b_p) - np.trace(b_q) == 2 or \
-            np.trace(np.fliplr(b_p)) - np.trace(np.fliplr(b_q)) == 2:
-                two_in_a_row_eval[p] += 1
-            # Row and Column checks
-            for i in range(3):
-                if (sum_b_p_rows[i] - sum_b_q_rows[i] == 2) or \
-                (sum_b_p_cols[i] - sum_b_q_cols[i] == 2):
-                    two_in_a_row_eval[p] += 1
-
-        
-        score += two_in_a_row_eval[0] - two_in_a_row_eval[1]
-        #score is from perspective of player to move
-        if board.n_moves % 2 == 1:
-            score = -score      
+        score = (np.sum(board.miniboxes[:, :, 0]) - np.sum(board.miniboxes[:, :, 1])) * 3 * ((-1) ** board.n_moves)   
         return score
    
     def hash_position(self, board: board_obj) -> bytes:
         int_markers = board.markers.astype(np.int8)
-        uniboard = int_markers[:,:,self.root_player] - int_markers[:,:,((self.root_player + 1) % 2)]
+        uniboard = int_markers[:,:,0] - int_markers[:,:, 1]
         #information needed to fully describe a board: markers and active square
         return uniboard.tobytes() + board.hist[board.n_moves-1][1].tobytes()    
     
