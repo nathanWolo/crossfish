@@ -4,10 +4,17 @@
 #include <unistd.h>
 #include <chrono>
 #include <array>
-#include <cmath> // For pow
+#include <cmath>
 #include <string>
 #include <random>
 #include <stack>
+#include <future>
+#include <numeric>
+#include <thread>
+#include <array>
+#pragma GCC optimize("O3")
+#pragma GCC optimization("Ofast,unroll-loops")
+#pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
 /*
 This is a port of crossfish.py to C++.
 Crossfish was my entry to the UVic AI Ultimate Tic Tac Toe competition in 2024, where it won first place.    
@@ -26,13 +33,13 @@ struct Move {
 class GlobalBoard {
     private:
         std::array<MiniBoard, 9> mini_boards;
-        uint16_t miniboard_mask = (1 << 9) - 1;
+        int miniboard_mask = (1 << 9) - 1;
         /*
         0 1 2 
         3 4 5
         6 7 8
         */
-        std::array<uint16_t, 8> win_masks = {(1 << 0) + (1 << 1) + (1 << 2), 
+        std::array<int, 8> win_masks = {(1 << 0) + (1 << 1) + (1 << 2), 
                                             (1 << 3) + (1 << 4) + (1 << 5), 
                                             (1 << 6) + (1 << 7) + (1 << 8), 
                                             (1 << 0) + (1 << 3) + (1 << 6), 
@@ -75,7 +82,7 @@ class GlobalBoard {
             mini_boards[move.mini_board].markers[n_moves % 2] &= miniboard_mask; //make sure that only the last 9 bits are in use
             
             //check if the miniboard is won
-            for (int i = 0; i < 8; i++) {
+            for (int i = 0; i < win_masks.size(); i++) {
                 if ((mini_boards[move.mini_board].markers[n_moves % 2] & win_masks[i]) == win_masks[i]) {
                     mini_board_states[n_moves % 2] |= (1 << move.mini_board);
                     break;
@@ -209,8 +216,8 @@ class Crossfish {
                 search(board, depth, 0, min_val, max_val);
                 depth++;
             }
-            std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
-            " Score: " << root_score << " Nodes: " << nodes << std::endl;
+            // std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
+            // " Score: " << root_score << " Nodes: " << nodes << std::endl;
             return root_best_move;
         }
         int search(GlobalBoard board, int depth, int ply, int alpha, int beta) {
@@ -273,26 +280,15 @@ class Crossfish {
         }
 };
 
-
-
-int main()
-{
+std::array<int, 3> play_vs_random() {
     int wins = 0;
     int draws = 0;
     int losses = 0;
-    for (int games = 0; games < 100; games++) {
     Crossfish crossfish;
     GlobalBoard board;
     // game loop
     while (board.checkWinner() == -1){
         if (board.n_moves % 2 == 0) {
-            //get human input from stdin in the form minibox square
-            // int minibox;
-            // int square;
-            // std::cin >> minibox >> square;
-            // Move playerMove = {minibox, square};
-            // board.makeMove(playerMove);
-            // make a random move
             std::vector<Move> legal_moves = board.getLegalMoves();
             std::random_device rd;
             int low = 0;
@@ -309,24 +305,107 @@ int main()
             Move best_move = crossfish.getMove(board);
             board.makeMove(best_move);
         }
-        board.print_board();
+        // board.print_board();
 
     }
     //print winner 
     int winner = board.checkWinner();
     if (winner == 0) {
-        std::cerr << "Player 0 wins" << std::endl;
         losses++;
     }
     else if (winner == 1) {
-        std::cerr << "Player 1 wins" << std::endl;
         wins++;
     }
     else {
-        std::cerr << "Draw" << std::endl;
         draws++;
     }
+    return {wins, draws, losses};
+}
+Move grid_coord_to_move(int row, int col) {
+    int mini_board = (row / 3) * 3 + (col / 3);
+    int square = (row % 3) * 3 + (col % 3);
+    Move move = {mini_board, square};
+    return move;
+}
+
+std::array<int, 2> move_to_grid_coord(Move move) {
+    int row = (move.mini_board / 3) * 3 + (move.square / 3);
+    int col = (move.mini_board % 3) * 3 + (move.square % 3);
+    std::array<int, 2> grid_coord = {row, col};
+    return grid_coord;
+}
+
+
+
+// Function to aggregate results from multiple runs
+std::array<int, 3> aggregate_results(std::vector<std::future<std::array<int, 3>>>& futures) {
+    std::array<int, 3> total = {0, 0, 0};
+    for (auto& future : futures) {
+        const auto result = future.get();
+        total[0] += result[0];
+        total[1] += result[1];
+        total[2] += result[2];
     }
-    std::cerr << "Wins: " << wins << " Draws: " << draws << " Losses: " << losses << std::endl;
+    return total;
+}
+
+// float elo_difference(int wins, int draws, int losses) {
+
+// }
+
+
+int main() {
+    int n_batches = 10;
+    std::array<int, 3> total = {0,0,0};
+    const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of concurrent threads supported.
+    std::cout << "Running on " << n_threads << " threads." << std::endl;
+    for (int n = 0; n < n_batches; n++) {
+        std::vector<std::future<std::array<int, 3>>> futures;
+
+        for(unsigned int i = 0; i < n_threads; ++i) {
+            // Launching the function asynchronously on each thread
+            futures.push_back(std::async(std::launch::async, play_vs_random));
+        }
+
+        // Aggregate the results
+        std::array<int, 3>  res = aggregate_results(futures);
+        for (int i = 0; i < 3; i++) {
+            total[i] += res[i];
+        }
+        
+        std::cout << "Wins: " << total[0] << " Draws: " << total[1] << " Losses: " << total[2] << std::endl;
+    }
     return 0;
-} 
+}
+
+
+//main function for codingame
+// int main()
+// {
+
+//     Crossfish crossfish;
+//     GlobalBoard board;
+//     // game loop
+//     while (1) {
+//         int opponent_row;
+//         int opponent_col;
+//         std::cin >> opponent_row >> opponent_col; std::cin.ignore();
+//         // int valid_action_count;
+//         // std::cin >> valid_action_count; std::cin.ignore();
+//         // for (int i = 0; i < valid_action_count; i++) {
+//         //     int row;
+//         //     int col;
+//         //     std::cin >> row >> col; std::cin.ignore();
+//         // }
+//         if (opponent_row != -1) {
+//             Move opponent_move = grid_coord_to_move(opponent_row, opponent_col);
+//             board.makeMove(opponent_move);
+//             // std::cerr << "Opponent move: " << opponent_move.mini_board << " " << opponent_move.square << std::endl;
+//         }
+//         Move best_move = crossfish.getMove(board);
+//         board.makeMove(best_move);
+//         std::array<int, 2> grid_coord = move_to_grid_coord(best_move);
+//         // board.print_board();
+//         std::cout << grid_coord[0] << " " << grid_coord[1] << std::endl;
+//     }
+// }

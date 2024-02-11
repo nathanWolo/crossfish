@@ -445,23 +445,12 @@ while True:
     #     row, col = [int(j) for j in input().split()]
     #     valid_actions.append((row, col))
     if opponent_row == -1:
-        crossfish.thinking_time = 0.9
-        crossfish.move(crossfish.pull_dictionary(b))
-        crossfish.make_move(b, (4,4))
-        crossfish.thinking_time = 0.095
+        crossfish.make_move(b, (4, 4))
         print(4, 4)
 
     else:
+        #select a random move
         crossfish.make_move(b, (opponent_row, opponent_col))
-        if b.n_moves == 1:
-            crossfish.thinking_time = 0.9
-        else:
-            crossfish.thinking_time = 0.095
-    
-
-        # Write an action using print
-        # print(valid_actions, file=sys.stderr, flush=True)
-        m = crossfish.move(crossfish.pull_dictionary(b))
-        crossfish.make_move(b, m)
-
-        print(m[0], m[1])
+        move = crossfish.get_best_move(b)
+        crossfish.make_move(b, move)
+        print(move[0], move[1])

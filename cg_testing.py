@@ -100,7 +100,7 @@ def faceoff_sequential(agent1_cmd, agent2_cmd, ngames=100, visualize=False):
         prev_move = '-1 -1'
         for i in range(81): # up to 81 moves per game.
             #alternating who goes first
-            # time.sleep(5)
+            # time.sleep(1)
             if j % 2 == i % 2:
                 move = agent1.send_move(prev_move)
 
@@ -108,12 +108,14 @@ def faceoff_sequential(agent1_cmd, agent2_cmd, ngames=100, visualize=False):
                 move_row, move_col = [int(i) for i in move.split()]
                 #check move is legal
                 if not ops.check_move_is_valid(my_board, (move_row, move_col)):
-                    print(f'AGENT1 MADE AN ILLEGAL MOVE')
+                    print(f'AGENT1 MADE AN ILLEGAL MOVE {(move_row, move_col)}')
             else:
                 move = agent2.send_move(prev_move)
                 prev_move = move
                 move_row, move_col = [int(i) for i in move.split()]
+                # print(f'agent2 makes move: {move_row, move_col}')
                 #check move is legal
+                # print(f'agent2 legal moves: {ops.get_valid_moves(my_board)}')
                 if not ops.check_move_is_valid(my_board, (move_row, move_col)):
                     print(f'AGENT2 MADE AN ILLEGAL MOVE')
             ops.make_move(my_board, (move_row, move_col))
@@ -179,4 +181,4 @@ def faceoff_sequential(agent1_cmd, agent2_cmd, ngames=100, visualize=False):
     return {'win':win_counter, 'loss':loss_counter, 'draw':draw_counter, 'elo_diff':elo_diff, 'elo_diff_ci +/': diff}
 
 
-faceoff_sequential(['./crossfish'], ['python', 'cg_random.py'], ngames=10, visualize=True)
+faceoff_sequential(['./crossfish'], ['python', 'crossfish_cg.py'], ngames=10, visualize=True)
