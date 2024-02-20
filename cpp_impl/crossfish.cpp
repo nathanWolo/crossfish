@@ -40,7 +40,7 @@ struct TTEntry {
 
 class GlobalBoard {
     private:
-        std::array<MiniBoard, 9> mini_boards;
+    public:
         int miniboard_mask = (1 << 9) - 1;
         /*
         0 1 2 
@@ -55,7 +55,7 @@ class GlobalBoard {
                                             (1 << 2) + (1 << 5) + (1 << 8), 
                                             (1 << 0) + (1 << 4) + (1 << 8), 
                                             (1 << 2) + (1 << 4) + (1 << 6)};
-    public:
+        std::array<MiniBoard, 9> mini_boards;
         std::array<int, 3> mini_board_states = {0, 0, 0}; // 0 = p0, 1 = p1, 2 = draw
         std::stack<Move> move_history;
         uint64_t zobrist_hash = 0;
@@ -350,16 +350,19 @@ class Crossfish {
                 // std::cout << board.checkWinner() << std::endl;
             }
 
-            //check if the TT move is in the legal moves, and if it is, make it the first move
-            if (entry.best_move.mini_board != 99) {
-                for (int i = 0; i < legal_moves.size(); i++) {
-                    if (legal_moves[i].mini_board == entry.best_move.mini_board && legal_moves[i].square == entry.best_move.square) {
-                        Move temp = legal_moves[0];
-                        legal_moves[0] = legal_moves[i];
-                        legal_moves[i] = temp;
-                        break;
-                    }
+            std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board);
+            //sort on moves and scores, with scores as the key
+            for (int i = 1; i < legal_moves.size(); i++) {
+                int key = scores[i];
+                Move key_move = legal_moves[i];
+                int j = i - 1;
+                while (j >= 0 && scores[j] < key) {
+                    scores[j + 1] = scores[j];
+                    legal_moves[j + 1] = legal_moves[j];
+                    j = j - 1;
                 }
+                scores[j + 1] = key;
+                legal_moves[j + 1] = key_move;
             }
 
             Move best_move = legal_moves[0];
@@ -395,6 +398,33 @@ class Crossfish {
             return best_val;
 
         }
+        std::vector<int> get_move_scores(std::vector<Move> moves, Move tt_move, GlobalBoard board) {
+            std::vector<int> scores;
+            for (int i = 0; i < moves.size(); i++) {
+                int move_score = 0;
+                if (moves[i].mini_board == tt_move.mini_board && moves[i].square == tt_move.square) {
+                    move_score += 1000;
+                }
+
+                //if it wins a miniboard
+                int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
+                for (int mask = 0; mask < board.win_masks.size(); mask++) {
+                    if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
+                        move_score += 10;
+                        break;
+                    }
+                }
+                //if it sends the opponent to a won or drawn miniboard
+                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                if ((out_of_play & (1 << moves[i].square)) != 0) {
+                    move_score -= 50;
+                }
+                scores.push_back(move_score);
+            }
+            return scores;
+            
+        }
+
         int evaluate(GlobalBoard board) {
             /*use bitscan to count number of won miniboards for both players*/
             int p0_won = __builtin_popcount(board.mini_board_states[0]);

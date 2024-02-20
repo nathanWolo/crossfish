@@ -134,7 +134,16 @@ def faceoff_sequential(agent1_cmd, agent2_cmd, ngames=100, visualize=False):
                     #check if agent2 won
                     winner = ops.get_winner(my_board)
                     if 'stale' in winner:
-                        draw_counter += 1
+                        # draw_counter += 1
+                        #winner is player with more won boards
+                        p0_mini_wins = np.sum(my_board.miniboxes[:,:,0])
+                        p1_mini_wins = np.sum(my_board.miniboxes[:,:,1])
+                        if p0_mini_wins > p1_mini_wins:
+                            win_counter += 1
+                        elif p0_mini_wins < p1_mini_wins:
+                            loss_counter += 1
+                        else:
+                            draw_counter += 1
                     else:
                         loss_counter += 1
                 break
@@ -179,4 +188,4 @@ def faceoff_sequential(agent1_cmd, agent2_cmd, ngames=100, visualize=False):
     return {'win':win_counter, 'loss':loss_counter, 'draw':draw_counter, 'elo_diff':elo_diff, 'elo_diff_ci +/': diff}
 
 
-faceoff_sequential(['./cpp_impl/crossfish'], ['python', 'python_impl/cg_random.py'], ngames=100, visualize=True)
+faceoff_sequential(['./cpp_impl/crossfish'], ['python', 'python_impl/crossfish_cg.py'], ngames=100, visualize=False)
