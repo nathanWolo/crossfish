@@ -276,7 +276,7 @@ class GlobalBoard {
 
 };
 
-class CrossfishDev {
+class CrossfishPrev {
     private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
@@ -433,7 +433,8 @@ class CrossfishDev {
         }
 };
 
-class CrossfishPrev {
+
+class CrossfishDev {
     private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
@@ -443,12 +444,16 @@ class CrossfishPrev {
     public:
         int root_score;
         int nodes;
+        std::array<Move, 128> killer_moves;
         static const int tt_size = 1 << 24;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
         Move getMove(GlobalBoard board) {
             nodes = 0;
             root_score = 0;
             root_best_move = board.getLegalMoves()[0];
+
+            //clear killers
+            killer_moves = std::array<Move, 128>();
             start_time = std::chrono::high_resolution_clock::now();
             int depth = 1;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -504,16 +509,19 @@ class CrossfishPrev {
                 // std::cout << board.checkWinner() << std::endl;
             }
 
-            //check if the TT move is in the legal moves, and if it is, make it the first move
-            if (entry.best_move.mini_board != 99) {
-                for (int i = 0; i < legal_moves.size(); i++) {
-                    if (legal_moves[i].mini_board == entry.best_move.mini_board && legal_moves[i].square == entry.best_move.square) {
-                        Move temp = legal_moves[0];
-                        legal_moves[0] = legal_moves[i];
-                        legal_moves[i] = temp;
-                        break;
-                    }
+            std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
+            //sort on moves and scores, with scores as the key
+            for (int i = 1; i < legal_moves.size(); i++) {
+                int key = scores[i];
+                Move key_move = legal_moves[i];
+                int j = i - 1;
+                while (j >= 0 && scores[j] < key) {
+                    scores[j + 1] = scores[j];
+                    legal_moves[j + 1] = legal_moves[j];
+                    j = j - 1;
                 }
+                scores[j + 1] = key;
+                legal_moves[j + 1] = key_move;
             }
 
             Move best_move = legal_moves[0];
@@ -533,6 +541,7 @@ class CrossfishPrev {
                 }
                 alpha = std::max(alpha, best_val);
                 if (alpha >= beta) {
+                    killer_moves[ply] = legal_moves[i];
                     break;
                 }
             }
@@ -549,6 +558,48 @@ class CrossfishPrev {
             return best_val;
 
         }
+        std::vector<int> get_move_scores(std::vector<Move> moves, Move tt_move, GlobalBoard board, int ply) {
+            std::vector<int> scores;
+            for (int i = 0; i < moves.size(); i++) {
+                int move_score = 0;
+                if (moves[i].mini_board == tt_move.mini_board && moves[i].square == tt_move.square) {
+                    move_score += 1000;
+                }
+
+                //is it a killer move?
+                if (moves[i].mini_board == killer_moves[ply].mini_board && moves[i].square == killer_moves[ply].square) {
+                    move_score += 900;
+                }
+
+                //if it wins a miniboard
+                int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
+                int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
+                for (int mask = 0; mask < board.win_masks.size(); mask++) {
+                    if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
+                        move_score += 50;
+                        break;
+                    }
+                }
+
+                //if it blocks a win
+                for (int mask = 0; mask < board.win_masks.size(); mask++) {
+                    if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
+                        move_score += 50;
+                        break;
+                    }
+                }
+
+                //if it sends the opponent to a won or drawn miniboard
+                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                if ((out_of_play & (1 << moves[i].square)) != 0) {
+                    move_score -= 75;
+                }
+                scores.push_back(move_score);
+            }
+            return scores;
+            
+        }
+
         int evaluate(GlobalBoard board) {
             /*use bitscan to count number of won miniboards for both players*/
             int p0_won = __builtin_popcount(board.mini_board_states[0]);

@@ -279,7 +279,7 @@ class GlobalBoard {
 
 };
 
-class Crossfish {
+class CrossfishDev {
     private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
@@ -289,12 +289,16 @@ class Crossfish {
     public:
         int root_score;
         int nodes;
+        std::array<Move, 128> killer_moves;
         static const int tt_size = 1 << 24;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
         Move getMove(GlobalBoard board) {
             nodes = 0;
             root_score = 0;
             root_best_move = board.getLegalMoves()[0];
+
+            //clear killers
+            killer_moves = std::array<Move, 128>();
             start_time = std::chrono::high_resolution_clock::now();
             int depth = 1;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -302,8 +306,8 @@ class Crossfish {
                 search(board, depth, 0, min_val, max_val);
                 depth++;
             }
-            std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
-            " Score: " << root_score << " Nodes: " << nodes << std::endl;
+            // std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
+            // " Score: " << root_score << " Nodes: " << nodes << std::endl;
             return root_best_move;
         }
         int search(GlobalBoard board, int depth, int ply, int alpha, int beta) {
@@ -350,7 +354,7 @@ class Crossfish {
                 // std::cout << board.checkWinner() << std::endl;
             }
 
-            std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board);
+            std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key
             for (int i = 1; i < legal_moves.size(); i++) {
                 int key = scores[i];
@@ -382,6 +386,7 @@ class Crossfish {
                 }
                 alpha = std::max(alpha, best_val);
                 if (alpha >= beta) {
+                    killer_moves[ply] = legal_moves[i];
                     break;
                 }
             }
@@ -398,7 +403,7 @@ class Crossfish {
             return best_val;
 
         }
-        std::vector<int> get_move_scores(std::vector<Move> moves, Move tt_move, GlobalBoard board) {
+        std::vector<int> get_move_scores(std::vector<Move> moves, Move tt_move, GlobalBoard board, int ply) {
             std::vector<int> scores;
             for (int i = 0; i < moves.size(); i++) {
                 int move_score = 0;
@@ -406,18 +411,33 @@ class Crossfish {
                     move_score += 1000;
                 }
 
+                //is it a killer move?
+                if (moves[i].mini_board == killer_moves[ply].mini_board && moves[i].square == killer_moves[ply].square) {
+                    move_score += 900;
+                }
+
                 //if it wins a miniboard
                 int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
+                int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 10;
+                        move_score += 50;
                         break;
                     }
                 }
+
+                //if it blocks a win
+                for (int mask = 0; mask < board.win_masks.size(); mask++) {
+                    if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
+                        move_score += 50;
+                        break;
+                    }
+                }
+
                 //if it sends the opponent to a won or drawn miniboard
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
-                    move_score -= 50;
+                    move_score -= 75;
                 }
                 scores.push_back(move_score);
             }
@@ -468,7 +488,7 @@ std::array<int, 3> aggregate_results(std::vector<std::future<std::array<int, 3>>
 int main()
 {
 
-    Crossfish crossfish;
+    CrossfishDev crossfish;
     GlobalBoard board;
     // game loop
     while (1) {
