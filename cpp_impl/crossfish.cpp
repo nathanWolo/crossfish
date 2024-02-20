@@ -30,6 +30,14 @@ struct Move {
     int square = 99;
 };
 
+struct TTEntry {
+    int depth;
+    int score;
+    int flag;
+    uint64_t zobrist_hash;
+    Move best_move;
+};
+
 class GlobalBoard {
     private:
         std::array<MiniBoard, 9> mini_boards;
@@ -50,6 +58,12 @@ class GlobalBoard {
     public:
         std::array<int, 3> mini_board_states = {0, 0, 0}; // 0 = p0, 1 = p1, 2 = draw
         std::stack<Move> move_history;
+        uint64_t zobrist_hash = 0;
+        //random 64 bit numbers used to update zobrist hash
+        std::array<std::array<std::array<uint64_t, 9>, 9>, 2> move_hashes; //player, mini board, square
+        std::array<std::array<uint64_t, 9>, 3> mini_board_hashes; //p0/p1/draw, mini board
+        std::array<uint64_t, 9> legal_mini_board_hashes;
+        uint64_t player_to_move_hash;
         int n_moves = 0;
         void makeMove(Move move) {
             //make sure move is legal
@@ -67,7 +81,7 @@ class GlobalBoard {
             if (n_moves > 0) {
                 Move prevMove = move_history.top();
 
-                if (n_moves > 0 && (out_of_play & (1 << prevMove.square) == 0) && (move.mini_board != prevMove.square)) //we were not sent to a won or drawn board
+                if (n_moves > 0 && ((out_of_play & (1 << prevMove.square)) == 0) && (move.mini_board != prevMove.square)) //we were not sent to a won or drawn board
                     {
                         std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
                         std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
@@ -80,18 +94,23 @@ class GlobalBoard {
             move_history.push(move); //add the move to the list of moves
             mini_boards[move.mini_board].markers[n_moves % 2] |= (1 << move.square); //set the bit at the square to 1
             mini_boards[move.mini_board].markers[n_moves % 2] &= miniboard_mask; //make sure that only the last 9 bits are in use
-            
+            zobrist_hash ^= move_hashes[n_moves % 2][move.mini_board][move.square];
+            zobrist_hash ^= legal_mini_board_hashes[move.square];
+
             //check if the miniboard is won
             for (int i = 0; i < win_masks.size(); i++) {
                 if ((mini_boards[move.mini_board].markers[n_moves % 2] & win_masks[i]) == win_masks[i]) {
                     mini_board_states[n_moves % 2] |= (1 << move.mini_board);
+                    zobrist_hash ^= mini_board_hashes[n_moves % 2][move.mini_board];
                     break;
                 }
             }
             //check if the mini board is drawn
             if (((mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1]) & miniboard_mask) == miniboard_mask) {
                 mini_board_states[2] |= (1 << move.mini_board);
+                zobrist_hash ^= mini_board_hashes[2][move.mini_board];
             }
+            zobrist_hash ^= player_to_move_hash;
             n_moves++;
         }
         void unmakeMove() {
@@ -100,15 +119,28 @@ class GlobalBoard {
                 return;
             }
             n_moves--; //dec the number of moves so that the index is the same as when the move was made
+            zobrist_hash ^= player_to_move_hash;
             Move move = move_history.top();
             move_history.pop();
+
+            //check if that board was won, if it was, invert the state for it in the zobrist hash
+            if ((mini_board_states[0] & (1 << move.mini_board)) != 0) {
+                zobrist_hash ^= mini_board_hashes[0][move.mini_board];
+                mini_board_states[0] &= ~(1 << move.mini_board);
+            }
+            else if ((mini_board_states[1] & (1 << move.mini_board)) != 0) {
+                zobrist_hash ^= mini_board_hashes[1][move.mini_board];
+                mini_board_states[1] &= ~(1 << move.mini_board);
+            }
+            else if ((mini_board_states[2] & (1 << move.mini_board)) != 0) {
+                zobrist_hash ^= mini_board_hashes[2][move.mini_board];
+                mini_board_states[2] &= ~(1 << move.mini_board);
+            }
+
             mini_boards[move.mini_board].markers[n_moves % 2] &= ~(1 << move.square); //remove marker
             mini_boards[move.mini_board].markers[n_moves % 2] &= miniboard_mask; //make sure that only the last 9 bits are in use
-
-            //open up that miniboard (this was either the last move on the board, or the board was open anyways)
-            mini_board_states[0] &= ~(1 << move.mini_board);
-            mini_board_states[1] &= ~(1 << move.mini_board);
-            mini_board_states[2] &= ~(1 << move.mini_board);
+            zobrist_hash ^= move_hashes[n_moves % 2][move.mini_board][move.square];
+            zobrist_hash ^= legal_mini_board_hashes[move.square];
         }
 
         int checkWinner() {
@@ -193,6 +225,58 @@ class GlobalBoard {
             }
         }
 
+                // Copy constructor
+    GlobalBoard(const GlobalBoard& other)
+        : mini_boards(other.mini_boards), // std::array supports deep copy by default
+          miniboard_mask(other.miniboard_mask),
+          win_masks(other.win_masks),
+          mini_board_states(other.mini_board_states),
+          n_moves(other.n_moves) {
+        // Manually copy the stack, if needed. However, std::stack also supports deep copy.
+        move_history = other.move_history;
+    }
+
+    //default constructor
+    GlobalBoard() {
+        for (int i = 0; i < 9; i++) {
+            mini_boards[i] = MiniBoard();
+        }
+        int miniboard_mask = (1 << 9) - 1;
+        /*
+        0 1 2 
+        3 4 5
+        6 7 8
+        */
+        std::array<int, 8> win_masks = {(1 << 0) + (1 << 1) + (1 << 2), 
+                                            (1 << 3) + (1 << 4) + (1 << 5), 
+                                            (1 << 6) + (1 << 7) + (1 << 8), 
+                                            (1 << 0) + (1 << 3) + (1 << 6), 
+                                            (1 << 1) + (1 << 4) + (1 << 7), 
+                                            (1 << 2) + (1 << 5) + (1 << 8), 
+                                            (1 << 0) + (1 << 4) + (1 << 8), 
+                                            (1 << 2) + (1 << 4) + (1 << 6)};
+
+    
+        // 64-bit Mersenne Twister Generator
+        std::mt19937_64 rng(69420);
+        
+        // Uniform distribution across uint64_t range
+        std::uniform_int_distribution<uint64_t> dist(99999, UINT64_MAX - 1);
+        std::array<std::array<std::array<uint64_t, 9>, 9>, 2> move_hashes; //player, mini board, square
+        std::array<std::array<uint64_t, 9>, 3> mini_board_hashes; //p0/p1/draw, mini board
+        std::array<uint64_t, 9> legal_mini_board_hashes;
+        uint64_t player_to_move_hash = dist(rng);
+        for (int p = 0; p < 2; p++) {
+            for (int m = 0; m < 9; m++) {
+                for (int s = 0; s < 9; s++) {
+                    move_hashes[p][m][s] = dist(rng);
+                    mini_board_hashes[s % 3][m] = dist(rng);
+                    legal_mini_board_hashes[s] = dist(rng);
+                }
+            }
+        }
+    }
+
 };
 
 class Crossfish {
@@ -205,6 +289,8 @@ class Crossfish {
     public:
         int root_score;
         int nodes;
+        static const int tt_size = 1 << 24;
+        std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
         Move getMove(GlobalBoard board) {
             nodes = 0;
             root_score = 0;
@@ -216,8 +302,8 @@ class Crossfish {
                 search(board, depth, 0, min_val, max_val);
                 depth++;
             }
-            // std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
-            // " Score: " << root_score << " Nodes: " << nodes << std::endl;
+            std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
+            " Score: " << root_score << " Nodes: " << nodes << std::endl;
             return root_best_move;
         }
         int search(GlobalBoard board, int depth, int ply, int alpha, int beta) {
@@ -237,6 +323,22 @@ class Crossfish {
                 }
                 
             }
+            TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
+            if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
+                std::cerr << "TT HIT, SEARCH DEPTH: " << depth << " ENTRY DEPTH: " << entry.depth << std::endl;
+                if (entry.flag == 1) {
+                    alpha = std::max(alpha, entry.score);
+                }
+                else if (entry.flag == 2) {
+                    beta = std::min(beta, entry.score);
+                }
+                else {
+                    return entry.score;
+                }
+                if (alpha >= beta) {
+                    return entry.score;
+                }
+            }
             if (depth == 0) {
                 return evaluate(board);
             }
@@ -247,8 +349,22 @@ class Crossfish {
                 board.print_board();
                 // std::cout << board.checkWinner() << std::endl;
             }
+
+            //check if the TT move is in the legal moves, and if it is, make it the first move
+            if (entry.best_move.mini_board != 99) {
+                for (int i = 0; i < legal_moves.size(); i++) {
+                    if (legal_moves[i].mini_board == entry.best_move.mini_board && legal_moves[i].square == entry.best_move.square) {
+                        Move temp = legal_moves[0];
+                        legal_moves[0] = legal_moves[i];
+                        legal_moves[i] = temp;
+                        break;
+                    }
+                }
+            }
+
             Move best_move = legal_moves[0];
             int best_val = min_val;
+            int alpha_orig = alpha;
             for (int i = 0; i < legal_moves.size(); i++) {
                 board.makeMove(legal_moves[i]);
                 int val = -search(board, depth - 1, ply + 1, -beta, -alpha);
@@ -266,6 +382,16 @@ class Crossfish {
                     break;
                 }
             }
+            int flag = 0;
+            if (best_val <= alpha_orig) {
+                flag = 1;
+            }
+            else if (best_val >= beta) {
+                flag = 2;
+            }
+            TTEntry new_entry = {depth, best_val, flag, board.zobrist_hash, best_move};
+            transposition_table[board.zobrist_hash % tt_size] = new_entry;
+
             return best_val;
 
         }
@@ -280,47 +406,6 @@ class Crossfish {
         }
 };
 
-std::array<int, 3> play_vs_random() {
-    int wins = 0;
-    int draws = 0;
-    int losses = 0;
-    Crossfish crossfish;
-    GlobalBoard board;
-    // game loop
-    while (board.checkWinner() == -1){
-        if (board.n_moves % 2 == 0) {
-            std::vector<Move> legal_moves = board.getLegalMoves();
-            std::random_device rd;
-            int low = 0;
-            int high = legal_moves.size() - 1;
-            std::mt19937 eng(rd()); // Mersenne Twister engine
-
-            // Distribution in range [low, high]
-            std::uniform_int_distribution<> distr(low, high);
-            Move m = legal_moves[distr(eng)];
-            board.makeMove(m);
-
-        }
-        else {
-            Move best_move = crossfish.getMove(board);
-            board.makeMove(best_move);
-        }
-        // board.print_board();
-
-    }
-    //print winner 
-    int winner = board.checkWinner();
-    if (winner == 0) {
-        losses++;
-    }
-    else if (winner == 1) {
-        wins++;
-    }
-    else {
-        draws++;
-    }
-    return {wins, draws, losses};
-}
 Move grid_coord_to_move(int row, int col) {
     int mini_board = (row / 3) * 3 + (col / 3);
     int square = (row % 3) * 3 + (col % 3);
@@ -349,63 +434,34 @@ std::array<int, 3> aggregate_results(std::vector<std::future<std::array<int, 3>>
     return total;
 }
 
-// float elo_difference(int wins, int draws, int losses) {
-
-// }
-
-
-int main() {
-    int n_batches = 10;
-    std::array<int, 3> total = {0,0,0};
-    const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of concurrent threads supported.
-    std::cout << "Running on " << n_threads << " threads." << std::endl;
-    for (int n = 0; n < n_batches; n++) {
-        std::vector<std::future<std::array<int, 3>>> futures;
-
-        for(unsigned int i = 0; i < n_threads; ++i) {
-            // Launching the function asynchronously on each thread
-            futures.push_back(std::async(std::launch::async, play_vs_random));
-        }
-
-        // Aggregate the results
-        std::array<int, 3>  res = aggregate_results(futures);
-        for (int i = 0; i < 3; i++) {
-            total[i] += res[i];
-        }
-        
-        std::cout << "Wins: " << total[0] << " Draws: " << total[1] << " Losses: " << total[2] << std::endl;
-    }
-    return 0;
-}
-
-
 //main function for codingame
-// int main()
-// {
+int main()
+{
 
-//     Crossfish crossfish;
-//     GlobalBoard board;
-//     // game loop
-//     while (1) {
-//         int opponent_row;
-//         int opponent_col;
-//         std::cin >> opponent_row >> opponent_col; std::cin.ignore();
-//         // int valid_action_count;
-//         // std::cin >> valid_action_count; std::cin.ignore();
-//         // for (int i = 0; i < valid_action_count; i++) {
-//         //     int row;
-//         //     int col;
-//         //     std::cin >> row >> col; std::cin.ignore();
-//         // }
-//         if (opponent_row != -1) {
-//             Move opponent_move = grid_coord_to_move(opponent_row, opponent_col);
-//             board.makeMove(opponent_move);
-//             // std::cerr << "Opponent move: " << opponent_move.mini_board << " " << opponent_move.square << std::endl;
-//         }
-//         Move best_move = crossfish.getMove(board);
-//         board.makeMove(best_move);
-//         std::array<int, 2> grid_coord = move_to_grid_coord(best_move);
-//         // board.print_board();
-//         std::cout << grid_coord[0] << " " << grid_coord[1] << std::endl;
-//     }
-// }
+    Crossfish crossfish;
+    GlobalBoard board;
+    // game loop
+    while (1) {
+        int opponent_row;
+        int opponent_col;
+        std::cin >> opponent_row >> opponent_col; std::cin.ignore();
+        // int valid_action_count;
+        // std::cin >> valid_action_count; std::cin.ignore();
+        // for (int i = 0; i < valid_action_count; i++) {
+        //     int row;
+        //     int col;
+        //     std::cin >> row >> col; std::cin.ignore();
+        // }
+        // std::cerr << board.zobrist_hash << std::endl;
+        if (opponent_row != -1) {
+            Move opponent_move = grid_coord_to_move(opponent_row, opponent_col);
+            board.makeMove(opponent_move);
+            // std::cerr << "Opponent move: " << opponent_move.mini_board << " " << opponent_move.square << std::endl;
+        }
+        Move best_move = crossfish.getMove(board);
+        board.makeMove(best_move);
+        std::array<int, 2> grid_coord = move_to_grid_coord(best_move);
+        // board.print_board();
+        std::cout << grid_coord[0] << " " << grid_coord[1] << std::endl;
+    }
+}

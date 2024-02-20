@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 checkerboard_cmap = LinearSegmentedColormap.from_list('mycmap', ['lightgrey', 'white'])
 
-from operations import ops
-from board import board_obj
+from python_impl.operations import ops
+from python_impl.board import board_obj
 
 def checkerboard(shape):
     # from https://stackoverflow.com/questions/2169478/how-to-make-a-checkerboard-in-numpy

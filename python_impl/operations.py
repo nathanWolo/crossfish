@@ -1,5 +1,5 @@
 import numpy as np
-from board import board_obj
+from python_impl.board import board_obj
 
 class ops():
     lines_mask = np.array([[1,1,1,0,0,0,0,0,0], # horizontals

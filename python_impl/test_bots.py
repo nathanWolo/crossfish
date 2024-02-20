@@ -4,11 +4,11 @@ import matplotlib.pyplot as plt
 import matplotlib
 import math
 from scipy import stats
-from operations import ops
-from board import board_obj
-import vis_tools
+from python_impl.operations import ops
+from python_impl.board import board_obj
+import python_impl.vis_tools as vis_tools
 import time
-from bots import (random_bot, line_completer_bot, minimax_ref, 
+from python_impl.bots import (random_bot, line_completer_bot, minimax_ref, 
                   ab_pruning_ref, transposition_table, two_in_a_row_eval, 
                   tt_cutoffs, tt_move_ordering, non_tt_move_ordering, move_ordering_v3,
                   smaller_tt_entries_v1, negamax_v1, negamax_v2, killers_v1, history_v1,
@@ -23,8 +23,8 @@ from bots import (random_bot, line_completer_bot, minimax_ref,
                     crossfish_v15, #rfp margin tweak
                     crossfish_v16 #lmr
                   )
-from crossfish import crossfish_v17
-from n_def_bot import defense_bot
+from python_impl.crossfish import crossfish_v17
+from python_impl.n_def_bot import defense_bot
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
     for i in range(n_moves):

@@ -1,6 +1,6 @@
 import numpy as np
-from operations import ops
-from board import board_obj
+from python_impl.operations import ops
+from python_impl.board import board_obj
 class random_bot:
     '''
     this bot selects a random valid move

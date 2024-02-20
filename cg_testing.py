@@ -1,7 +1,7 @@
-from board import board_obj
-from operations import ops
+from python_impl.board import board_obj
+from python_impl.operations import ops
 import matplotlib.pyplot as plt
-import vis_tools
+import python_impl.vis_tools as vis_tools
 import matplotlib
 import numpy as np
 import copy
@@ -9,19 +9,17 @@ import matplotlib.pyplot as plt
 import matplotlib
 import math
 from scipy import stats
-from operations import ops
-from board import board_obj
-import vis_tools
+from python_impl.operations import ops
+from python_impl.board import board_obj
+import python_impl.vis_tools as vis_tools
 import time
 import sys
 import os
 import fcntl
 import select
-
-'''Purpose: test codingame UTTT submissions written in different languages against each other'''
-
 import subprocess
 from subprocess import PIPE
+'''Purpose: test codingame UTTT submissions written in different languages against each other'''
 def play_random_moves(b: board_obj, n_moves: int):
     ''' plays n_moves random moves on board b '''
     for i in range(n_moves):
@@ -181,4 +179,4 @@ def faceoff_sequential(agent1_cmd, agent2_cmd, ngames=100, visualize=False):
     return {'win':win_counter, 'loss':loss_counter, 'draw':draw_counter, 'elo_diff':elo_diff, 'elo_diff_ci +/': diff}
 
 
-faceoff_sequential(['./crossfish'], ['python', 'crossfish_cg.py'], ngames=10, visualize=True)
+faceoff_sequential(['./cpp_impl/crossfish'], ['python', 'python_impl/cg_random.py'], ngames=100, visualize=True)
