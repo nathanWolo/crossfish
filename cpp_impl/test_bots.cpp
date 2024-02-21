@@ -455,7 +455,7 @@ class CrossfishPrev {
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 50;
+                        move_score += 70;
                         break;
                     }
                 }
@@ -463,15 +463,26 @@ class CrossfishPrev {
                 //if it blocks a win
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 50;
+                        move_score += 70;
                         break;
+                    }
+                }
+
+                //if it creates an unblocked 2 in a row
+                for (int mask = 0; mask < two_in_a_row_masks.size() / 2; mask++) {
+                    if (((miniboard_markers | (1 << moves[i].square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) {
+                        if ((opp_markers & two_in_a_row_masks[mask * 2 + 1]) == 0 &&
+                        (miniboard_markers & two_in_a_row_masks[mask * 2 + 1]) == 0) {
+                            move_score += 50;
+                            break;
+                        }
                     }
                 }
 
                 //if it sends the opponent to a won or drawn miniboard
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
-                    move_score -= 75;
+                    move_score -= 250;
                 }
                 scores[i] = move_score;
             }
@@ -506,13 +517,27 @@ class CrossfishPrev {
                 
             }
 
+            //also check for 2 in a rows in the out of play miniboards
+            int p0_miniboards = board.mini_board_states[0];
+            int p1_miniboards = board.mini_board_states[1];
+            for(int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
+                if (((p0_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
+                    p0_two_in_a_row += 2;
+                }
+                if (((p1_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
+                    p1_two_in_a_row += 2;
+                }
+            }
+
             val += (p0_two_in_a_row - p1_two_in_a_row) * 50;
             return pow(-1, board.n_moves) * val;
 
         }
 };
 
-class CrossfishPrev {
+class CrossfishDev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
@@ -690,7 +715,7 @@ class CrossfishPrev {
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 50;
+                        move_score += 70;
                         break;
                     }
                 }
@@ -698,15 +723,26 @@ class CrossfishPrev {
                 //if it blocks a win
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 50;
+                        move_score += 70;
                         break;
+                    }
+                }
+
+                //if it creates an unblocked 2 in a row
+                for (int mask = 0; mask < two_in_a_row_masks.size() / 2; mask++) {
+                    if (((miniboard_markers | (1 << moves[i].square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) {
+                        if ((opp_markers & two_in_a_row_masks[mask * 2 + 1]) == 0 &&
+                        (miniboard_markers & two_in_a_row_masks[mask * 2 + 1]) == 0) {
+                            move_score += 50;
+                            break;
+                        }
                     }
                 }
 
                 //if it sends the opponent to a won or drawn miniboard
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
-                    move_score -= 75;
+                    move_score -= 250;
                 }
                 scores[i] = move_score;
             }
@@ -760,7 +796,6 @@ class CrossfishPrev {
 
         }
 };
-
 
 
 struct EloResult {
@@ -939,13 +974,13 @@ void play_game(){
         Move m = random_mover.getMove(board);
         board.makeMove(m);
     }
-    // GlobalBoard startpos = GlobalBoard(board);
+    GlobalBoard startpos = GlobalBoard(board);
     //play two games, alternating who goes first
-    // for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 2; i++) {
         int bot1_player;
         int bot2_player;
         while (board.checkWinner() == -1){
-            if (board.n_moves % 2 == 0) {
+            if (board.n_moves % 2 == i) {
                 bot1_player = board.n_moves % 2;
                 Move m = bot1.getMove(board);
                 board.makeMove(m);
@@ -979,8 +1014,8 @@ void play_game(){
                 << " Draws: " << global_total[1] << " Losses: " << global_total[2] 
                 << " Elo diff: " << elo.elo_diff << " +/- " << elo.ci << " LLR: " << sprt(global_total[0], global_total[1], global_total[2]) << std::endl;
         //reset board
-        // board = GlobalBoard(startpos);
-    // }
+        board = GlobalBoard(startpos);
+    }
 }
 
 int main() {

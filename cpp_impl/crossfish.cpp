@@ -281,18 +281,20 @@ class GlobalBoard {
 
 class CrossfishDev {
        private:
-        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
-        std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
         int min_val = -99999;
         int max_val = 99999;
     public:
+        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
+        std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
         int root_score;
         int nodes;
         std::array<Move, 128> killer_moves;
         static const int tt_size = 1 << 24;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
-
+        void set_thinking_time(std::chrono::milliseconds time) {
+            thinking_time = time;
+        }
         //0 1 2
         //3 4 5
         //6 7 8
@@ -331,7 +333,8 @@ class CrossfishDev {
 
             //clear killers
             killer_moves = std::array<Move, 128>();
-            start_time = std::chrono::high_resolution_clock::now();
+            start_time =  std::chrono::high_resolution_clock::now();
+
             int depth = 1;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
             && (depth < 50)) {
@@ -568,23 +571,29 @@ int main()
         int opponent_row;
         int opponent_col;
         std::cin >> opponent_row >> opponent_col; std::cin.ignore();
-        // int valid_action_count;
-        // std::cin >> valid_action_count; std::cin.ignore();
-        // for (int i = 0; i < valid_action_count; i++) {
-        //     int row;
-        //     int col;
-        //     std::cin >> row >> col; std::cin.ignore();
-        // }
-        // std::cerr << board.zobrist_hash << std::endl;
+        int valid_action_count;
+        std::cin >> valid_action_count; std::cin.ignore();
+        for (int i = 0; i < valid_action_count; i++) {
+            int row;
+            int col;
+            std::cin >> row >> col; std::cin.ignore();
+        }
         if (opponent_row != -1) {
             Move opponent_move = grid_coord_to_move(opponent_row, opponent_col);
             board.makeMove(opponent_move);
             // std::cerr << "Opponent move: " << opponent_move.mini_board << " " << opponent_move.square << std::endl;
         }
-        Move best_move = crossfish.getMove(board);
-        board.makeMove(best_move);
-        std::array<int, 2> grid_coord = move_to_grid_coord(best_move);
-        // board.print_board();
-        std::cout << grid_coord[0] << " " << grid_coord[1] << std::endl;
+        
+        if (opponent_row == -1) {
+            crossfish.getMove(board);
+            std::cout << 4 << " " << 4 << std::endl;
+            board.makeMove({4, 4});
+        }
+        else {
+            Move best_move = crossfish.getMove(board);
+            board.makeMove(best_move);
+            std::array<int, 2> grid_coord = move_to_grid_coord(best_move);
+            std::cout << grid_coord[0] << " " << grid_coord[1] << std::endl;
+        }
     }
 }
