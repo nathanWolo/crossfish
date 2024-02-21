@@ -508,11 +508,26 @@ class CrossfishDev {
                 
             }
 
+            //also check for 2 in a rows in the out of play miniboards
+            int p0_miniboards = board.mini_board_states[0];
+            int p1_miniboards = board.mini_board_states[1];
+            for(int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
+                if (((p0_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
+                    p0_two_in_a_row += 2;
+                }
+                if (((p1_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
+                    p1_two_in_a_row += 2;
+                }
+            }
+
             val += (p0_two_in_a_row - p1_two_in_a_row) * 50;
             return pow(-1, board.n_moves) * val;
 
         }
 };
+
 
 Move grid_coord_to_move(int row, int col) {
     int mini_board = (row / 3) * 3 + (col / 3);
