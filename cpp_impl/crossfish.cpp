@@ -280,18 +280,50 @@ class GlobalBoard {
 };
 
 class CrossfishDev {
-    private:
+       private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
         std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
-        int min_val = -9999;
-        int max_val = 9999;
+        int min_val = -99999;
+        int max_val = 99999;
     public:
         int root_score;
         int nodes;
         std::array<Move, 128> killer_moves;
         static const int tt_size = 1 << 24;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
+
+        //0 1 2
+        //3 4 5
+        //6 7 8
+        std::vector<int> two_in_a_row_masks = {
+            (1 << 0) + (1 << 1),  (1 << 2),
+            (1 << 1) + (1 << 2), (1 << 0),
+            (1 << 3) + (1 << 4), (1 << 5),
+            (1 << 4) + (1 << 5), (1 << 3),
+            (1 << 6) + (1 << 7), (1 << 8),
+            (1 << 7) + (1 << 8), (1 << 6),
+            (1 << 0) + (1 << 3), (1 << 6),
+            (1 << 3) + (1 << 6), (1 << 0),
+            (1 << 1) + (1 << 4), (1 << 7),
+            (1 << 4) + (1 << 7), (1 << 1),
+            (1 << 2) + (1 << 5), (1 << 8),
+            (1 << 5) + (1 << 8), (1 << 2),
+            (1 << 0) + (1 << 4), (1 << 8),
+            (1 << 4) + (1 << 8), (1 << 0),
+            (1 << 2) + (1 << 4), (1 << 6),
+            (1 << 4) + (1 << 6), (1 << 2),
+            (1 << 0) + (1 << 2), (1 << 1),
+            (1 << 3) + (1 << 5), (1 << 4),
+            (1 << 6) + (1 << 8), (1 << 7),
+            (1 << 0) + (1 << 6), (1 << 3),
+            (1 << 1) + (1 << 7), (1 << 4),
+            (1 << 2) + (1 << 8), (1 << 5),
+            (1 << 0) + (1 << 8), (1 << 4),
+            (1 << 2) + (1 << 6), (1 << 4)
+
+        };
+
         Move getMove(GlobalBoard board) {
             nodes = 0;
             root_score = 0;
@@ -320,7 +352,7 @@ class CrossfishDev {
             int winner = board.checkWinner();
             if (winner != -1){
                 if (winner == 2) {
-                    return evaluate(board)*10;
+                    return evaluate(board)*100;
                 }
                 else {
                     return min_val + ply; //previous player won
@@ -404,16 +436,20 @@ class CrossfishDev {
 
         }
         std::vector<int> get_move_scores(std::vector<Move> moves, Move tt_move, GlobalBoard board, int ply) {
-            std::vector<int> scores;
+            std::vector<int> scores = std::vector<int>(moves.size(), 0);
             for (int i = 0; i < moves.size(); i++) {
                 int move_score = 0;
                 if (moves[i].mini_board == tt_move.mini_board && moves[i].square == tt_move.square) {
                     move_score += 1000;
+                    scores[i] = move_score;
+                    continue;
                 }
 
                 //is it a killer move?
                 if (moves[i].mini_board == killer_moves[ply].mini_board && moves[i].square == killer_moves[ply].square) {
                     move_score += 900;
+                    scores[i] = move_score;
+                    continue;
                 }
 
                 //if it wins a miniboard
@@ -439,7 +475,7 @@ class CrossfishDev {
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
                     move_score -= 75;
                 }
-                scores.push_back(move_score);
+                scores[i] = move_score;
             }
             return scores;
             
@@ -449,8 +485,30 @@ class CrossfishDev {
             /*use bitscan to count number of won miniboards for both players*/
             int p0_won = __builtin_popcount(board.mini_board_states[0]);
             int p1_won = __builtin_popcount(board.mini_board_states[1]);
-            int val = p0_won - p1_won;
+            int val = (p0_won - p1_won) * 100;
 
+            //count two in a rows for both players
+            int p0_two_in_a_row = 0;
+            int p1_two_in_a_row = 0;
+
+            for (int miniboard = 0; miniboard < 8; miniboard++) {
+                int p0_markers = board.mini_boards[miniboard].markers[0];
+                int p1_markers = board.mini_boards[miniboard].markers[1];
+
+                for (int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
+                    if (((p0_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                    && ((p1_markers & two_in_a_row_masks[i * 2 + 1]) == 0)) {
+                        p0_two_in_a_row++;
+                    }
+                    if (((p1_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                    && ((p0_markers & two_in_a_row_masks[i * 2 + 1]) == 0)){
+                        p1_two_in_a_row++;
+                    }
+                } 
+                
+            }
+
+            val += (p0_two_in_a_row - p1_two_in_a_row) * 50;
             return pow(-1, board.n_moves) * val;
 
         }
