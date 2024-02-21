@@ -281,20 +281,18 @@ class GlobalBoard {
 
 class CrossfishDev {
        private:
+        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
+        std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
         int min_val = -99999;
         int max_val = 99999;
     public:
-        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
-        std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
         int root_score;
         int nodes;
         std::array<Move, 128> killer_moves;
         static const int tt_size = 1 << 24;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
-        void set_thinking_time(std::chrono::milliseconds time) {
-            thinking_time = time;
-        }
+
         //0 1 2
         //3 4 5
         //6 7 8
@@ -333,8 +331,7 @@ class CrossfishDev {
 
             //clear killers
             killer_moves = std::array<Move, 128>();
-            start_time =  std::chrono::high_resolution_clock::now();
-
+            start_time = std::chrono::high_resolution_clock::now();
             int depth = 1;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
             && (depth < 50)) {
@@ -460,7 +457,7 @@ class CrossfishDev {
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 50;
+                        move_score += 70;
                         break;
                     }
                 }
@@ -468,15 +465,26 @@ class CrossfishDev {
                 //if it blocks a win
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 50;
+                        move_score += 70;
                         break;
+                    }
+                }
+
+                //if it creates an unblocked 2 in a row
+                for (int mask = 0; mask < two_in_a_row_masks.size() / 2; mask++) {
+                    if (((miniboard_markers | (1 << moves[i].square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) {
+                        if ((opp_markers & two_in_a_row_masks[mask * 2 + 1]) == 0 &&
+                        (miniboard_markers & two_in_a_row_masks[mask * 2 + 1]) == 0) {
+                            move_score += 50;
+                            break;
+                        }
                     }
                 }
 
                 //if it sends the opponent to a won or drawn miniboard
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
-                    move_score -= 75;
+                    move_score -= 250;
                 }
                 scores[i] = move_score;
             }
