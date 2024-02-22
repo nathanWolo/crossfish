@@ -67,29 +67,29 @@ class GlobalBoard {
         int n_moves = 0;
         void makeMove(Move move) {
             //make sure move is legal
-            int occupied = mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1];
-            int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
-            if (((occupied & (1 << move.square)) != 0)
-            || ((out_of_play & (1 << move.mini_board)) != 0)
-            || move.mini_board > 8 || move.square > 8 || move.mini_board < 0 || move.square < 0)
-            {
-                std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
-                std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
-                print_board();
-                std::exit(EXIT_FAILURE); // Terminate the program
-            }
-            if (n_moves > 0) {
-                Move prevMove = move_history.top();
+            // int occupied = mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1];
+            // int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
+            // if (((occupied & (1 << move.square)) != 0)
+            // || ((out_of_play & (1 << move.mini_board)) != 0)
+            // || move.mini_board > 8 || move.square > 8 || move.mini_board < 0 || move.square < 0)
+            // {
+            //     std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
+            //     std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
+            //     print_board();
+            //     std::exit(EXIT_FAILURE); // Terminate the program
+            // }
+            // if (n_moves > 0) {
+            //     Move prevMove = move_history.top();
 
-                if (n_moves > 0 && ((out_of_play & (1 << prevMove.square)) == 0) && (move.mini_board != prevMove.square)) //we were not sent to a won or drawn board
-                    {
-                        std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
-                        std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
-                        print_board();
-                        std::exit(EXIT_FAILURE); // Terminate the program
+            //     if (n_moves > 0 && ((out_of_play & (1 << prevMove.square)) == 0) && (move.mini_board != prevMove.square)) //we were not sent to a won or drawn board
+            //         {
+            //             std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
+            //             std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
+            //             print_board();
+            //             std::exit(EXIT_FAILURE); // Terminate the program
                     
-                    }
-            }
+            //         }
+            // }
 
             move_history.push(move); //add the move to the list of moves
             mini_boards[move.mini_board].markers[n_moves % 2] |= (1 << move.square); //set the bit at the square to 1
@@ -153,7 +153,17 @@ class GlobalBoard {
                 }
             }
             if ((mini_board_states[0] | mini_board_states[1] | mini_board_states[2]) == miniboard_mask) {
-                return 2;
+                // return 2;
+                //winner has more won miniboards
+                if (__builtin_popcount(mini_board_states[0]) > __builtin_popcount(mini_board_states[1])) {
+                    return 0;
+                }
+                else if (__builtin_popcount(mini_board_states[0]) < __builtin_popcount(mini_board_states[1])) {
+                    return 1;
+                }
+                else {
+                    return 2;
+                }
             }
             return -1;
         }
@@ -284,13 +294,13 @@ class CrossfishDev {
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
         std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
-        int min_val = -99999;
-        int max_val = 99999;
+        int min_val = -9999;
+        int max_val = 9999;
     public:
         int root_score;
         int nodes;
         std::array<Move, 128> killer_moves;
-        static const int tt_size = 1 << 24;
+        static const int tt_size = 1 << 23;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
         //0 1 2
@@ -333,13 +343,38 @@ class CrossfishDev {
             killer_moves = std::array<Move, 128>();
             start_time = std::chrono::high_resolution_clock::now();
             int depth = 1;
+            int alpha = min_val;
+            int beta = max_val;
+            int aspiration_window = 250;
+            int searches = 0;
+            int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
             && (depth < 50)) {
-                search(board, depth, 0, min_val, max_val);
-                depth++;
+                int eval = search(board, depth, 0, alpha, beta);
+                if (eval <= alpha ) {
+                    //fail low
+                    researches++;
+                    aspiration_window *= 3;
+                    alpha -= aspiration_window;
+
+                }
+                else if (eval >= beta) {
+                    //fail high
+                    researches++;
+                    aspiration_window *= 3;
+                    beta += aspiration_window;
+                }
+                else {
+                    alpha = eval - aspiration_window;
+                    beta = eval + aspiration_window;
+                    depth++;
+                }
+                // depth++;
+                searches++;
             }
             // std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
             // " Score: " << root_score << " Nodes: " << nodes << std::endl;
+            // std::cerr << "Searches: " << searches << " Researches: " << researches << std::endl;
             return root_best_move;
         }
         int search(GlobalBoard board, int depth, int ply, int alpha, int beta) {
@@ -352,7 +387,7 @@ class CrossfishDev {
             int winner = board.checkWinner();
             if (winner != -1){
                 if (winner == 2) {
-                    return evaluate(board)*100;
+                    return 0;
                 }
                 else {
                     return min_val + ply; //previous player won
@@ -538,7 +573,6 @@ class CrossfishDev {
 
         }
 };
-
 
 Move grid_coord_to_move(int row, int col) {
     int mini_board = (row / 3) * 3 + (col / 3);

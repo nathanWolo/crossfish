@@ -188,4 +188,4 @@ def faceoff_sequential(agent1_cmd, agent2_cmd, ngames=100, visualize=False):
     return {'win':win_counter, 'loss':loss_counter, 'draw':draw_counter, 'elo_diff':elo_diff, 'elo_diff_ci +/': diff}
 
 
-faceoff_sequential(['./cpp_impl/crossfish'], ['python', 'python_impl/crossfish_cg.py'], ngames=100, visualize=False)
+faceoff_sequential(['./cpp_impl/crossfish'], ['python', 'python_impl/crossfish_cg.py'], ngames=100, visualize=True)
