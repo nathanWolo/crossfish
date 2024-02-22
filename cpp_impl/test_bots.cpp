@@ -627,7 +627,7 @@ class CrossfishDev {
             int depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 250;
+            int aspiration_window = 200;
             int searches = 0;
             int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -703,6 +703,10 @@ class CrossfishDev {
                 // std::cout << board.checkWinner() << std::endl;
             }
 
+            int stand_pat = evaluate(board);
+            int futility_margin = 100;
+            bool can_futility_prune = (stand_pat + futility_margin * depth <= alpha); 
+            
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key
             for (int i = 1; i < legal_moves.size(); i++) {
@@ -722,6 +726,9 @@ class CrossfishDev {
             int best_val = min_val;
             int alpha_orig = alpha;
             for (int i = 0; i < legal_moves.size(); i++) {
+                if (can_futility_prune && i > 0 && scores[i] <= 0) {
+                    break;
+                }
                 board.makeMove(legal_moves[i]);
                 int val = -search(board, depth - 1, ply + 1, -beta, -alpha);
                 board.unmakeMove();
@@ -932,7 +939,7 @@ EloResult calc_elo_diff(int wins, int losses, int draws) {
         if (max_dev == 1 || min_dev == 1) {
             diff = std::numeric_limits<double>::infinity();
         } else {
-            diff = (-400 * log10(1 / max_dev - 1)) - (-400 * log10(1 / min_dev - 1));
+            diff = ((-400 * log10(1 / max_dev - 1)) - (-400 * log10(1 / min_dev - 1)))/2;
         }
     } catch (...) {
         diff = std::numeric_limits<double>::infinity();
