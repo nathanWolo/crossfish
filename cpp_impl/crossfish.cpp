@@ -372,8 +372,8 @@ class CrossfishDev {
                 // depth++;
                 searches++;
             }
-            std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
-            " Score: " << root_score << " Nodes: " << nodes << std::endl;
+            // std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
+            // " Score: " << root_score << " Nodes: " << nodes << std::endl;
             // std::cerr << "Searches: " << searches << " Researches: " << researches << std::endl;
             return root_best_move;
         }
@@ -543,15 +543,22 @@ class CrossfishDev {
             /*use bitscan to count number of won miniboards for both players*/
             int p0_won = __builtin_popcount(board.mini_board_states[0]);
             int p1_won = __builtin_popcount(board.mini_board_states[1]);
-            int val = (p0_won - p1_won) * 100;
-
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2]; 
             //count two in a rows for both players
             int p0_two_in_a_row = 0;
             int p1_two_in_a_row = 0;
-
+            int p0_center_squares_held = 0;
+            int p1_center_squares_held = 0;
+            
             for (int miniboard = 0; miniboard < 8; miniboard++) {
+                if ((out_of_play & ( 1<< miniboard) != 0)) {
+                    continue;
+                }
                 int p0_markers = board.mini_boards[miniboard].markers[0];
                 int p1_markers = board.mini_boards[miniboard].markers[1];
+
+                //make sure board is in play
+
 
                 for (int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
                     if (((p0_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
@@ -562,30 +569,41 @@ class CrossfishDev {
                     && ((p0_markers & two_in_a_row_masks[i * 2 + 1]) == 0)){
                         p1_two_in_a_row++;
                     }
+                }
+
+                if ((p0_markers & (1 << 4)) != 0) {
+                    p0_center_squares_held++;
                 } 
+                else if ((p1_markers & (1 << 4)) != 0) {
+                    p1_center_squares_held++;
+                }
                 
             }
 
             //also check for 2 in a rows in the out of play miniboards
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
+            int p0_global_two_in_a_row = 0;
+            int p1_global_two_in_a_row = 0;
             for(int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
                 if (((p0_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
-                    p0_two_in_a_row += 2;
+                    p0_global_two_in_a_row += 1;
                 }
                 if (((p1_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
-                    p1_two_in_a_row += 2;
+                    p1_global_two_in_a_row += 1;
                 }
             }
 
+            int val = (p0_won - p1_won) * 200;
+            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 100;
             val += (p0_two_in_a_row - p1_two_in_a_row) * 50;
+            // val += (p0_center_squares_held - p1_center_squares_held) * 10;
             return pow(-1, board.n_moves) * val;
 
         }
 };
-
 Move grid_coord_to_move(int row, int col) {
     int mini_board = (row / 3) * 3 + (col / 3);
     int square = (row % 3) * 3 + (col % 3);
