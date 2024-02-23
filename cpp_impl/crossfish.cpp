@@ -345,7 +345,7 @@ class CrossfishDev {
             int depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 250;
+            int aspiration_window = 200;
             int searches = 0;
             int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -372,8 +372,8 @@ class CrossfishDev {
                 // depth++;
                 searches++;
             }
-            // std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
-            // " Score: " << root_score << " Nodes: " << nodes << std::endl;
+            std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
+            " Score: " << root_score << " Nodes: " << nodes << std::endl;
             // std::cerr << "Searches: " << searches << " Researches: " << researches << std::endl;
             return root_best_move;
         }
@@ -396,7 +396,6 @@ class CrossfishDev {
             }
             TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
             if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
-                std::cerr << "TT HIT, SEARCH DEPTH: " << depth << " ENTRY DEPTH: " << entry.depth << std::endl;
                 if (entry.flag == 1) {
                     alpha = std::max(alpha, entry.score);
                 }
@@ -421,6 +420,16 @@ class CrossfishDev {
                 // std::cout << board.checkWinner() << std::endl;
             }
 
+            int stand_pat = evaluate(board);
+
+            int reverse_futility_margin = 100;
+            if (stand_pat - reverse_futility_margin * depth >= beta) {
+                return beta;
+            }
+
+            int futility_margin = 100;
+            bool can_futility_prune = (stand_pat + futility_margin * depth <= alpha); 
+            
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key
             for (int i = 1; i < legal_moves.size(); i++) {
@@ -440,6 +449,9 @@ class CrossfishDev {
             int best_val = min_val;
             int alpha_orig = alpha;
             for (int i = 0; i < legal_moves.size(); i++) {
+                if (can_futility_prune && i > 0 && scores[i] == 0) { //dont search quiet moves in already losing positions
+                    continue;
+                }
                 board.makeMove(legal_moves[i]);
                 int val = -search(board, depth - 1, ply + 1, -beta, -alpha);
                 board.unmakeMove();

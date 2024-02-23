@@ -62,6 +62,18 @@ class GlobalBoard {
         std::array<uint64_t, 9> legal_mini_board_hashes;
         uint64_t player_to_move_hash;
         int n_moves = 0;
+        bool prev_move_was_pass = false;
+        void pass() {
+            n_moves++;
+            zobrist_hash ^= player_to_move_hash;
+            prev_move_was_pass = true;
+        }
+        void unpass() {
+            n_moves--;
+            zobrist_hash ^= player_to_move_hash;
+            prev_move_was_pass = false;
+        }
+
         void makeMove(Move move) {
             //make sure move is legal
             int occupied = mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1];
@@ -78,7 +90,7 @@ class GlobalBoard {
             if (n_moves > 0) {
                 Move prevMove = move_history.top();
 
-                if (n_moves > 0 && ((out_of_play & (1 << prevMove.square)) == 0) && (move.mini_board != prevMove.square)) //we were not sent to a won or drawn board
+                if (n_moves > 0 && ((out_of_play & (1 << prevMove.square)) == 0) && (move.mini_board != prevMove.square) && !prev_move_was_pass) //we were not sent to a won or drawn board
                     {
                         std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
                         std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
@@ -178,7 +190,7 @@ class GlobalBoard {
                 int active_square = move_history.top().square;
                 int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
                 //check if we were sent to a won or drawn board
-                if ((out_of_play & (1 << active_square)) != 0) {
+                if ((out_of_play & (1 << active_square)) != 0 || prev_move_was_pass) {
                     // we were
                     for (int i = 0; i < 9; i++) {
                         if ((out_of_play & (1 << i)) == 0) //check if board i is not out of play
@@ -342,7 +354,7 @@ class CrossfishPrev {
             int depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 250;
+            int aspiration_window = 200;
             int searches = 0;
             int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -393,7 +405,6 @@ class CrossfishPrev {
             }
             TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
             if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
-                std::cerr << "TT HIT, SEARCH DEPTH: " << depth << " ENTRY DEPTH: " << entry.depth << std::endl;
                 if (entry.flag == 1) {
                     alpha = std::max(alpha, entry.score);
                 }
@@ -418,6 +429,16 @@ class CrossfishPrev {
                 // std::cout << board.checkWinner() << std::endl;
             }
 
+            int stand_pat = evaluate(board);
+
+            int reverse_futility_margin = 100;
+            if (stand_pat - reverse_futility_margin * depth >= beta) {
+                return beta;
+            }
+
+            int futility_margin = 100;
+            bool can_futility_prune = (stand_pat + futility_margin * depth <= alpha); 
+            
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key
             for (int i = 1; i < legal_moves.size(); i++) {
@@ -437,6 +458,9 @@ class CrossfishPrev {
             int best_val = min_val;
             int alpha_orig = alpha;
             for (int i = 0; i < legal_moves.size(); i++) {
+                if (can_futility_prune && i > 0 && scores[i] == 0) { //dont search quiet moves in already losing positions
+                    continue;
+                }
                 board.makeMove(legal_moves[i]);
                 int val = -search(board, depth - 1, ply + 1, -beta, -alpha);
                 board.unmakeMove();
@@ -570,6 +594,7 @@ class CrossfishPrev {
 
         }
 };
+
 
 class CrossfishDev {
        private:
@@ -678,7 +703,6 @@ class CrossfishDev {
             }
             TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
             if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
-                std::cerr << "TT HIT, SEARCH DEPTH: " << depth << " ENTRY DEPTH: " << entry.depth << std::endl;
                 if (entry.flag == 1) {
                     alpha = std::max(alpha, entry.score);
                 }
@@ -704,6 +728,12 @@ class CrossfishDev {
             }
 
             int stand_pat = evaluate(board);
+
+            int reverse_futility_margin = 100;
+            if (stand_pat - reverse_futility_margin * depth >= beta) {
+                return beta;
+            }
+
             int futility_margin = 100;
             bool can_futility_prune = (stand_pat + futility_margin * depth <= alpha); 
             
@@ -726,8 +756,8 @@ class CrossfishDev {
             int best_val = min_val;
             int alpha_orig = alpha;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (can_futility_prune && i > 0 && scores[i] <= 0) {
-                    break;
+                if (can_futility_prune && i > 0 && scores[i] == 0) { //dont search quiet moves in already losing positions
+                    continue;
                 }
                 board.makeMove(legal_moves[i]);
                 int val = -search(board, depth - 1, ply + 1, -beta, -alpha);
@@ -862,7 +892,6 @@ class CrossfishDev {
 
         }
 };
-
 
 struct EloResult {
     double elo_diff;
