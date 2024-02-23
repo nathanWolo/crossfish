@@ -343,7 +343,8 @@ class CrossfishPrev {
 
         };
 
-        Move getMove(GlobalBoard board) {
+        Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
+            thinking_time = thinking_time_passed;
             nodes = 0;
             root_score = 0;
             root_best_move = board.getLegalMoves()[0];
@@ -399,7 +400,12 @@ class CrossfishPrev {
                     return 0;
                 }
                 else {
-                    return min_val + ply; //previous player won
+                    if (winner == board.n_moves % 2) {
+                        return max_val - ply; //current player won
+                    }
+                    else {
+                        return min_val + ply; //previous player won
+                    }
                 }
                 
             }
@@ -660,7 +666,8 @@ class CrossfishDev {
 
         };
 
-        Move getMove(GlobalBoard board) {
+        Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
+            thinking_time = thinking_time_passed;
             nodes = 0;
             root_score = 0;
             root_best_move = board.getLegalMoves()[0];
@@ -716,7 +723,12 @@ class CrossfishDev {
                     return 0;
                 }
                 else {
-                    return min_val + ply; //previous player won
+                    if (winner == board.n_moves % 2) {
+                        return max_val - ply; //current player won
+                    }
+                    else {
+                        return min_val + ply; //previous player won
+                    }
                 }
                 
             }
