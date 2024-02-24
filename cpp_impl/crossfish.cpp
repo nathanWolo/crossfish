@@ -394,11 +394,11 @@ class CrossfishDev {
             }
             std::vector<Move> legal_moves = board.getLegalMoves();
             std::vector<int> scores = get_move_scores(legal_moves, {99, 99}, board, ply);
-
+            sort_moves(legal_moves, scores);
             Move best_move = legal_moves[0];
             int val;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (scores[i] < 100) {
+                if (!is_capture(board, legal_moves[i])) {
                     continue;
                 }
                 board.makeMove(legal_moves[i]);
@@ -476,18 +476,7 @@ class CrossfishDev {
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key
-            for (int i = 1; i < legal_moves.size(); i++) {
-                int key = scores[i];
-                Move key_move = legal_moves[i];
-                int j = i - 1;
-                while (j >= 0 && scores[j] < key) {
-                    scores[j + 1] = scores[j];
-                    legal_moves[j + 1] = legal_moves[j];
-                    j = j - 1;
-                }
-                scores[j + 1] = key;
-                legal_moves[j + 1] = key_move;
-            }
+            sort_moves(legal_moves, scores);
 
             Move best_move = legal_moves[0];
             int best_val = min_val;
@@ -526,7 +515,33 @@ class CrossfishDev {
             return best_val;
 
         }
-        std::vector<int> get_move_scores(std::vector<Move> moves, Move tt_move, GlobalBoard board, int ply) {
+
+        void sort_moves(std::vector<Move>& moves, std::vector<int>& scores) {
+            //sort on moves and scores, with scores as the key, in place
+            for (int i = 1; i < moves.size(); i++) {
+                int key = scores[i];
+                Move key_move = moves[i];
+                int j = i - 1;
+                while (j >= 0 && scores[j] < key) {
+                    scores[j + 1] = scores[j];
+                    moves[j + 1] = moves[j];
+                    j = j - 1;
+                }
+                scores[j + 1] = key;
+                moves[j + 1] = key_move;
+            } 
+        }
+        bool is_capture(GlobalBoard &board, Move &move) {
+                //if it wins a miniboard
+                int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
+                for (int mask = 0; mask < board.win_masks.size(); mask++) {
+                    if (((miniboard_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]) {
+                        return true;
+                    }
+                }
+                return false;
+        }
+        std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
             std::vector<int> scores = std::vector<int>(moves.size(), 0);
             for (int i = 0; i < moves.size(); i++) {
                 int move_score = 0;
@@ -547,7 +562,7 @@ class CrossfishDev {
                 int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
+                    if (is_capture(board, moves[i])) {
                         move_score += 100;
                         break;
                     }
@@ -583,7 +598,7 @@ class CrossfishDev {
             
         }
 
-        int evaluate(GlobalBoard board) {
+        int evaluate(GlobalBoard &board) {
             /*use bitscan to count number of won miniboards for both players*/
             int p0_won = __builtin_popcount(board.mini_board_states[0]);
             int p1_won = __builtin_popcount(board.mini_board_states[1]);
