@@ -441,8 +441,8 @@ class CrossfishDev {
                 // depth++;
                 searches++;
             }
-            std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
-            " Score: " << root_score << " Nodes: " << nodes << std::endl;
+            // std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
+            // " Score: " << root_score << " Nodes: " << nodes << std::endl;
             // std::cerr << "Searches: " << searches << " Researches: " << researches << std::endl;
             return root_best_move;
         }
@@ -611,6 +611,7 @@ class CrossfishDev {
 
             // Perform AND and compare operations
             __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
+            //Check if any of our results are equal to the win masks
             result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
 
             // Aggregate results: if any of the win conditions is fully met, result is true
@@ -699,15 +700,18 @@ class CrossfishDev {
 
         int evaluate(GlobalBoard &board) {
             /*use bitscan to count number of won miniboards for both players*/
-            int p0_won = __builtin_popcount(board.mini_board_states[0]);
-            int p1_won = __builtin_popcount(board.mini_board_states[1]);
+            int p0_miniboards_held = __builtin_popcount(board.mini_board_states[0]);
+            int p1_miniboards_held = __builtin_popcount(board.mini_board_states[1]);
             int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2]; 
             //count two in a rows for both players
             int p0_two_in_a_row = 0;
             int p1_two_in_a_row = 0;
             int p0_center_squares_held = 0;
             int p1_center_squares_held = 0;
-            
+            int p0_corner_squares_held = 0;
+            int p1_corner_squares_held = 0;
+            int p0_squares_held = 0;
+            int p1_squares_held = 0;
             //idea, keep a map of two in a rows. Two in a rows that form two in a rows with other two in a rows are worth more
             int p0_two_in_a_row_map = 0;
             int p1_two_in_a_row_map = 0;
@@ -734,13 +738,27 @@ class CrossfishDev {
                         p1_two_in_a_row_map |= (1 << miniboard);
                     }
                 }
-
+                // center squares
                 if ((p0_markers & (1 << 4)) != 0) {
                     p0_center_squares_held++;
                 } 
                 else if ((p1_markers & (1 << 4)) != 0) {
                     p1_center_squares_held++;
                 }
+                //corner squares
+                //idea: rewrite this to use a mask and popcount
+                std::array<int, 4> corners = {0, 2, 6, 8};
+                for (int i = 0; i < 4; i++) {
+                    if ((p0_markers & (1 << corners[i] )) != 0) {
+                        p0_corner_squares_held++;
+                    }
+                    if ((p1_markers & (1 << corners[i] )) != 0) {
+                        p1_corner_squares_held++;
+                    }
+                }
+                //total squares
+                p0_squares_held += __builtin_popcount(p0_markers);
+                p1_squares_held += __builtin_popcount(p1_markers);
                 
             }
 
@@ -748,6 +766,30 @@ class CrossfishDev {
             //also check for 2 in a rows in the out of play miniboards
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
+
+            int p0_center_miniboard_held = 0;
+            int p1_center_miniboard_held = 0;
+            if ((p0_miniboards & (1 << 4)) != 0) {
+                p0_center_miniboard_held++;
+            }
+            else if ((p1_miniboards & (1 << 4)) != 0) {
+                p1_center_miniboard_held++;
+            }
+            
+            //idea: rewrite this to use a mask and popcount
+            int p0_corner_miniboards_held = 0;
+            int p1_corner_miniboards_held = 0;
+            std::array<int, 4> corners = {0, 2, 6, 8};
+            for (int i = 0; i < 4; i++) {
+                if ((p0_miniboards & (1 << corners[i] )) != 0) {
+                    p0_corner_miniboards_held++;
+                }
+                else if ((p1_miniboards & (1 << corners[i] )) != 0) {
+                    p1_corner_miniboards_held++;
+                }
+            }
+
+
             int p0_global_two_in_a_row = 0;
             int p1_global_two_in_a_row = 0;
             int p0_two_in_a_rows_lined_up = 0;
@@ -772,15 +814,22 @@ class CrossfishDev {
                     p1_two_in_a_rows_lined_up++;
                 }
             }
-
-            int val = (p0_won - p1_won) * 200;
+            //should tune these coefficients
+            int val = (p0_miniboards_held - p1_miniboards_held) * 200;
+            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 100;
+            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 50;
             val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 100;
             val += (p0_two_in_a_row - p1_two_in_a_row) * 50;
             val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 25;
+            val += (p0_center_squares_held - p1_center_squares_held) * 2;
+            val += (p0_corner_squares_held - p1_corner_squares_held);
+            val += (p0_squares_held - p1_squares_held)* 2;
             return pow(-1, board.n_moves) * val;
 
         }
+
 };
+
 
 
 
