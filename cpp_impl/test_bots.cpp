@@ -11,6 +11,7 @@
 #include <future>
 #include <numeric>
 #include <thread>
+#include <bitset>
 #include <limits>
 #include <immintrin.h>
 #pragma GCC optimize("O3")
@@ -101,6 +102,27 @@ class GlobalBoard {
             {
                 std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
                 std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
+                std::cerr << "First illegal move block" << std::endl;
+
+                //print which illegal move condition was met
+                if ((occupied & (1 << move.square)) != 0) {
+                    std::cerr << "Square occupied" << std::endl;
+                }
+                if ((out_of_play & (1 << move.mini_board)) != 0) {
+                    std::cerr << "Board out of play" << std::endl;
+                    //print binary rep of out of play
+                    std::cerr << "Out of play: " << std::bitset<9>(out_of_play) << std::endl;
+                    //print binary rep of miniboard we tried to play in 
+                    std::cerr << "Mini board: " << std::bitset<9>(mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1]) << std::endl;
+                    bool won_by_p0 = (mini_board_states[0] & (1 << move.mini_board)) != 0;
+                    bool won_by_p1 = (mini_board_states[1] & (1 << move.mini_board)) != 0;
+                    bool drawn = (mini_board_states[2] & (1 << move.mini_board)) != 0;
+                    std::cerr << "Won by p0: " << won_by_p0 << " Won by p1: " << won_by_p1 << " Drawn: " << drawn << std::endl;
+                }
+                if (move.mini_board > 8 || move.square > 8 || move.mini_board < 0 || move.square < 0) {
+                    std::cerr << "Move out of bounds" << std::endl;
+                }
+
                 print_board();
                 std::exit(EXIT_FAILURE); // Terminate the program
             }
@@ -111,6 +133,7 @@ class GlobalBoard {
                     {
                         std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
                         std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
+                        std::cerr << "Second illegal move block" << std::endl;
                         print_board();
                         std::exit(EXIT_FAILURE); // Terminate the program
                     
@@ -129,7 +152,7 @@ class GlobalBoard {
             }
 
             //check if the mini board is drawn
-            if (((mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1]) & miniboard_mask) == miniboard_mask) {
+            else if (((mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1]) & miniboard_mask) == miniboard_mask) {
                 mini_board_states[2] |= (1 << move.mini_board);
                 zobrist_hash ^= mini_board_hashes[2][move.mini_board];
             }
@@ -221,7 +244,7 @@ class GlobalBoard {
                 int active_square = move_history.top().square;
                 int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
                 //check if we were sent to a won or drawn board
-                if ((out_of_play & (1 << active_square)) != 0 || prev_move_was_pass) {
+                if (((out_of_play & (1 << active_square)) != 0) || prev_move_was_pass) {
                     // we were
                     for (int i = 0; i < 9; i++) {
                         if ((out_of_play & (1 << i)) == 0) //check if board i is not out of play
@@ -1406,6 +1429,17 @@ int main() {
     const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;
     double llr = 0;
+
+    //benchmark NPS from startpos for Prev and Dev
+    CrossfishPrev prev;
+    CrossfishDev dev;
+    GlobalBoard board;
+    std::chrono::milliseconds thinking_time = std::chrono::milliseconds(1000);//1 second
+    prev.getMove(board, thinking_time);
+    int prev_nps = prev.nodes;
+    dev.getMove(board, thinking_time);
+    int dev_nps = dev.nodes;
+    std::cout << "Prev NPS: " << prev_nps << " Dev NPS: " << dev_nps << std::endl;
     while(abs(llr) < 3) {
         std::vector<std::future<void>> futures;
         for (unsigned int i = 0; i < n_threads; ++i) {

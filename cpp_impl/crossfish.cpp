@@ -12,6 +12,7 @@
 #include <numeric>
 #include <thread>
 #include <array>
+#include <bitset>
 #include <immintrin.h>
 #pragma GCC optimize("O3")
 #pragma GCC optimization("Ofast,unroll-loops")
@@ -66,6 +67,17 @@ class GlobalBoard {
         std::array<uint64_t, 9> legal_mini_board_hashes;
         uint64_t player_to_move_hash;
         int n_moves = 0;
+        bool prev_move_was_pass = false;
+        void pass() {
+            n_moves++;
+            zobrist_hash ^= player_to_move_hash;
+            prev_move_was_pass = true;
+        }
+        void unpass() {
+            n_moves--;
+            zobrist_hash ^= player_to_move_hash;
+            prev_move_was_pass = false;
+        }
         bool is_capture_avx(Move &move) {
             int miniboard_markers = mini_boards[move.mini_board].markers[n_moves % 2];
             miniboard_markers |= (1 << move.square);
@@ -86,7 +98,7 @@ class GlobalBoard {
             return mask != 0;
         }
         void makeMove(Move move) {
-            //make sure move is legal
+            // make sure move is legal
             // int occupied = mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1];
             // int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
             // if (((occupied & (1 << move.square)) != 0)
@@ -95,16 +107,38 @@ class GlobalBoard {
             // {
             //     std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
             //     std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
+            //     std::cerr << "First illegal move block" << std::endl;
+
+            //     //print which illegal move condition was met
+            //     if ((occupied & (1 << move.square)) != 0) {
+            //         std::cerr << "Square occupied" << std::endl;
+            //     }
+            //     if ((out_of_play & (1 << move.mini_board)) != 0) {
+            //         std::cerr << "Board out of play" << std::endl;
+            //         //print binary rep of out of play
+            //         // std::cerr << "Out of play: " << std::bitset<9>(out_of_play) << std::endl;
+            //         //print binary rep of miniboard we tried to play in 
+            //         // std::cerr << "Mini board: " << std::bitset<9>(mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1]) << std::endl;
+            //         bool won_by_p0 = (mini_board_states[0] & (1 << move.mini_board)) != 0;
+            //         bool won_by_p1 = (mini_board_states[1] & (1 << move.mini_board)) != 0;
+            //         bool drawn = (mini_board_states[2] & (1 << move.mini_board)) != 0;
+            //         std::cerr << "Won by p0: " << won_by_p0 << " Won by p1: " << won_by_p1 << " Drawn: " << drawn << std::endl;
+            //     }
+            //     if (move.mini_board > 8 || move.square > 8 || move.mini_board < 0 || move.square < 0) {
+            //         std::cerr << "Move out of bounds" << std::endl;
+            //     }
+
             //     print_board();
             //     std::exit(EXIT_FAILURE); // Terminate the program
             // }
             // if (n_moves > 0) {
             //     Move prevMove = move_history.top();
 
-            //     if (n_moves > 0 && ((out_of_play & (1 << prevMove.square)) == 0) && (move.mini_board != prevMove.square)) //we were not sent to a won or drawn board
+            //     if (n_moves > 0 && ((out_of_play & (1 << prevMove.square)) == 0) && (move.mini_board != prevMove.square) && !prev_move_was_pass) //we were not sent to a won or drawn board
             //         {
             //             std::cerr << "ILLEGAL MOVE MADE: " << move.mini_board << " " << move.square << std::endl;
             //             std::cerr << "Last move: " << move_history.top().mini_board << " " << move_history.top().square << std::endl;
+            //             std::cerr << "Second illegal move block" << std::endl;
             //             print_board();
             //             std::exit(EXIT_FAILURE); // Terminate the program
                     
@@ -117,20 +151,13 @@ class GlobalBoard {
             zobrist_hash ^= move_hashes[n_moves % 2][move.mini_board][move.square];
             zobrist_hash ^= legal_mini_board_hashes[move.square];
 
-            //check if the miniboard is won
-            // for (int i = 0; i < win_masks.size(); i++) {
-            //     if ((mini_boards[move.mini_board].markers[n_moves % 2] & win_masks[i]) == win_masks[i]) {
-            //         mini_board_states[n_moves % 2] |= (1 << move.mini_board);
-            //         zobrist_hash ^= mini_board_hashes[n_moves % 2][move.mini_board];
-            //         break;
-            //     }
-            // }
             if(is_capture_avx(move)) {
                 mini_board_states[n_moves % 2] |= (1 << move.mini_board);
                 zobrist_hash ^= mini_board_hashes[n_moves % 2][move.mini_board];
             }
+
             //check if the mini board is drawn
-            if (((mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1]) & miniboard_mask) == miniboard_mask) {
+            else if (((mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1]) & miniboard_mask) == miniboard_mask) {
                 mini_board_states[2] |= (1 << move.mini_board);
                 zobrist_hash ^= mini_board_hashes[2][move.mini_board];
             }
@@ -166,6 +193,7 @@ class GlobalBoard {
             zobrist_hash ^= move_hashes[n_moves % 2][move.mini_board][move.square];
             zobrist_hash ^= legal_mini_board_hashes[move.square];
         }
+
         bool won_avx(int player) {
             //check if the player has won
             int markers = mini_board_states[player];
@@ -184,6 +212,7 @@ class GlobalBoard {
             int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
             return mask != 0;
         }
+
         int checkWinner() {
             if (won_avx(0)) {
                 return 0;
@@ -220,7 +249,7 @@ class GlobalBoard {
                 int active_square = move_history.top().square;
                 int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
                 //check if we were sent to a won or drawn board
-                if ((out_of_play & (1 << active_square)) != 0) {
+                if (((out_of_play & (1 << active_square)) != 0) || prev_move_was_pass) {
                     // we were
                     for (int i = 0; i < 9; i++) {
                         if ((out_of_play & (1 << i)) == 0) //check if board i is not out of play
