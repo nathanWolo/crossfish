@@ -404,25 +404,11 @@ class CrossfishPrev {
             std::vector<Move> legal_moves = board.getLegalMoves();
             std::vector<int> scores = get_move_scores(legal_moves, {99, 99}, board, ply);
 
-            //sort on moves and scores, with scores as the key
-            for (int i = 1; i < legal_moves.size(); i++) {
-                int key = scores[i];
-                Move key_move = legal_moves[i];
-                int j = i - 1;
-                while (j >= 0 && scores[j] < key) {
-                    scores[j + 1] = scores[j];
-                    legal_moves[j + 1] = legal_moves[j];
-                    j = j - 1;
-                }
-                scores[j + 1] = key;
-                legal_moves[j + 1] = key_move;
-            }
-
             Move best_move = legal_moves[0];
             int val;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (scores[i] <= 50) {
-                    break;
+                if (scores[i] < 100) {
+                    continue;
                 }
                 board.makeMove(legal_moves[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
@@ -571,7 +557,7 @@ class CrossfishPrev {
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 70;
+                        move_score += 100;
                         break;
                     }
                 }
@@ -579,7 +565,7 @@ class CrossfishPrev {
                 //if it blocks a win
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 70;
+                        move_score += 75;
                         break;
                     }
                 }
@@ -672,8 +658,6 @@ class CrossfishPrev {
                     p1_global_two_in_a_row += 1;
                 }
                 //check for two in a rows that line up
-                //Idea: should probably or the two in a row map with our owned miniboards
-                //i.e  (((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 if ((((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
                     p0_two_in_a_rows_lined_up++;
@@ -692,7 +676,6 @@ class CrossfishPrev {
 
         }
 };
-
 
 
 class CrossfishDev {
@@ -801,25 +784,11 @@ class CrossfishDev {
             std::vector<Move> legal_moves = board.getLegalMoves();
             std::vector<int> scores = get_move_scores(legal_moves, {99, 99}, board, ply);
 
-            //sort on moves and scores, with scores as the key
-            for (int i = 1; i < legal_moves.size(); i++) {
-                int key = scores[i];
-                Move key_move = legal_moves[i];
-                int j = i - 1;
-                while (j >= 0 && scores[j] < key) {
-                    scores[j + 1] = scores[j];
-                    legal_moves[j + 1] = legal_moves[j];
-                    j = j - 1;
-                }
-                scores[j + 1] = key;
-                legal_moves[j + 1] = key_move;
-            }
-
             Move best_move = legal_moves[0];
             int val;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (scores[i] <= 50) {
-                    break;
+                if (scores[i] < 100) {
+                    continue;
                 }
                 board.makeMove(legal_moves[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
@@ -968,7 +937,7 @@ class CrossfishDev {
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((miniboard_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 70;
+                        move_score += 100;
                         break;
                     }
                 }
@@ -976,7 +945,7 @@ class CrossfishDev {
                 //if it blocks a win
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
                     if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 70;
+                        move_score += 75;
                         break;
                     }
                 }
@@ -1069,8 +1038,6 @@ class CrossfishDev {
                     p1_global_two_in_a_row += 1;
                 }
                 //check for two in a rows that line up
-                //Idea: should probably or the two in a row map with our owned miniboards
-                //i.e  (((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 if ((((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
                     p0_two_in_a_rows_lined_up++;
