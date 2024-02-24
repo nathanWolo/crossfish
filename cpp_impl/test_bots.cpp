@@ -11,9 +11,8 @@
 #include <future>
 #include <numeric>
 #include <thread>
-#include <array>
-#include <cmath>
 #include <limits>
+#include <immintrin.h>
 #pragma GCC optimize("O3")
 #pragma GCC optimization("Ofast,unroll-loops")
 #pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
@@ -73,7 +72,25 @@ class GlobalBoard {
             zobrist_hash ^= player_to_move_hash;
             prev_move_was_pass = false;
         }
+        bool is_capture_avx(Move &move) {
+            int miniboard_markers = mini_boards[move.mini_board].markers[n_moves % 2];
+            miniboard_markers |= (1 << move.square);
 
+            // Prepare a vector of miniboard_markers
+            __m256i markers_vec = _mm256_set1_epi32(miniboard_markers);
+
+            // Load win_masks into a vector
+            __m256i win_masks_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(win_masks.data()));
+
+            // Perform AND and compare operations
+            __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
+            //Check if any of our results are equal to the win masks
+            result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
+
+            // Aggregate results: if any of the win conditions is fully met, result is true
+            int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
+            return mask != 0;
+        }
         void makeMove(Move move) {
             // make sure move is legal
             int occupied = mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1];
@@ -106,14 +123,11 @@ class GlobalBoard {
             zobrist_hash ^= move_hashes[n_moves % 2][move.mini_board][move.square];
             zobrist_hash ^= legal_mini_board_hashes[move.square];
 
-            //check if the miniboard is won
-            for (int i = 0; i < win_masks.size(); i++) {
-                if ((mini_boards[move.mini_board].markers[n_moves % 2] & win_masks[i]) == win_masks[i]) {
-                    mini_board_states[n_moves % 2] |= (1 << move.mini_board);
-                    zobrist_hash ^= mini_board_hashes[n_moves % 2][move.mini_board];
-                    break;
-                }
+            if(is_capture_avx(move)) {
+                mini_board_states[n_moves % 2] |= (1 << move.mini_board);
+                zobrist_hash ^= mini_board_hashes[n_moves % 2][move.mini_board];
             }
+
             //check if the mini board is drawn
             if (((mini_boards[move.mini_board].markers[0] | mini_boards[move.mini_board].markers[1]) & miniboard_mask) == miniboard_mask) {
                 mini_board_states[2] |= (1 << move.mini_board);
@@ -152,16 +166,33 @@ class GlobalBoard {
             zobrist_hash ^= legal_mini_board_hashes[move.square];
         }
 
+        bool won_avx(int player) {
+            //check if the player has won
+            int markers = mini_board_states[player];
+            // Prepare a vector of miniboard_markers
+            __m256i markers_vec = _mm256_set1_epi32(markers);
+
+            // Load win_masks into a vector
+            __m256i win_masks_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(win_masks.data()));
+
+            // Perform AND and compare operations
+            __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
+            //Check if any of our results are equal to the win masks
+            result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
+
+            // Aggregate results: if any of the win conditions is fully met, result is true
+            int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
+            return mask != 0;
+        }
+
         int checkWinner() {
-            for (int i = 0; i < 8; i++) {
-                if ((mini_board_states[0] & win_masks[i]) == win_masks[i]) {
-                    return 0;
-                }
-                if ((mini_board_states[1] & win_masks[i]) == win_masks[i]) {
-                    return 1;
-                }
+            if (won_avx(0)) {
+                return 0;
             }
-            if ((mini_board_states[0] | mini_board_states[1] | mini_board_states[2]) == miniboard_mask) {
+            else if (won_avx(1)) {
+                return 1;
+            }
+            else if ((mini_board_states[0] | mini_board_states[1] | mini_board_states[2]) == miniboard_mask) {
                 // return 2;
                 //winner has more won miniboards
                 if (__builtin_popcount(mini_board_states[0]) > __builtin_popcount(mini_board_states[1])) {
@@ -407,7 +438,7 @@ class CrossfishPrev {
             Move best_move = legal_moves[0];
             int val;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (!is_capture(board, legal_moves[i])) {
+                if (!is_capture_avx(board, legal_moves[i])) {
                     continue;
                 }
                 board.makeMove(legal_moves[i]);
@@ -540,24 +571,60 @@ class CrossfishPrev {
                 moves[j + 1] = key_move;
             } 
         }
-        bool is_capture(GlobalBoard &board, Move &move) {
-                //if it wins a miniboard
-                int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
-                bool result = false;
-                for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    result = result || (((miniboard_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]);
-                }
-                return result;
+        bool is_capture_avx(GlobalBoard &board, Move &move) {
+            int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
+            miniboard_markers |= (1 << move.square);
+
+            // Prepare a vector of miniboard_markers
+            __m256i markers_vec = _mm256_set1_epi32(miniboard_markers);
+
+            // Load win_masks into a vector
+            __m256i win_masks_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(board.win_masks.data()));
+
+            // Perform AND and compare operations
+            __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
+            //Check if any of our results are equal to the win masks
+            result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
+
+            // Aggregate results: if any of the win conditions is fully met, result is true
+            int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
+            return mask != 0;
         }
-        bool is_block(GlobalBoard &board, Move &move) {
-                //if it blocks a win
-                int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
-                bool result = false;
-                for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    result = result || (((opp_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]);
-                }
-                return result;
+
+        bool is_block_avx(GlobalBoard &board, Move &move) {
+            int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
+            opp_markers |= (1 << move.square);
+
+            // Prepare a vector of opp_markers
+            __m256i markers_vec = _mm256_set1_epi32(opp_markers);
+
+            // Load win_masks into a vector
+            __m256i win_masks_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(board.win_masks.data()));
+
+            // Perform AND and compare operations
+            __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
+            result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
+
+            // Aggregate results: if any of the win conditions is fully met, result is true
+            int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
+            return mask != 0;
         }
+
+
+        bool creates_two_in_a_row(GlobalBoard &board, Move &move) {
+            int our_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
+            int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
+            bool result = false;
+
+            for (int mask = 0; mask < two_in_a_row_masks.size() / 2; mask++) {
+                result = result || ((((our_markers | (1 << move.square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) && 
+                (((opp_markers | our_markers) & two_in_a_row_masks[mask * 2 + 1]) == 0));
+            }
+
+            return result;
+
+        }
+
         std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
             std::vector<int> scores = std::vector<int>(moves.size(), 0);
             for (int i = 0; i < moves.size(); i++) {
@@ -578,24 +645,18 @@ class CrossfishPrev {
                 //if it wins a miniboard
                 int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
-                if (is_capture(board, moves[i])) {
+                if (is_capture_avx(board, moves[i])) {
                     move_score += 100;
                 }
 
                 //if it blocks a win
-                if (is_block(board, moves[i])) {
+                if (is_block_avx(board, moves[i])) {
                     move_score += 75;
                 }
 
                 //if it creates an unblocked 2 in a row
-                for (int mask = 0; mask < two_in_a_row_masks.size() / 2; mask++) {
-                    if (((miniboard_markers | (1 << moves[i].square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) {
-                        if ((opp_markers & two_in_a_row_masks[mask * 2 + 1]) == 0 &&
-                        (miniboard_markers & two_in_a_row_masks[mask * 2 + 1]) == 0) {
-                            move_score += 50;
-                            break;
-                        }
-                    }
+                if (creates_two_in_a_row(board, moves[i])) {
+                    move_score += 50;
                 }
 
                 //if it sends the opponent to a won or drawn miniboard
@@ -647,12 +708,12 @@ class CrossfishPrev {
                     }
                 }
 
-                if ((p0_markers & (1 << 4)) != 0) {
-                    p0_center_squares_held++;
-                } 
-                else if ((p1_markers & (1 << 4)) != 0) {
-                    p1_center_squares_held++;
-                }
+                // if ((p0_markers & (1 << 4)) != 0) {
+                //     p0_center_squares_held++;
+                // } 
+                // else if ((p1_markers & (1 << 4)) != 0) {
+                //     p1_center_squares_held++;
+                // }
                 
             }
 
@@ -804,7 +865,7 @@ class CrossfishDev {
             Move best_move = legal_moves[0];
             int val;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (!is_capture(board, legal_moves[i])) {
+                if (!is_capture_avx(board, legal_moves[i])) {
                     continue;
                 }
                 board.makeMove(legal_moves[i]);
@@ -937,24 +998,60 @@ class CrossfishDev {
                 moves[j + 1] = key_move;
             } 
         }
-        bool is_capture(GlobalBoard &board, Move &move) {
-                //if it wins a miniboard
-                int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
-                bool result = false;
-                for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    result = result || (((miniboard_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]);
-                }
-                return result;
+        bool is_capture_avx(GlobalBoard &board, Move &move) {
+            int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
+            miniboard_markers |= (1 << move.square);
+
+            // Prepare a vector of miniboard_markers
+            __m256i markers_vec = _mm256_set1_epi32(miniboard_markers);
+
+            // Load win_masks into a vector
+            __m256i win_masks_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(board.win_masks.data()));
+
+            // Perform AND and compare operations
+            __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
+            //Check if any of our results are equal to the win masks
+            result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
+
+            // Aggregate results: if any of the win conditions is fully met, result is true
+            int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
+            return mask != 0;
         }
-        bool is_block(GlobalBoard &board, Move &move) {
-                //if it blocks a win
-                int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
-                bool result = false;
-                for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    result = result || (((opp_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]);
-                }
-                return result;
+
+        bool is_block_avx(GlobalBoard &board, Move &move) {
+            int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
+            opp_markers |= (1 << move.square);
+
+            // Prepare a vector of opp_markers
+            __m256i markers_vec = _mm256_set1_epi32(opp_markers);
+
+            // Load win_masks into a vector
+            __m256i win_masks_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(board.win_masks.data()));
+
+            // Perform AND and compare operations
+            __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
+            result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
+
+            // Aggregate results: if any of the win conditions is fully met, result is true
+            int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
+            return mask != 0;
         }
+
+
+        bool creates_two_in_a_row(GlobalBoard &board, Move &move) {
+            int our_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
+            int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
+            bool result = false;
+
+            for (int mask = 0; mask < two_in_a_row_masks.size() / 2; mask++) {
+                result = result || ((((our_markers | (1 << move.square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) && 
+                (((opp_markers | our_markers) & two_in_a_row_masks[mask * 2 + 1]) == 0));
+            }
+
+            return result;
+
+        }
+
         std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
             std::vector<int> scores = std::vector<int>(moves.size(), 0);
             for (int i = 0; i < moves.size(); i++) {
@@ -975,24 +1072,18 @@ class CrossfishDev {
                 //if it wins a miniboard
                 int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
-                if (is_capture(board, moves[i])) {
+                if (is_capture_avx(board, moves[i])) {
                     move_score += 100;
                 }
 
                 //if it blocks a win
-                if (is_block(board, moves[i])) {
+                if (is_block_avx(board, moves[i])) {
                     move_score += 75;
                 }
 
                 //if it creates an unblocked 2 in a row
-                for (int mask = 0; mask < two_in_a_row_masks.size() / 2; mask++) {
-                    if (((miniboard_markers | (1 << moves[i].square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) {
-                        if ((opp_markers & two_in_a_row_masks[mask * 2 + 1]) == 0 &&
-                        (miniboard_markers & two_in_a_row_masks[mask * 2 + 1]) == 0) {
-                            move_score += 50;
-                            break;
-                        }
-                    }
+                if (creates_two_in_a_row(board, moves[i])) {
+                    move_score += 50;
                 }
 
                 //if it sends the opponent to a won or drawn miniboard
@@ -1044,12 +1135,12 @@ class CrossfishDev {
                     }
                 }
 
-                if ((p0_markers & (1 << 4)) != 0) {
-                    p0_center_squares_held++;
-                } 
-                else if ((p1_markers & (1 << 4)) != 0) {
-                    p1_center_squares_held++;
-                }
+                // if ((p0_markers & (1 << 4)) != 0) {
+                //     p0_center_squares_held++;
+                // } 
+                // else if ((p1_markers & (1 << 4)) != 0) {
+                //     p1_center_squares_held++;
+                // }
                 
             }
 
@@ -1312,8 +1403,8 @@ void play_game(){
 }
 
 int main() {
-    const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
-    // const unsigned int n_threads = 6;
+    // const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
+    const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;
     double llr = 0;
     while(abs(llr) < 3) {
