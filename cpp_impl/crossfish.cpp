@@ -378,6 +378,57 @@ class CrossfishDev {
             // std::cerr << "Searches: " << searches << " Researches: " << researches << std::endl;
             return root_best_move;
         }
+
+        int qsearch(GlobalBoard board, int alpha, int beta, int ply) {
+            //quiescence search
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
+                return min_val;
+            }
+            nodes++;
+            int stand_pat = evaluate(board);
+            if (stand_pat >= beta) {
+                return beta;
+            }
+            if (alpha < stand_pat) {
+                alpha = stand_pat;
+            }
+            std::vector<Move> legal_moves = board.getLegalMoves();
+            std::vector<int> scores = get_move_scores(legal_moves, {99, 99}, board, ply);
+
+            //sort on moves and scores, with scores as the key
+            for (int i = 1; i < legal_moves.size(); i++) {
+                int key = scores[i];
+                Move key_move = legal_moves[i];
+                int j = i - 1;
+                while (j >= 0 && scores[j] < key) {
+                    scores[j + 1] = scores[j];
+                    legal_moves[j + 1] = legal_moves[j];
+                    j = j - 1;
+                }
+                scores[j + 1] = key;
+                legal_moves[j + 1] = key_move;
+            }
+
+            Move best_move = legal_moves[0];
+            int val;
+            for (int i = 0; i < legal_moves.size(); i++) {
+                if (scores[i] <= 50) {
+                    break;
+                }
+                board.makeMove(legal_moves[i]);
+                val = -qsearch(board, -beta, -alpha, ply + 1);
+                board.unmakeMove();
+                alpha = std::max(alpha, val);
+                if (alpha >= beta) {
+                    break;
+                }
+            }
+            return alpha;
+
+
+
+        }
+
         int search(GlobalBoard board, int depth, int ply, int alpha, int beta) {
             /*A simple negamax search*/
             //check out of time
@@ -416,7 +467,8 @@ class CrossfishDev {
                 }
             }
             if (depth == 0) {
-                return evaluate(board);
+                // return evaluate(board);
+                return qsearch(board, alpha, beta, ply);
             }
             std::vector<Move> legal_moves = board.getLegalMoves();
             if (legal_moves.empty()){
@@ -610,6 +662,7 @@ class CrossfishDev {
 
         }
 };
+
 
 
 Move grid_coord_to_move(int row, int col) {
