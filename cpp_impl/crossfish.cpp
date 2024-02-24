@@ -608,6 +608,10 @@ class CrossfishDev {
             int p0_center_squares_held = 0;
             int p1_center_squares_held = 0;
             
+            //idea, keep a map of two in a rows. Two in a rows that form two in a rows with other two in a rows are worth more
+            int p0_two_in_a_row_map = 0;
+            int p1_two_in_a_row_map = 0;
+
             for (int miniboard = 0; miniboard < 8; miniboard++) {
                 if ((out_of_play & ( 1<< miniboard) != 0)) {
                     continue;
@@ -622,10 +626,12 @@ class CrossfishDev {
                     if (((p0_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                     && ((p1_markers & two_in_a_row_masks[i * 2 + 1]) == 0)) {
                         p0_two_in_a_row++;
+                        p0_two_in_a_row_map |= (1 << miniboard);
                     }
                     if (((p1_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                     && ((p0_markers & two_in_a_row_masks[i * 2 + 1]) == 0)){
                         p1_two_in_a_row++;
+                        p1_two_in_a_row_map |= (1 << miniboard);
                     }
                 }
 
@@ -638,12 +644,16 @@ class CrossfishDev {
                 
             }
 
+
             //also check for 2 in a rows in the out of play miniboards
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
             int p0_global_two_in_a_row = 0;
             int p1_global_two_in_a_row = 0;
+            int p0_two_in_a_rows_lined_up = 0;
+            int p1_two_in_a_rows_lined_up = 0;
             for(int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
+                //check for global two in a rows
                 if (((p0_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
                     p0_global_two_in_a_row += 1;
@@ -652,17 +662,27 @@ class CrossfishDev {
                 && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
                     p1_global_two_in_a_row += 1;
                 }
+                //check for two in a rows that line up
+                //Idea: should probably or the two in a row map with our owned miniboards
+                //i.e  (((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                if (((p0_two_in_a_row_map & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
+                    p0_two_in_a_rows_lined_up++;
+                }
+                if (((p1_two_in_a_row_map & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
+                    p1_two_in_a_rows_lined_up++;
+                }
             }
 
             int val = (p0_won - p1_won) * 200;
             val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 100;
             val += (p0_two_in_a_row - p1_two_in_a_row) * 50;
-            // val += (p0_center_squares_held - p1_center_squares_held) * 10;
+            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 25;
             return pow(-1, board.n_moves) * val;
 
         }
 };
-
 
 
 Move grid_coord_to_move(int row, int col) {
