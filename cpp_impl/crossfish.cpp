@@ -521,7 +521,7 @@ class CrossfishDev {
             int best_val = min_val;
             int alpha_orig = alpha;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (can_futility_prune && i > 0 && scores[i] == 0) { //dont search quiet moves in already losing positions
+                if (can_futility_prune && i > 0 && !is_capture_avx(board, legal_moves[i])) { //dont search quiet moves in already losing positions
                     continue;
                 }
                 board.makeMove(legal_moves[i]);

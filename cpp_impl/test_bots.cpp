@@ -522,7 +522,7 @@ class CrossfishPrev {
             int best_val = min_val;
             int alpha_orig = alpha;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (can_futility_prune && i > 0 && scores[i] == 0) { //dont search quiet moves in already losing positions
+                if (can_futility_prune && i > 0 && !is_capture_avx(board, legal_moves[i])) { //dont search quiet moves in already losing positions
                     continue;
                 }
                 board.makeMove(legal_moves[i]);
@@ -686,13 +686,13 @@ class CrossfishPrev {
             int p1_two_in_a_row_map = 0;
 
             for (int miniboard = 0; miniboard < 8; miniboard++) {
+                //make sure board is in play
+
                 if ((out_of_play & ( 1<< miniboard) != 0)) {
                     continue;
                 }
                 int p0_markers = board.mini_boards[miniboard].markers[0];
                 int p1_markers = board.mini_boards[miniboard].markers[1];
-
-                //make sure board is in play
 
 
                 for (int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
@@ -754,7 +754,6 @@ class CrossfishPrev {
 
         }
 };
-
 
 class CrossfishDev {
        private:
@@ -949,7 +948,7 @@ class CrossfishDev {
             int best_val = min_val;
             int alpha_orig = alpha;
             for (int i = 0; i < legal_moves.size(); i++) {
-                if (can_futility_prune && i > 0 && scores[i] == 0) { //dont search quiet moves in already losing positions
+                if (can_futility_prune && i > 0 && !is_capture_avx(board, legal_moves[i])) { //dont search quiet moves in already losing positions
                     continue;
                 }
                 board.makeMove(legal_moves[i]);
@@ -1113,13 +1112,13 @@ class CrossfishDev {
             int p1_two_in_a_row_map = 0;
 
             for (int miniboard = 0; miniboard < 8; miniboard++) {
+                //make sure board is in play
+
                 if ((out_of_play & ( 1<< miniboard) != 0)) {
                     continue;
                 }
                 int p0_markers = board.mini_boards[miniboard].markers[0];
                 int p1_markers = board.mini_boards[miniboard].markers[1];
-
-                //make sure board is in play
 
 
                 for (int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
