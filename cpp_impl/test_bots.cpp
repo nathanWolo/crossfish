@@ -674,11 +674,11 @@ class CrossfishPrev {
                 //check for two in a rows that line up
                 //Idea: should probably or the two in a row map with our owned miniboards
                 //i.e  (((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                if (((p0_two_in_a_row_map & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                if ((((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
                     p0_two_in_a_rows_lined_up++;
                 }
-                if (((p1_two_in_a_row_map & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                if ((((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
                     p1_two_in_a_rows_lined_up++;
                 }
@@ -692,6 +692,7 @@ class CrossfishPrev {
 
         }
 };
+
 
 
 class CrossfishDev {
@@ -1070,11 +1071,11 @@ class CrossfishDev {
                 //check for two in a rows that line up
                 //Idea: should probably or the two in a row map with our owned miniboards
                 //i.e  (((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                if (((p0_two_in_a_row_map & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                if ((((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
                     p0_two_in_a_rows_lined_up++;
                 }
-                if (((p1_two_in_a_row_map & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                if ((((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
                     p1_two_in_a_rows_lined_up++;
                 }
@@ -1301,8 +1302,8 @@ void play_game(){
         }
         EloResult elo = calc_elo_diff(global_total[0], global_total[2], global_total[1]);
         int total_games = global_total[0] + global_total[1] + global_total[2];
-        std::cout << "Game : " << total_games << " Wins: " << global_total[0] 
-                << " Draws: " << global_total[1] << " Losses: " << global_total[2] 
+        std::cout << "N: " << total_games << " W: " << global_total[0] 
+                << " D: " << global_total[1] << " L: " << global_total[2] 
                 << " Elo diff: " << elo.elo_diff << " +/- " << elo.ci << " LLR: " << sprt(global_total[0], global_total[1], global_total[2]) << std::endl;
         //reset board
         board = GlobalBoard(startpos);

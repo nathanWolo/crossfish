@@ -665,11 +665,11 @@ class CrossfishDev {
                 //check for two in a rows that line up
                 //Idea: should probably or the two in a row map with our owned miniboards
                 //i.e  (((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                if (((p0_two_in_a_row_map & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                if ((((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
                     p0_two_in_a_rows_lined_up++;
                 }
-                if (((p1_two_in_a_row_map & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
+                if ((((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
                 && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
                     p1_two_in_a_rows_lined_up++;
                 }
@@ -683,7 +683,6 @@ class CrossfishDev {
 
         }
 };
-
 
 Move grid_coord_to_move(int row, int col) {
     int mini_board = (row / 3) * 3 + (col / 3);
