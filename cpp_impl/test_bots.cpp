@@ -543,12 +543,20 @@ class CrossfishPrev {
         bool is_capture(GlobalBoard &board, Move &move) {
                 //if it wins a miniboard
                 int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
+                bool result = false;
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    if (((miniboard_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        return true;
-                    }
+                    result = result || (((miniboard_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]);
                 }
-                return false;
+                return result;
+        }
+        bool is_block(GlobalBoard &board, Move &move) {
+                //if it blocks a win
+                int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
+                bool result = false;
+                for (int mask = 0; mask < board.win_masks.size(); mask++) {
+                    result = result || (((opp_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]);
+                }
+                return result;
         }
         std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
             std::vector<int> scores = std::vector<int>(moves.size(), 0);
@@ -570,19 +578,13 @@ class CrossfishPrev {
                 //if it wins a miniboard
                 int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
-                for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    if (is_capture(board, moves[i])) {
-                        move_score += 100;
-                        break;
-                    }
+                if (is_capture(board, moves[i])) {
+                    move_score += 100;
                 }
 
                 //if it blocks a win
-                for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 75;
-                        break;
-                    }
+                if (is_block(board, moves[i])) {
+                    move_score += 75;
                 }
 
                 //if it creates an unblocked 2 in a row
@@ -938,12 +940,20 @@ class CrossfishDev {
         bool is_capture(GlobalBoard &board, Move &move) {
                 //if it wins a miniboard
                 int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
+                bool result = false;
                 for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    if (((miniboard_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        return true;
-                    }
+                    result = result || (((miniboard_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]);
                 }
-                return false;
+                return result;
+        }
+        bool is_block(GlobalBoard &board, Move &move) {
+                //if it blocks a win
+                int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
+                bool result = false;
+                for (int mask = 0; mask < board.win_masks.size(); mask++) {
+                    result = result || (((opp_markers | (1 << move.square)) & board.win_masks[mask]) == board.win_masks[mask]);
+                }
+                return result;
         }
         std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
             std::vector<int> scores = std::vector<int>(moves.size(), 0);
@@ -965,19 +975,13 @@ class CrossfishDev {
                 //if it wins a miniboard
                 int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
                 int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
-                for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    if (is_capture(board, moves[i])) {
-                        move_score += 100;
-                        break;
-                    }
+                if (is_capture(board, moves[i])) {
+                    move_score += 100;
                 }
 
                 //if it blocks a win
-                for (int mask = 0; mask < board.win_masks.size(); mask++) {
-                    if (((opp_markers | (1 << moves[i].square)) & board.win_masks[mask]) == board.win_masks[mask]) {
-                        move_score += 75;
-                        break;
-                    }
+                if (is_block(board, moves[i])) {
+                    move_score += 75;
                 }
 
                 //if it creates an unblocked 2 in a row
