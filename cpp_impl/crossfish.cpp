@@ -456,6 +456,22 @@ class CrossfishDev {
             }
             nodes++;
             //should we stop searching?
+
+            int winner = board.checkWinner();
+            if (winner != -1){
+                if (winner == 2) {
+                    return 0;
+                }
+                else {
+                    if (winner == board.n_moves % 2) {
+                        return max_val - ply; //current player won
+                    }
+                    else {
+                        return min_val + ply; //previous player won
+                    }
+                }
+            }
+
             int stand_pat = evaluate(board);
             if (stand_pat >= beta) {
                 return beta;
@@ -508,8 +524,8 @@ class CrossfishDev {
                         return min_val + ply; //previous player won
                     }
                 }
-                
             }
+
             TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
             if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
                 if (entry.flag == 1) {
@@ -525,10 +541,11 @@ class CrossfishDev {
                     return entry.score;
                 }
             }
-            if (depth == 0) {
-                // return evaluate(board);
+           
+            if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
             }
+            
             std::vector<Move> legal_moves = board.getLegalMoves();
             if (legal_moves.empty()){
                 std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
@@ -548,18 +565,6 @@ class CrossfishDev {
 
                 int futility_margin = 800;
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
-
-                // //null move pruning
-                // if (ply > 0 && can_null && depth > 1) {
-                //     // board.pass();
-                //     board.n_moves++;
-                //     int null_val = -search(board,  1 + depth/4, ply + 1, -beta, -alpha, false);
-                //     // board.unpass();
-                //     board.n_moves--;
-                //     if (null_val >= beta) {
-                //         return beta;
-                //     }
-                // } 
             }
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);

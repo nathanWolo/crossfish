@@ -397,7 +397,7 @@ class CrossfishPrev {
             (1 << 2) + (1 << 6), (1 << 4)
 
         };
-
+        int depth = 1;
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
             thinking_time = thinking_time_passed;
             nodes = 0;
@@ -408,7 +408,7 @@ class CrossfishPrev {
             killer_moves = std::array<Move, 128>();
             history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
             start_time = std::chrono::high_resolution_clock::now();
-            int depth = 1;
+            depth = 1;
             int alpha = min_val;
             int beta = max_val;
             int aspiration_window = 1500;
@@ -451,6 +451,22 @@ class CrossfishPrev {
             }
             nodes++;
             //should we stop searching?
+
+            int winner = board.checkWinner();
+            if (winner != -1){
+                if (winner == 2) {
+                    return 0;
+                }
+                else {
+                    if (winner == board.n_moves % 2) {
+                        return max_val - ply; //current player won
+                    }
+                    else {
+                        return min_val + ply; //previous player won
+                    }
+                }
+            }
+
             int stand_pat = evaluate(board);
             if (stand_pat >= beta) {
                 return beta;
@@ -520,8 +536,8 @@ class CrossfishPrev {
                     return entry.score;
                 }
             }
-            if (depth == 0) {
-                // return evaluate(board);
+           
+            if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
             }
             std::vector<Move> legal_moves = board.getLegalMoves();
@@ -543,18 +559,6 @@ class CrossfishPrev {
 
                 int futility_margin = 800;
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
-
-                // //null move pruning
-                // if (ply > 0 && can_null && depth > 1) {
-                //     // board.pass();
-                //     board.n_moves++;
-                //     int null_val = -search(board,  1 + depth/4, ply + 1, -beta, -alpha, false);
-                //     // board.unpass();
-                //     board.n_moves--;
-                //     if (null_val >= beta) {
-                //         return beta;
-                //     }
-                // } 
             }
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
@@ -721,7 +725,7 @@ class CrossfishPrev {
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
                     move_score -= 250;
                 }
-                scores[i] = move_score + history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square];
+                scores[i] = move_score;
             }
             return scores;
             
@@ -824,7 +828,6 @@ class CrossfishPrev {
 
 };
 
-
 class CrossfishDev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -924,6 +927,22 @@ class CrossfishDev {
             }
             nodes++;
             //should we stop searching?
+
+            int winner = board.checkWinner();
+            if (winner != -1){
+                if (winner == 2) {
+                    return 0;
+                }
+                else {
+                    if (winner == board.n_moves % 2) {
+                        return max_val - ply; //current player won
+                    }
+                    else {
+                        return min_val + ply; //previous player won
+                    }
+                }
+            }
+
             int stand_pat = evaluate(board);
             if (stand_pat >= beta) {
                 return beta;
@@ -993,8 +1012,8 @@ class CrossfishDev {
                     return entry.score;
                 }
             }
-            if (depth == 0) {
-                // return evaluate(board);
+           
+            if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
             }
             std::vector<Move> legal_moves = board.getLegalMoves();
@@ -1016,18 +1035,6 @@ class CrossfishDev {
 
                 int futility_margin = 800;
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
-
-                // //null move pruning
-                // if (ply > 0 && can_null && depth > 1) {
-                //     // board.pass();
-                //     board.n_moves++;
-                //     int null_val = -search(board,  1 + depth/4, ply + 1, -beta, -alpha, false);
-                //     // board.unpass();
-                //     board.n_moves--;
-                //     if (null_val >= beta) {
-                //         return beta;
-                //     }
-                // } 
             }
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
@@ -1194,7 +1201,7 @@ class CrossfishDev {
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
                     move_score -= 250;
                 }
-                scores[i] = move_score + history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square];
+                scores[i] = move_score;
             }
             return scores;
             
