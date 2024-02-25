@@ -357,19 +357,20 @@ class CrossfishPrev {
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
         std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
-        int min_val = -9999;
-        int max_val = 9999;
+        int min_val = -99999;
+        int max_val = 99999;
     public:
         int root_score;
         int nodes;
         std::array<Move, 128> killer_moves;
+        std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
         static const int tt_size = 1 << 23;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
         //0 1 2
         //3 4 5
         //6 7 8
-        std::vector<int> two_in_a_row_masks = {
+        std::vector<int> two_in_a_row_masks = { //should this be an array instead?
             (1 << 0) + (1 << 1),  (1 << 2),
             (1 << 1) + (1 << 2), (1 << 0),
             (1 << 3) + (1 << 4), (1 << 5),
@@ -405,11 +406,12 @@ class CrossfishPrev {
 
             //clear killers
             killer_moves = std::array<Move, 128>();
+            history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
             start_time = std::chrono::high_resolution_clock::now();
             int depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 200;
+            int aspiration_window = 1500;
             int searches = 0;
             int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -448,6 +450,7 @@ class CrossfishPrev {
                 return min_val;
             }
             nodes++;
+            //should we stop searching?
             int stand_pat = evaluate(board);
             if (stand_pat >= beta) {
                 return beta;
@@ -455,6 +458,8 @@ class CrossfishPrev {
             if (alpha < stand_pat) {
                 alpha = stand_pat;
             }
+
+            //get and sort moves
             std::vector<Move> legal_moves = board.getLegalMoves();
             std::vector<int> scores = get_move_scores(legal_moves, {99, 99}, board, ply);
             sort_moves(legal_moves, scores);
@@ -478,7 +483,7 @@ class CrossfishPrev {
 
         }
 
-        int search(GlobalBoard board, int depth, int ply, int alpha, int beta) {
+        int search(GlobalBoard board, int depth, int ply, int alpha, int beta,  bool can_null = true) {
             /*A simple negamax search*/
             //check out of time
             if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
@@ -526,16 +531,31 @@ class CrossfishPrev {
                 board.print_board();
                 // std::cout << board.checkWinner() << std::endl;
             }
+            bool pv_node = (beta - alpha > 1);
+            bool can_futility_prune = false;
+            if (!pv_node) {
+                int stand_pat = evaluate(board);
 
-            int stand_pat = evaluate(board);
+                int reverse_futility_margin = 650;
+                if (stand_pat - reverse_futility_margin * depth >= beta) {
+                    return beta;
+                }
 
-            int reverse_futility_margin = 100;
-            if (stand_pat - reverse_futility_margin * depth >= beta) {
-                return beta;
+                int futility_margin = 800;
+                can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
+
+                // //null move pruning
+                // if (ply > 0 && can_null && depth > 1) {
+                //     // board.pass();
+                //     board.n_moves++;
+                //     int null_val = -search(board,  1 + depth/4, ply + 1, -beta, -alpha, false);
+                //     // board.unpass();
+                //     board.n_moves--;
+                //     if (null_val >= beta) {
+                //         return beta;
+                //     }
+                // } 
             }
-
-            int futility_margin = 100;
-            bool can_futility_prune = (stand_pat + futility_margin * depth <= alpha); 
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key
@@ -544,12 +564,25 @@ class CrossfishPrev {
             Move best_move = legal_moves[0];
             int best_val = min_val;
             int alpha_orig = alpha;
+            int val;
             for (int i = 0; i < legal_moves.size(); i++) {
                 if (can_futility_prune && i > 0 && !is_capture_avx(board, legal_moves[i])) { //dont search quiet moves in already losing positions
                     continue;
                 }
                 board.makeMove(legal_moves[i]);
-                int val = -search(board, depth - 1, ply + 1, -beta, -alpha);
+                if (i == 0) {
+                    val = -search(board, depth - 1, ply + 1, -beta, -alpha, can_null);
+                }
+                else {
+                    int lmr = 0;
+                    if (scores[i] < 0) {
+                        lmr = i/4;
+                    }
+                    val = -search(board, std::max(depth - 1 - lmr, 0), ply + 1, -alpha - 1, -alpha, can_null);
+                    if (val > alpha && val < beta) {
+                        val = -search(board, depth - 1, ply + 1, -beta, -alpha, can_null);
+                    }
+                }
                 board.unmakeMove();
                 if (val > best_val) {
                     best_val = val;
@@ -562,6 +595,7 @@ class CrossfishPrev {
                 alpha = std::max(alpha, best_val);
                 if (alpha >= beta) {
                     killer_moves[ply] = legal_moves[i];
+                    // history_table[board.n_moves % 2][legal_moves[i].mini_board][legal_moves[i].square] += (1 << depth);
                     break;
                 }
             }
@@ -687,7 +721,7 @@ class CrossfishPrev {
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
                     move_score -= 250;
                 }
-                scores[i] = move_score;
+                scores[i] = move_score + history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square];
             }
             return scores;
             
@@ -701,6 +735,7 @@ class CrossfishPrev {
             //count two in a rows for both players
             int p0_two_in_a_row = 0;
             int p1_two_in_a_row = 0;
+            //square counts
             int p0_center_squares_held = 0;
             int p1_center_squares_held = 0;
             int p0_corner_squares_held = 0;
@@ -710,47 +745,37 @@ class CrossfishPrev {
             //idea, keep a map of two in a rows. Two in a rows that form two in a rows with other two in a rows are worth more
             int p0_two_in_a_row_map = 0;
             int p1_two_in_a_row_map = 0;
+            //corner mask
+            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8); 
 
+            int p0_tiar_temp;
+            int p1_tiar_temp;
+            int p0_markers;
+            int p1_markers;
             for (int miniboard = 0; miniboard < 8; miniboard++) {
                 if ((out_of_play & ( 1<< miniboard) != 0)) {
                     continue;
                 }
-                int p0_markers = board.mini_boards[miniboard].markers[0];
-                int p1_markers = board.mini_boards[miniboard].markers[1];
+                p0_markers = board.mini_boards[miniboard].markers[0];
+                p1_markers = board.mini_boards[miniboard].markers[1];
 
                 //make sure board is in play
 
-
+                //find and keep track of two in a rows
                 for (int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
-                    if (((p0_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                    && ((p1_markers & two_in_a_row_masks[i * 2 + 1]) == 0)) {
-                        p0_two_in_a_row++;
-                        p0_two_in_a_row_map |= (1 << miniboard);
-                    }
-                    if (((p1_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                    && ((p0_markers & two_in_a_row_masks[i * 2 + 1]) == 0)){
-                        p1_two_in_a_row++;
-                        p1_two_in_a_row_map |= (1 << miniboard);
-                    }
+                    p0_tiar_temp = ((__builtin_popcount(p0_markers & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_markers & two_in_a_row_masks[i * 2 + 1])) /2);
+                    p1_tiar_temp = ((__builtin_popcount(p1_markers & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_markers & two_in_a_row_masks[i * 2 + 1])) /2);
+                    p0_two_in_a_row += p0_tiar_temp;
+                    p1_two_in_a_row += p1_tiar_temp;
+                    
+                    p0_two_in_a_row_map |= ((1 << miniboard) * p0_tiar_temp);
+                    p1_two_in_a_row_map |= ((1 << miniboard) * p1_tiar_temp);
                 }
-                // center squares
-                if ((p0_markers & (1 << 4)) != 0) {
-                    p0_center_squares_held++;
-                } 
-                else if ((p1_markers & (1 << 4)) != 0) {
-                    p1_center_squares_held++;
-                }
-                //corner squares
-                //idea: rewrite this to use a mask and popcount
-                std::array<int, 4> corners = {0, 2, 6, 8};
-                for (int i = 0; i < 4; i++) {
-                    if ((p0_markers & (1 << corners[i] )) != 0) {
-                        p0_corner_squares_held++;
-                    }
-                    if ((p1_markers & (1 << corners[i] )) != 0) {
-                        p1_corner_squares_held++;
-                    }
-                }
+                
+                p0_center_squares_held += __builtin_popcount(p0_markers & (1 << 4));
+                p1_center_squares_held += __builtin_popcount(p1_markers & (1 << 4));
+                p0_corner_squares_held += __builtin_popcount(p0_markers & corners);
+                p1_corner_squares_held += __builtin_popcount(p1_markers & corners);
                 //total squares
                 p0_squares_held += __builtin_popcount(p0_markers);
                 p1_squares_held += __builtin_popcount(p1_markers);
@@ -761,29 +786,12 @@ class CrossfishPrev {
             //also check for 2 in a rows in the out of play miniboards
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
-
-            int p0_center_miniboard_held = 0;
-            int p1_center_miniboard_held = 0;
-            if ((p0_miniboards & (1 << 4)) != 0) {
-                p0_center_miniboard_held++;
-            }
-            else if ((p1_miniboards & (1 << 4)) != 0) {
-                p1_center_miniboard_held++;
-            }
             
-            //idea: rewrite this to use a mask and popcount
-            int p0_corner_miniboards_held = 0;
-            int p1_corner_miniboards_held = 0;
-            std::array<int, 4> corners = {0, 2, 6, 8};
-            for (int i = 0; i < 4; i++) {
-                if ((p0_miniboards & (1 << corners[i] )) != 0) {
-                    p0_corner_miniboards_held++;
-                }
-                else if ((p1_miniboards & (1 << corners[i] )) != 0) {
-                    p1_corner_miniboards_held++;
-                }
-            }
-
+            int p0_center_miniboard_held = __builtin_popcount(p0_miniboards & (1 << 4));
+            int p1_center_miniboard_held = __builtin_popcount(p1_miniboards & (1 << 4));
+            
+            int p0_corner_miniboards_held = __builtin_popcount(p0_miniboards & corners);
+            int p1_corner_miniboards_held = __builtin_popcount(p1_miniboards & corners);
 
             int p0_global_two_in_a_row = 0;
             int p1_global_two_in_a_row = 0;
@@ -791,34 +799,25 @@ class CrossfishPrev {
             int p1_two_in_a_rows_lined_up = 0;
             for(int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
                 //check for global two in a rows
-                if (((p0_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
-                    p0_global_two_in_a_row += 1;
-                }
-                if (((p1_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
-                    p1_global_two_in_a_row += 1;
-                }
+                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
+                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
                 //check for two in a rows that line up
-                if ((((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
-                    p0_two_in_a_rows_lined_up++;
-                }
-                if ((((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
-                    p1_two_in_a_rows_lined_up++;
-                }
+                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1]))  / 2);
+                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1]))   / 2);
             }
             //should tune these coefficients
-            int val = (p0_miniboards_held - p1_miniboards_held) * 200;
-            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 100;
-            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 50;
-            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 100;
-            val += (p0_two_in_a_row - p1_two_in_a_row) * 50;
-            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 25;
-            val += (p0_center_squares_held - p1_center_squares_held) * 2;
-            val += (p0_corner_squares_held - p1_corner_squares_held);
-            val += (p0_squares_held - p1_squares_held)* 2;
+            int val = (p0_miniboards_held - p1_miniboards_held) * 2000;
+            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 1000;
+            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
+            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1000;
+            val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
+            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 250;
+            val += (p0_center_squares_held - p1_center_squares_held) * 20;
+            val += (p0_corner_squares_held - p1_corner_squares_held) + 10;
+            val += (p0_squares_held - p1_squares_held)* 20;
+
+            //tempo bonus to help with aspiration windows
+            val += pow(-1, board.n_moves) * 50;
             return pow(-1, board.n_moves) * val;
 
         }
@@ -831,19 +830,20 @@ class CrossfishDev {
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
         std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
-        int min_val = -9999;
-        int max_val = 9999;
+        int min_val = -99999;
+        int max_val = 99999;
     public:
         int root_score;
         int nodes;
         std::array<Move, 128> killer_moves;
+        std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
         static const int tt_size = 1 << 23;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
         //0 1 2
         //3 4 5
         //6 7 8
-        std::vector<int> two_in_a_row_masks = {
+        std::vector<int> two_in_a_row_masks = { //should this be an array instead?
             (1 << 0) + (1 << 1),  (1 << 2),
             (1 << 1) + (1 << 2), (1 << 0),
             (1 << 3) + (1 << 4), (1 << 5),
@@ -870,7 +870,7 @@ class CrossfishDev {
             (1 << 2) + (1 << 6), (1 << 4)
 
         };
-
+        int depth = 1;
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
             thinking_time = thinking_time_passed;
             nodes = 0;
@@ -879,11 +879,12 @@ class CrossfishDev {
 
             //clear killers
             killer_moves = std::array<Move, 128>();
+            history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
             start_time = std::chrono::high_resolution_clock::now();
-            int depth = 1;
+            depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 200;
+            int aspiration_window = 1500;
             int searches = 0;
             int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -922,6 +923,7 @@ class CrossfishDev {
                 return min_val;
             }
             nodes++;
+            //should we stop searching?
             int stand_pat = evaluate(board);
             if (stand_pat >= beta) {
                 return beta;
@@ -929,6 +931,8 @@ class CrossfishDev {
             if (alpha < stand_pat) {
                 alpha = stand_pat;
             }
+
+            //get and sort moves
             std::vector<Move> legal_moves = board.getLegalMoves();
             std::vector<int> scores = get_move_scores(legal_moves, {99, 99}, board, ply);
             sort_moves(legal_moves, scores);
@@ -952,7 +956,7 @@ class CrossfishDev {
 
         }
 
-        int search(GlobalBoard board, int depth, int ply, int alpha, int beta) {
+        int search(GlobalBoard board, int depth, int ply, int alpha, int beta,  bool can_null = true) {
             /*A simple negamax search*/
             //check out of time
             if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
@@ -1000,16 +1004,31 @@ class CrossfishDev {
                 board.print_board();
                 // std::cout << board.checkWinner() << std::endl;
             }
+            bool pv_node = (beta - alpha > 1);
+            bool can_futility_prune = false;
+            if (!pv_node) {
+                int stand_pat = evaluate(board);
 
-            int stand_pat = evaluate(board);
+                int reverse_futility_margin = 650;
+                if (stand_pat - reverse_futility_margin * depth >= beta) {
+                    return beta;
+                }
 
-            int reverse_futility_margin = 100;
-            if (stand_pat - reverse_futility_margin * depth >= beta) {
-                return beta;
+                int futility_margin = 800;
+                can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
+
+                // //null move pruning
+                // if (ply > 0 && can_null && depth > 1) {
+                //     // board.pass();
+                //     board.n_moves++;
+                //     int null_val = -search(board,  1 + depth/4, ply + 1, -beta, -alpha, false);
+                //     // board.unpass();
+                //     board.n_moves--;
+                //     if (null_val >= beta) {
+                //         return beta;
+                //     }
+                // } 
             }
-
-            int futility_margin = 100;
-            bool can_futility_prune = (stand_pat + futility_margin * depth <= alpha); 
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key
@@ -1018,12 +1037,25 @@ class CrossfishDev {
             Move best_move = legal_moves[0];
             int best_val = min_val;
             int alpha_orig = alpha;
+            int val;
             for (int i = 0; i < legal_moves.size(); i++) {
                 if (can_futility_prune && i > 0 && !is_capture_avx(board, legal_moves[i])) { //dont search quiet moves in already losing positions
                     continue;
                 }
                 board.makeMove(legal_moves[i]);
-                int val = -search(board, depth - 1, ply + 1, -beta, -alpha);
+                if (i == 0) {
+                    val = -search(board, depth - 1, ply + 1, -beta, -alpha, can_null);
+                }
+                else {
+                    int lmr = 0;
+                    if (scores[i] < 0) {
+                        lmr = i/4;
+                    }
+                    val = -search(board, std::max(depth - 1 - lmr, 0), ply + 1, -alpha - 1, -alpha, can_null);
+                    if (val > alpha && val < beta) {
+                        val = -search(board, depth - 1, ply + 1, -beta, -alpha, can_null);
+                    }
+                }
                 board.unmakeMove();
                 if (val > best_val) {
                     best_val = val;
@@ -1036,6 +1068,7 @@ class CrossfishDev {
                 alpha = std::max(alpha, best_val);
                 if (alpha >= beta) {
                     killer_moves[ply] = legal_moves[i];
+                    // history_table[board.n_moves % 2][legal_moves[i].mini_board][legal_moves[i].square] += (1 << depth);
                     break;
                 }
             }
@@ -1161,7 +1194,7 @@ class CrossfishDev {
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
                     move_score -= 250;
                 }
-                scores[i] = move_score;
+                scores[i] = move_score + history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square];
             }
             return scores;
             
@@ -1175,6 +1208,7 @@ class CrossfishDev {
             //count two in a rows for both players
             int p0_two_in_a_row = 0;
             int p1_two_in_a_row = 0;
+            //square counts
             int p0_center_squares_held = 0;
             int p1_center_squares_held = 0;
             int p0_corner_squares_held = 0;
@@ -1184,47 +1218,37 @@ class CrossfishDev {
             //idea, keep a map of two in a rows. Two in a rows that form two in a rows with other two in a rows are worth more
             int p0_two_in_a_row_map = 0;
             int p1_two_in_a_row_map = 0;
+            //corner mask
+            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8); 
 
+            int p0_tiar_temp;
+            int p1_tiar_temp;
+            int p0_markers;
+            int p1_markers;
             for (int miniboard = 0; miniboard < 8; miniboard++) {
                 if ((out_of_play & ( 1<< miniboard) != 0)) {
                     continue;
                 }
-                int p0_markers = board.mini_boards[miniboard].markers[0];
-                int p1_markers = board.mini_boards[miniboard].markers[1];
+                p0_markers = board.mini_boards[miniboard].markers[0];
+                p1_markers = board.mini_boards[miniboard].markers[1];
 
                 //make sure board is in play
 
-
+                //find and keep track of two in a rows
                 for (int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
-                    if (((p0_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                    && ((p1_markers & two_in_a_row_masks[i * 2 + 1]) == 0)) {
-                        p0_two_in_a_row++;
-                        p0_two_in_a_row_map |= (1 << miniboard);
-                    }
-                    if (((p1_markers & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                    && ((p0_markers & two_in_a_row_masks[i * 2 + 1]) == 0)){
-                        p1_two_in_a_row++;
-                        p1_two_in_a_row_map |= (1 << miniboard);
-                    }
+                    p0_tiar_temp = ((__builtin_popcount(p0_markers & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_markers & two_in_a_row_masks[i * 2 + 1])) /2);
+                    p1_tiar_temp = ((__builtin_popcount(p1_markers & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_markers & two_in_a_row_masks[i * 2 + 1])) /2);
+                    p0_two_in_a_row += p0_tiar_temp;
+                    p1_two_in_a_row += p1_tiar_temp;
+                    
+                    p0_two_in_a_row_map |= ((1 << miniboard) * p0_tiar_temp);
+                    p1_two_in_a_row_map |= ((1 << miniboard) * p1_tiar_temp);
                 }
-                // center squares
-                if ((p0_markers & (1 << 4)) != 0) {
-                    p0_center_squares_held++;
-                } 
-                else if ((p1_markers & (1 << 4)) != 0) {
-                    p1_center_squares_held++;
-                }
-                //corner squares
-                //idea: rewrite this to use a mask and popcount
-                std::array<int, 4> corners = {0, 2, 6, 8};
-                for (int i = 0; i < 4; i++) {
-                    if ((p0_markers & (1 << corners[i] )) != 0) {
-                        p0_corner_squares_held++;
-                    }
-                    if ((p1_markers & (1 << corners[i] )) != 0) {
-                        p1_corner_squares_held++;
-                    }
-                }
+                
+                p0_center_squares_held += __builtin_popcount(p0_markers & (1 << 4));
+                p1_center_squares_held += __builtin_popcount(p1_markers & (1 << 4));
+                p0_corner_squares_held += __builtin_popcount(p0_markers & corners);
+                p1_corner_squares_held += __builtin_popcount(p1_markers & corners);
                 //total squares
                 p0_squares_held += __builtin_popcount(p0_markers);
                 p1_squares_held += __builtin_popcount(p1_markers);
@@ -1235,29 +1259,12 @@ class CrossfishDev {
             //also check for 2 in a rows in the out of play miniboards
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
-
-            int p0_center_miniboard_held = 0;
-            int p1_center_miniboard_held = 0;
-            if ((p0_miniboards & (1 << 4)) != 0) {
-                p0_center_miniboard_held++;
-            }
-            else if ((p1_miniboards & (1 << 4)) != 0) {
-                p1_center_miniboard_held++;
-            }
             
-            //idea: rewrite this to use a mask and popcount
-            int p0_corner_miniboards_held = 0;
-            int p1_corner_miniboards_held = 0;
-            std::array<int, 4> corners = {0, 2, 6, 8};
-            for (int i = 0; i < 4; i++) {
-                if ((p0_miniboards & (1 << corners[i] )) != 0) {
-                    p0_corner_miniboards_held++;
-                }
-                else if ((p1_miniboards & (1 << corners[i] )) != 0) {
-                    p1_corner_miniboards_held++;
-                }
-            }
-
+            int p0_center_miniboard_held = __builtin_popcount(p0_miniboards & (1 << 4));
+            int p1_center_miniboard_held = __builtin_popcount(p1_miniboards & (1 << 4));
+            
+            int p0_corner_miniboards_held = __builtin_popcount(p0_miniboards & corners);
+            int p1_corner_miniboards_held = __builtin_popcount(p1_miniboards & corners);
 
             int p0_global_two_in_a_row = 0;
             int p1_global_two_in_a_row = 0;
@@ -1265,34 +1272,25 @@ class CrossfishDev {
             int p1_two_in_a_rows_lined_up = 0;
             for(int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
                 //check for global two in a rows
-                if (((p0_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
-                    p0_global_two_in_a_row += 1;
-                }
-                if (((p1_miniboards & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
-                    p1_global_two_in_a_row += 1;
-                }
+                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
+                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
                 //check for two in a rows that line up
-                if ((((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                && ((p1_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)) {
-                    p0_two_in_a_rows_lined_up++;
-                }
-                if ((((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) == two_in_a_row_masks[i * 2])
-                && ((p0_miniboards & two_in_a_row_masks[i * 2 + 1]) == 0)){
-                    p1_two_in_a_rows_lined_up++;
-                }
+                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1]))  / 2);
+                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1]))   / 2);
             }
             //should tune these coefficients
-            int val = (p0_miniboards_held - p1_miniboards_held) * 200;
-            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 100;
-            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 50;
-            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 100;
-            val += (p0_two_in_a_row - p1_two_in_a_row) * 50;
-            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 25;
-            val += (p0_center_squares_held - p1_center_squares_held) * 2;
-            val += (p0_corner_squares_held - p1_corner_squares_held);
-            val += (p0_squares_held - p1_squares_held)* 2;
+            int val = (p0_miniboards_held - p1_miniboards_held) * 2000;
+            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 1000;
+            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
+            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1000;
+            val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
+            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 250;
+            val += (p0_center_squares_held - p1_center_squares_held) * 20;
+            val += (p0_corner_squares_held - p1_corner_squares_held) + 10;
+            val += (p0_squares_held - p1_squares_held)* 20;
+
+            //tempo bonus to help with aspiration windows
+            val += pow(-1, board.n_moves) * 50;
             return pow(-1, board.n_moves) * val;
 
         }
