@@ -231,6 +231,47 @@ class GlobalBoard {
             return -1;
         }
 
+        std::vector<Move> get_captures() {
+            std::vector<Move> captures;
+
+            //check if we were sent to one miniboard or if we were sent to a won or drawn miniboard
+            int active_square = move_history.top().square;
+            int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
+
+            if ((out_of_play & (1 << active_square)) == 0 ) { //we were not sent to a won or drawn board
+                int marked = mini_boards[active_square].markers[0] | mini_boards[active_square].markers[1];
+                //find all moves that capture this square
+                for (int i = 0; i < 9; i++) {
+                    if ((marked & (1 << i)) == 0) //if the square is not taken
+                    {
+                        Move move = {active_square, i};
+                        if (is_capture_avx(move)) {
+                            captures.push_back(move);
+                        }
+                    }
+                }
+            }
+            else {
+                //we were sent to a won or drawn board
+                for (int i = 0; i < 9; i++) {
+                    if ((out_of_play & (1 << i)) == 0) //check if board i is not out of play
+                    {
+                        int marked = mini_boards[i].markers[0] | mini_boards[i].markers[1];
+                        for (int j = 0; j < 9; j++) {
+                            if ((marked & (1 << j)) == 0) //if the square is not taken
+                            {
+                                Move move = {i, j};
+                                if (is_capture_avx(move)) {
+                                    captures.push_back(move);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return captures;
+        }
+
         std::vector<Move> getLegalMoves() {
             std::vector<Move> legal_moves;
             if (n_moves == 0) {
@@ -476,16 +517,12 @@ class CrossfishPrev {
             }
 
             //get and sort moves
-            std::vector<Move> legal_moves = board.getLegalMoves();
-            std::vector<int> scores = get_move_scores(legal_moves, {99, 99}, board, ply);
-            sort_moves(legal_moves, scores);
-            Move best_move = legal_moves[0];
+            std::vector<Move> caps = board.get_captures();
+            std::vector<int> scores = get_move_scores(caps, {99, 99}, board, ply);
+            sort_moves(caps, scores);
             int val;
-            for (int i = 0; i < legal_moves.size(); i++) {
-                if (!is_capture_avx(board, legal_moves[i])) {
-                    continue;
-                }
-                board.makeMove(legal_moves[i]);
+            for (int i = 0; i < caps.size(); i++) {
+                board.makeMove(caps[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
                 board.unmakeMove();
                 alpha = std::max(alpha, val);
@@ -685,6 +722,7 @@ class CrossfishPrev {
             return result;
 
         }
+
 
         std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
             std::vector<int> scores = std::vector<int>(moves.size(), 0);
@@ -828,6 +866,7 @@ class CrossfishPrev {
 
 };
 
+
 class CrossfishDev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -952,16 +991,12 @@ class CrossfishDev {
             }
 
             //get and sort moves
-            std::vector<Move> legal_moves = board.getLegalMoves();
-            std::vector<int> scores = get_move_scores(legal_moves, {99, 99}, board, ply);
-            sort_moves(legal_moves, scores);
-            Move best_move = legal_moves[0];
+            std::vector<Move> caps = board.get_captures();
+            std::vector<int> scores = get_move_scores(caps, {99, 99}, board, ply);
+            sort_moves(caps, scores);
             int val;
-            for (int i = 0; i < legal_moves.size(); i++) {
-                if (!is_capture_avx(board, legal_moves[i])) {
-                    continue;
-                }
-                board.makeMove(legal_moves[i]);
+            for (int i = 0; i < caps.size(); i++) {
+                board.makeMove(caps[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
                 board.unmakeMove();
                 alpha = std::max(alpha, val);
@@ -1161,6 +1196,7 @@ class CrossfishDev {
             return result;
 
         }
+
 
         std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
             std::vector<int> scores = std::vector<int>(moves.size(), 0);
