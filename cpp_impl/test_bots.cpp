@@ -558,6 +558,7 @@ class CrossfishPrev {
                 }
                 
             }
+            bool pv_node = (beta - alpha > 1);
             TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
             if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
                 if (entry.flag == 1) {
@@ -573,18 +574,10 @@ class CrossfishPrev {
                     return entry.score;
                 }
             }
-           
+
             if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
             }
-            std::vector<Move> legal_moves = board.getLegalMoves();
-            if (legal_moves.empty()){
-                std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
-                std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
-                board.print_board();
-                // std::cout << board.checkWinner() << std::endl;
-            }
-            bool pv_node = (beta - alpha > 1);
             bool can_futility_prune = false;
             if (!pv_node) {
                 int stand_pat = evaluate(board);
@@ -596,6 +589,19 @@ class CrossfishPrev {
 
                 int futility_margin = 800;
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
+            }
+            //internal iterative deepening
+            if (pv_node && entry.zobrist_hash != board.zobrist_hash && depth > 2) {
+                search(board, 1, ply, alpha, beta, false);
+                entry = transposition_table[board.zobrist_hash % tt_size];
+            }
+        
+            std::vector<Move> legal_moves = board.getLegalMoves();
+            if (legal_moves.empty()){
+                std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
+                std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
+                board.print_board();
+                // std::cout << board.checkWinner() << std::endl;
             }
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
@@ -866,7 +872,6 @@ class CrossfishPrev {
 
 };
 
-
 class CrossfishDev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -1032,6 +1037,7 @@ class CrossfishDev {
                 }
                 
             }
+            bool pv_node = (beta - alpha > 1);
             TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
             if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
                 if (entry.flag == 1) {
@@ -1047,18 +1053,10 @@ class CrossfishDev {
                     return entry.score;
                 }
             }
-           
+
             if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
             }
-            std::vector<Move> legal_moves = board.getLegalMoves();
-            if (legal_moves.empty()){
-                std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
-                std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
-                board.print_board();
-                // std::cout << board.checkWinner() << std::endl;
-            }
-            bool pv_node = (beta - alpha > 1);
             bool can_futility_prune = false;
             if (!pv_node) {
                 int stand_pat = evaluate(board);
@@ -1070,6 +1068,19 @@ class CrossfishDev {
 
                 int futility_margin = 800;
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
+            }
+            //internal iterative deepening
+            if (pv_node && entry.zobrist_hash != board.zobrist_hash && depth > 2) {
+                search(board, 1, ply, alpha, beta, false);
+                entry = transposition_table[board.zobrist_hash % tt_size];
+            }
+        
+            std::vector<Move> legal_moves = board.getLegalMoves();
+            if (legal_moves.empty()){
+                std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
+                std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
+                board.print_board();
+                // std::cout << board.checkWinner() << std::endl;
             }
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
