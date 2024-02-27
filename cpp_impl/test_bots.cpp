@@ -393,6 +393,7 @@ class GlobalBoard {
 
 };
 
+
 class CrossfishPrev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -859,9 +860,9 @@ class CrossfishPrev {
             val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
             val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1000;
             val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
-            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 250;
+            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 500;
             val += (p0_center_squares_held - p1_center_squares_held) * 20;
-            val += (p0_corner_squares_held - p1_corner_squares_held) + 10;
+            val += (p0_corner_squares_held - p1_corner_squares_held) * 10;
             val += (p0_squares_held - p1_squares_held)* 20;
 
             //tempo bonus to help with aspiration windows
@@ -871,7 +872,6 @@ class CrossfishPrev {
         }
 
 };
-
 class CrossfishDev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -1338,9 +1338,9 @@ class CrossfishDev {
             val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
             val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1000;
             val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
-            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 250;
+            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 500;
             val += (p0_center_squares_held - p1_center_squares_held) * 20;
-            val += (p0_corner_squares_held - p1_corner_squares_held) + 10;
+            val += (p0_corner_squares_held - p1_corner_squares_held) * 10;
             val += (p0_squares_held - p1_squares_held)* 20;
 
             //tempo bonus to help with aspiration windows
