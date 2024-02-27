@@ -485,7 +485,7 @@ class CrossfishDev {
             return root_best_move;
         }
 
-        int qsearch(GlobalBoard board, int alpha, int beta, int ply) {
+        int qsearch(GlobalBoard &board, int alpha, int beta, int ply) {
             //quiescence search
             if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
                 return min_val;
