@@ -595,6 +595,10 @@ class CrossfishDev {
                 search(board, 1, ply, alpha, beta, false);
                 entry = transposition_table[board.zobrist_hash % tt_size];
             }
+
+            //singular extensions condition
+            // if we got a tt hit, and the depth on the entry isn't too low, and the entry is a lower bound or exact score
+            bool singular = (entry.zobrist_hash == board.zobrist_hash && entry.depth >= depth - 3 && (entry.flag == 1 || entry.flag == 0));
         
             std::vector<Move> legal_moves = board.getLegalMoves();
             if (legal_moves.empty()){
@@ -612,20 +616,28 @@ class CrossfishDev {
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
-            for (int i = 0; i < legal_moves.size(); i++) {
-                if (can_futility_prune && i > 0 && !is_capture_avx(board, legal_moves[i])) { //dont search quiet moves in already losing positions
+            int nmoves = legal_moves.size();
+            for (int i = 0; i < nmoves; i++) {
+                bool capture = is_capture_avx(board, legal_moves[i]);
+                if (can_futility_prune && i > 0 && !capture) { //dont search quiet moves in already losing positions
                     continue;
                 }
+                int extension = 0;
+                //one reply extension or singular extension
+                if (nmoves==1 || (singular && legal_moves[i].mini_board == entry.best_move.mini_board && legal_moves[i].square == entry.best_move.square)) {
+                    extension = 1;
+                }
+
                 board.makeMove(legal_moves[i]);
                 if (i == 0) {
-                    val = -search(board, depth - 1, ply + 1, -beta, -alpha, can_null);
+                    val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha, can_null);
                 }
                 else {
-                    int lmr = 0;
+                    int reduction = 0;
                     if (scores[i] < 0) {
-                        lmr = i/4;
+                        reduction = i/4; //late move reduction
                     }
-                    val = -search(board, std::max(depth - 1 - lmr, 0), ply + 1, -alpha - 1, -alpha, can_null);
+                    val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
                     if (val > alpha && val < beta) {
                         val = -search(board, depth - 1, ply + 1, -beta, -alpha, can_null);
                     }
@@ -871,6 +883,12 @@ class CrossfishDev {
         }
 
 };
+
+
+
+
+
+
 
 
 Move grid_coord_to_move(int row, int col) {
