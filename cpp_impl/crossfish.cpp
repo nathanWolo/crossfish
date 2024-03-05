@@ -139,6 +139,9 @@ class GlobalBoard {
                     
             //         }
             // }
+                        if (n_moves > 0) {
+                zobrist_hash ^= legal_mini_board_hashes[move_history.top().square];
+            }
 
             move_history.push(move); //add the move to the list of moves
             mini_boards[move.mini_board].markers[n_moves % 2] |= (1 << move.square); //set the bit at the square to 1
@@ -187,6 +190,9 @@ class GlobalBoard {
             mini_boards[move.mini_board].markers[n_moves % 2] &= miniboard_mask; //make sure that only the last 9 bits are in use
             zobrist_hash ^= move_hashes[n_moves % 2][move.mini_board][move.square];
             zobrist_hash ^= legal_mini_board_hashes[move.square];
+                        if (n_moves > 0) {
+                zobrist_hash ^= legal_mini_board_hashes[move_history.top().square];
+            }
         }
 
         bool won_avx(int player) {
