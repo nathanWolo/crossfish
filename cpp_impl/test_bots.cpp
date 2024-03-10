@@ -875,7 +875,7 @@ class CrossfishPrev {
             int val = (p0_miniboards_held - p1_miniboards_held) * 2000;
             val += (p0_center_miniboard_held - p1_center_miniboard_held) * 1000;
             val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
-            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1000;
+            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1500;
             val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
             val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 500;
             val += (p0_center_squares_held - p1_center_squares_held) * 20;
@@ -1366,7 +1366,7 @@ class CrossfishDev {
             int val = (p0_miniboards_held - p1_miniboards_held) * 2000;
             val += (p0_center_miniboard_held - p1_center_miniboard_held) * 1000;
             val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
-            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1000;
+            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1500;
             val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
             val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 500;
             val += (p0_center_squares_held - p1_center_squares_held) * 20;
