@@ -409,8 +409,8 @@ class CrossfishPrev {
     public:
         int root_score;
         int nodes;
-        std::array<Move, 128> killer_moves;
-        std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
+        std::array<std::array<int, 9>, 128> killer_moves;
+        // std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
         static const int tt_size = 1 << 23;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
@@ -452,8 +452,8 @@ class CrossfishPrev {
             root_best_move = board.getLegalMoves()[0];
 
             //clear killers
-            killer_moves = std::array<Move, 128>();
-            history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
+            killer_moves = std::array<std::array<int, 9>, 128>();
+            // history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
             start_time = std::chrono::high_resolution_clock::now();
             depth = 1;
             int alpha = min_val;
@@ -659,7 +659,7 @@ class CrossfishPrev {
                 }
                 alpha = std::max(alpha, best_val);
                 if (alpha >= beta) {
-                    killer_moves[ply] = legal_moves[i];
+                    killer_moves[ply][legal_moves[i].square] = 1;
                     // history_table[board.n_moves % 2][legal_moves[i].mini_board][legal_moves[i].square] += (1 << depth);
                     break;
                 }
@@ -759,10 +759,8 @@ class CrossfishPrev {
                 }
 
                 //is it a killer move?
-                if (moves[i].mini_board == killer_moves[ply].mini_board && moves[i].square == killer_moves[ply].square) {
-                    move_score += 900;
-                    scores[i] = move_score;
-                    continue;
+                if (killer_moves[ply][moves[i].square] == 1) {
+                    move_score += 25;
                 }
 
                 //if it wins a miniboard
@@ -900,8 +898,8 @@ class CrossfishDev {
     public:
         int root_score;
         int nodes;
-        std::array<Move, 128> killer_moves;
-        std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
+        std::array<std::array<int, 9>, 128> killer_moves;
+        // std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
         static const int tt_size = 1 << 23;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
@@ -943,8 +941,8 @@ class CrossfishDev {
             root_best_move = board.getLegalMoves()[0];
 
             //clear killers
-            killer_moves = std::array<Move, 128>();
-            history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
+            killer_moves = std::array<std::array<int, 9>, 128>();
+            // history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
             start_time = std::chrono::high_resolution_clock::now();
             depth = 1;
             int alpha = min_val;
@@ -1150,7 +1148,7 @@ class CrossfishDev {
                 }
                 alpha = std::max(alpha, best_val);
                 if (alpha >= beta) {
-                    killer_moves[ply] = legal_moves[i];
+                    killer_moves[ply][legal_moves[i].square] = 1;
                     // history_table[board.n_moves % 2][legal_moves[i].mini_board][legal_moves[i].square] += (1 << depth);
                     break;
                 }
@@ -1250,10 +1248,8 @@ class CrossfishDev {
                 }
 
                 //is it a killer move?
-                if (moves[i].mini_board == killer_moves[ply].mini_board && moves[i].square == killer_moves[ply].square) {
-                    move_score += 900;
-                    scores[i] = move_score;
-                    continue;
+                if (killer_moves[ply][moves[i].square] == 1) {
+                    move_score += 25;
                 }
 
                 //if it wins a miniboard
