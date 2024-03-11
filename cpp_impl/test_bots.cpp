@@ -411,7 +411,7 @@ class CrossfishPrev {
         int nodes;
         std::array<std::array<int, 9>, 128> killer_moves;
         // std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
-        static const int tt_size = 1 << 23;
+        static const int tt_size = 1 << 14;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
         //0 1 2
@@ -542,7 +542,7 @@ class CrossfishPrev {
 
         }
 
-        int search(GlobalBoard board, int depth, int ply, int alpha, int beta,  bool can_null = true) {
+        int search(GlobalBoard &board, int depth, int ply, int alpha, int beta,  bool can_null = true) {
             /*A simple negamax search*/
             //check out of time
             if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
@@ -566,20 +566,20 @@ class CrossfishPrev {
             }
             bool pv_node = (beta - alpha > 1);
             TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
-            if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
-                if (entry.flag == 1) {
-                    alpha = std::max(alpha, entry.score);
-                }
-                else if (entry.flag == 2) {
-                    beta = std::min(beta, entry.score);
-                }
-                else {
-                    return entry.score;
-                }
-                if (alpha >= beta) {
-                    return entry.score;
-                }
-            }
+            // if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
+            //     if (entry.flag == 1) {
+            //         alpha = std::max(alpha, entry.score);
+            //     }
+            //     else if (entry.flag == 2) {
+            //         beta = std::min(beta, entry.score);
+            //     }
+            //     else {
+            //         return entry.score;
+            //     }
+            //     if (alpha >= beta) {
+            //         return entry.score;
+            //     }
+            // }
 
             if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
@@ -607,12 +607,12 @@ class CrossfishPrev {
             bool singular = (entry.zobrist_hash == board.zobrist_hash && entry.depth >= depth - 3 && (entry.flag == 1 || entry.flag == 0));
         
             std::vector<Move> legal_moves = board.getLegalMoves();
-            if (legal_moves.empty()){
-                std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
-                std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
-                board.print_board();
-                // std::cout << board.checkWinner() << std::endl;
-            }
+            // if (legal_moves.empty()){
+            //     std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
+            //     std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
+            //     board.print_board();
+            //     // std::cout << board.checkWinner() << std::endl;
+            // }
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key
@@ -900,7 +900,7 @@ class CrossfishDev {
         int nodes;
         std::array<std::array<int, 9>, 128> killer_moves;
         // std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
-        static const int tt_size = 1 << 23;
+        static const int tt_size = 1 << 14;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
         //0 1 2
@@ -1031,7 +1031,7 @@ class CrossfishDev {
 
         }
 
-        int search(GlobalBoard board, int depth, int ply, int alpha, int beta,  bool can_null = true) {
+        int search(GlobalBoard &board, int depth, int ply, int alpha, int beta,  bool can_null = true) {
             /*A simple negamax search*/
             //check out of time
             if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
@@ -1055,20 +1055,20 @@ class CrossfishDev {
             }
             bool pv_node = (beta - alpha > 1);
             TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
-            if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
-                if (entry.flag == 1) {
-                    alpha = std::max(alpha, entry.score);
-                }
-                else if (entry.flag == 2) {
-                    beta = std::min(beta, entry.score);
-                }
-                else {
-                    return entry.score;
-                }
-                if (alpha >= beta) {
-                    return entry.score;
-                }
-            }
+            // if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
+            //     if (entry.flag == 1) {
+            //         alpha = std::max(alpha, entry.score);
+            //     }
+            //     else if (entry.flag == 2) {
+            //         beta = std::min(beta, entry.score);
+            //     }
+            //     else {
+            //         return entry.score;
+            //     }
+            //     if (alpha >= beta) {
+            //         return entry.score;
+            //     }
+            // }
 
             if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
