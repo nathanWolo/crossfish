@@ -693,6 +693,20 @@ class CrossfishDev {
                 moves[j + 1] = key_move;
             } 
         }
+
+        // bool miniboard_is_winnable(GlobalBoard &board, int mb, int player) {
+            
+        //     //check if any of the win masks satisfy
+        //     // (other player's markers) & (win mask) == 0
+        //     bool result = false;
+        //     int opp_markers = board.mini_boards[mb].markers[(player + 1) % 2];
+        //     for (int i = 0; i < board.win_masks.size(); i++) {
+        //         result = result || ((opp_markers & board.win_masks[i]) == 0);
+        //     }
+        //     return result;
+
+        // }
+
         bool is_capture_avx(GlobalBoard &board, Move &move) {
             int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
             miniboard_markers |= (1 << move.square);
@@ -816,7 +830,7 @@ class CrossfishDev {
             int p1_tiar_temp;
             int p0_markers;
             int p1_markers;
-            for (int miniboard = 0; miniboard < 8; miniboard++) {
+            for (int miniboard = 0; miniboard < 9; miniboard++) {
                 if ((out_of_play & ( 1<< miniboard) != 0)) {
                     continue;
                 }
