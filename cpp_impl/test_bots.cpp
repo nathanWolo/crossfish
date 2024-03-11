@@ -458,7 +458,7 @@ class CrossfishPrev {
             depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 1500;
+            int aspiration_window = 500;
             int searches = 0;
             int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -947,7 +947,7 @@ class CrossfishDev {
             depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 1500;
+            int aspiration_window = 500;
             int searches = 0;
             int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
@@ -1096,12 +1096,12 @@ class CrossfishDev {
             bool singular = (entry.zobrist_hash == board.zobrist_hash && entry.depth >= depth - 3 && (entry.flag == 1 || entry.flag == 0));
         
             std::vector<Move> legal_moves = board.getLegalMoves();
-            if (legal_moves.empty()){
-                std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
-                std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
-                board.print_board();
-                // std::cout << board.checkWinner() << std::endl;
-            }
+            // if (legal_moves.empty()){
+            //     std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
+            //     std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
+            //     board.print_board();
+            //     // std::cout << board.checkWinner() << std::endl;
+            // }
             
             std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
             //sort on moves and scores, with scores as the key

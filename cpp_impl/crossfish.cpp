@@ -458,7 +458,7 @@ class CrossfishDev {
             depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 1500;
+            int aspiration_window = 500;
             int searches = 0;
             int researches = 0;
             while ((std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) < thinking_time)
