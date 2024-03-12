@@ -275,10 +275,10 @@ class GlobalBoard {
                 }
             }
             return captures;
-        }
-
+        }     
         std::vector<Move> getLegalMoves() {
             std::vector<Move> legal_moves;
+            legal_moves.reserve(9);
             if (n_moves == 0) {
                 for (int i = 0; i < 9; i++) {
                     for (int j = 0; j < 9; j++) {
@@ -318,6 +318,9 @@ class GlobalBoard {
             }
             return legal_moves;
         }
+        
+        
+        
         void print_board() {
             for (int row = 0; row < 9; row++) {
                 for (int col = 0; col < 9; col++) {
@@ -913,7 +916,6 @@ class CrossfishDev {
         int root_score;
         int nodes;
         std::array<std::array<int, 9>, 128> killer_moves;
-        // std::array<std::array<std::array<int, 9>, 9>, 2> history_table; //player, mini board, square
         static const int tt_size = 1 << 14;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
@@ -956,7 +958,6 @@ class CrossfishDev {
 
             //clear killers
             killer_moves = std::array<std::array<int, 9>, 128>();
-            // history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
             start_time = std::chrono::high_resolution_clock::now();
             depth = 1;
             int alpha = min_val;
@@ -1196,19 +1197,6 @@ class CrossfishDev {
                 moves[j + 1] = key_move;
             } 
         }
-
-        // bool miniboard_is_winnable(GlobalBoard &board, int mb, int player) {
-            
-        //     //check if any of the win masks satisfy
-        //     // (other player's markers) & (win mask) == 0
-        //     bool result = false;
-        //     int opp_markers = board.mini_boards[mb].markers[(player + 1) % 2];
-        //     for (int i = 0; i < board.win_masks.size(); i++) {
-        //         result = result || ((opp_markers & board.win_masks[i]) == 0);
-        //     }
-        //     return result;
-
-        // }
 
         bool is_capture_avx(GlobalBoard &board, Move &move) {
             int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
