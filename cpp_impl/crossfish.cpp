@@ -15,7 +15,8 @@
 #include <limits>
 #include <immintrin.h>
 #pragma GCC optimize("O3")
-#pragma GCC optimization("Ofast,unroll-loops")
+#pragma GCC option("arch=native", "tune=native", "no-zero-upper")
+#pragma GCC optimization("unroll-loops")
 #pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
@@ -23,14 +24,13 @@ struct MiniBoard {
 };
 
 struct Move {
-    int mini_board = 99;
-    int square = 99;
+    int8_t mini_board = 99;
+    int8_t square = 99;
 };
 
 struct TTEntry {
-    int depth;
-    int score;
-    int flag;
+    int8_t depth;
+    int8_t flag;
     uint64_t zobrist_hash;
     Move best_move;
 };
@@ -241,13 +241,13 @@ class GlobalBoard {
             std::vector<Move> captures;
 
             //check if we were sent to one miniboard or if we were sent to a won or drawn miniboard
-            int active_square = move_history.top().square;
+            int8_t active_square = move_history.top().square;
             int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
 
             if ((out_of_play & (1 << active_square)) == 0 ) { //we were not sent to a won or drawn board
                 int marked = mini_boards[active_square].markers[0] | mini_boards[active_square].markers[1];
                 //find all moves that capture this square
-                for (int i = 0; i < 9; i++) {
+                for (int8_t i = 0; i < 9; i++) {
                     if ((marked & (1 << i)) == 0) //if the square is not taken
                     {
                         Move move = {active_square, i};
@@ -259,11 +259,11 @@ class GlobalBoard {
             }
             else {
                 //we were sent to a won or drawn board
-                for (int i = 0; i < 9; i++) {
+                for (int8_t i = 0; i < 9; i++) {
                     if ((out_of_play & (1 << i)) == 0) //check if board i is not out of play
                     {
                         int marked = mini_boards[i].markers[0] | mini_boards[i].markers[1];
-                        for (int j = 0; j < 9; j++) {
+                        for (int8_t j = 0; j < 9; j++) {
                             if ((marked & (1 << j)) == 0) //if the square is not taken
                             {
                                 Move move = {i, j};
@@ -282,22 +282,22 @@ class GlobalBoard {
             std::vector<Move> legal_moves;
             legal_moves.reserve(9);
             if (n_moves == 0) {
-                for (int i = 0; i < 9; i++) {
-                    for (int j = 0; j < 9; j++) {
+                for (int8_t i = 0; i < 9; i++) {
+                    for (int8_t j = 0; j < 9; j++) {
                         Move move = {i, j};
                         legal_moves.push_back(move);
                     }
                 }
             } else {
-                int active_square = move_history.top().square;
+                int8_t active_square = move_history.top().square;
                 int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
                 //check if we were sent to a won or drawn board
                 if (((out_of_play & (1 << active_square)) != 0) || prev_move_was_pass) {
                     // we were
-                    for (int i = 0; i < 9; i++) {
+                    for (int8_t i = 0; i < 9; i++) {
                         if ((out_of_play & (1 << i)) == 0) //check if board i is not out of play
                         {
-                            for (int j = 0; j < 9; j++) {
+                            for (int8_t j = 0; j < 9; j++) {
                                 int marked = mini_boards[i].markers[0] | mini_boards[i].markers[1];
                                 if ((marked & (1 << j)) == 0) 
                                 { //if the square is not taken
@@ -309,7 +309,7 @@ class GlobalBoard {
                     }
                 } else {
                     int marked = mini_boards[active_square].markers[0] | mini_boards[active_square].markers[1];
-                    for (int i = 0; i < 9; i++) {
+                    for (int8_t i = 0; i < 9; i++) {
                         if ((marked & (1 << i)) == 0 ) //if the square is not taken
                         {
                             Move move = {active_square, i};
@@ -543,7 +543,7 @@ class CrossfishDev {
 
         }
 
-        int search(GlobalBoard &board, int depth, int ply, int alpha, int beta,  bool can_null = true) {
+        int search(GlobalBoard &board, int8_t depth, int ply, int alpha, int beta,  bool can_null = true) {
             /*A simple negamax search*/
             //check out of time
             if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
@@ -566,7 +566,7 @@ class CrossfishDev {
                 
             }
             bool pv_node = (beta - alpha > 1);
-            TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
+            // TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
             // if ((entry.zobrist_hash == board.zobrist_hash ) && (entry.depth >= depth) && (board.zobrist_hash != 0)) {
             //     if (entry.flag == 1) {
             //         alpha = std::max(alpha, entry.score);
@@ -598,6 +598,7 @@ class CrossfishDev {
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
             }
             //internal iterative deepening
+            TTEntry entry = transposition_table[board.zobrist_hash % tt_size];
             if (pv_node && entry.zobrist_hash != board.zobrist_hash && depth > 2) {
                 search(board, 1, ply, alpha, beta, false);
                 entry = transposition_table[board.zobrist_hash % tt_size];
@@ -644,6 +645,9 @@ class CrossfishDev {
                     if (scores[i] < 0) {
                         reduction = i/4; //late move reduction
                     }
+                    else {
+                        reduction = i/6;
+                    }
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
                     if (val > alpha && val < beta) {
                         val = -search(board, depth - 1, ply + 1, -beta, -alpha, can_null);
@@ -665,14 +669,14 @@ class CrossfishDev {
                     break;
                 }
             }
-            int flag = 0;
+            int8_t flag = 0;
             if (best_val <= alpha_orig) {
                 flag = 1;
             }
             else if (best_val >= beta) {
                 flag = 2;
             }
-            TTEntry new_entry = {depth, best_val, flag, board.zobrist_hash, best_move};
+            TTEntry new_entry = {depth, flag, board.zobrist_hash, best_move};
             transposition_table[board.zobrist_hash % tt_size] = new_entry;
 
             return best_val;
@@ -911,15 +915,15 @@ class CrossfishDev {
 
 
 Move grid_coord_to_move(int row, int col) {
-    int mini_board = (row / 3) * 3 + (col / 3);
-    int square = (row % 3) * 3 + (col % 3);
+    int8_t mini_board = (row / 3) * 3 + (col / 3);
+    int8_t square = (row % 3) * 3 + (col % 3);
     Move move = {mini_board, square};
     return move;
 }
 
 std::array<int, 2> move_to_grid_coord(Move move) {
-    int row = (move.mini_board / 3) * 3 + (move.square / 3);
-    int col = (move.mini_board % 3) * 3 + (move.square % 3);
+    int8_t row = (move.mini_board / 3) * 3 + (move.square / 3);
+    int8_t col = (move.mini_board % 3) * 3 + (move.square % 3);
     std::array<int, 2> grid_coord = {row, col};
     return grid_coord;
 }
@@ -963,7 +967,7 @@ int main()
         }
         
         if (opponent_row == -1) {
-            crossfish.getMove(board, std::chrono::milliseconds(400));
+            crossfish.getMove(board, std::chrono::milliseconds(800));
             std::cout << 4 << " " << 4 << std::endl;
             board.makeMove({4, 4});
         }
