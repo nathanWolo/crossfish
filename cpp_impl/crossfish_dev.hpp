@@ -1,4 +1,4 @@
-// LUT eval with Texel-tuned weights (per-weight Adam steps).
+// Free-move +300 in baseline. Experiment extras on top.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -63,8 +63,17 @@ class CrossfishDev {
         };
         static constexpr int MINI_LUT_SIZE = 19683;
         static inline MiniLut mini_lut[MINI_LUT_SIZE];
+        static inline int16_t mini_score[MINI_LUT_SIZE];
         static inline std::once_flag mini_lut_once;
         static constexpr int WIN_IN_ONE_WEIGHT = 300;
+        static constexpr int LUT_W_TIAR = 534;
+        static constexpr int LUT_W_CENTER_SQ = 33;
+        static constexpr int LUT_W_CORNER_SQ = 10;
+        static constexpr int LUT_W_SQUARES = 33;
+        // 0=free-move baseline, 2=off-board forks, 3=live-third global threats
+        static constexpr int EVAL_EXPERIMENT = 0;
+        static constexpr int W_FREE_MOVE = 300;
+        static constexpr int W_FORK = 400;
 
         static int mini_index(int p0, int p1) {
             int idx = 0;
@@ -161,6 +170,13 @@ class CrossfishDev {
                     e.p0_sq = (int8_t)__builtin_popcount(p0);
                     e.p1_sq = (int8_t)__builtin_popcount(p1);
                     mini_lut[idx] = e;
+                    int s = LUT_W_TIAR * (e.p0_tiar - e.p1_tiar)
+                          + LUT_W_CENTER_SQ * (e.p0_center - e.p1_center)
+                          + LUT_W_CORNER_SQ * (e.p0_corner - e.p1_corner)
+                          + LUT_W_SQUARES * (e.p0_sq - e.p1_sq);
+                    if (s > 32767) s = 32767;
+                    if (s < -32768) s = -32768;
+                    mini_score[idx] = (int16_t)s;
                 }
             });
         }
@@ -536,16 +552,104 @@ class CrossfishDev {
             d[9] = 0;
         }
 
-        int evaluate(GlobalBoard &board) {
-            int d[N_EVAL_WEIGHTS];
-            eval_diffs(board, d);
+        // Frozen global terms + tempo, in evaluate() units: stm*global + tempo.
+        // Live miniboard LUT indices are written to idx_out.
+        void eval_parts(GlobalBoard &board, int16_t *idx_out, int &n_out, int &base_out) {
+            init_mini_lut();
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
-            int val = 0;
-            for (int i = 0; i < 9; i++) {
-                val += eval_weights[i] * d[i];
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int p0_two_in_a_row_map = 0;
+            int p1_two_in_a_row_map = 0;
+            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+            n_out = 0;
+            for (int miniboard = 0; miniboard < 9; miniboard++) {
+                if ((out_of_play & (1 << miniboard)) != 0) {
+                    continue;
+                }
+                int idx = mini_index(
+                    board.mini_boards[miniboard].markers[0],
+                    board.mini_boards[miniboard].markers[1]);
+                idx_out[n_out++] = (int16_t)idx;
+                const MiniLut &e = mini_lut[idx];
+                p0_two_in_a_row_map |= ((1 << miniboard) * (e.p0_tiar != 0));
+                p1_two_in_a_row_map |= ((1 << miniboard) * (e.p1_tiar != 0));
             }
-            val += stm_sign * eval_weights[9];
-            return stm_sign * val;
+
+            int p0_miniboards = board.mini_board_states[0];
+            int p1_miniboards = board.mini_board_states[1];
+            int p0_global_two_in_a_row = 0;
+            int p1_global_two_in_a_row = 0;
+            int p0_two_in_a_rows_lined_up = 0;
+            int p1_two_in_a_rows_lined_up = 0;
+            for(int i = 0; i < (int)two_in_a_row_masks.size() / 2; i++) {
+                int third = two_in_a_row_masks[i * 2 + 1];
+                if constexpr (EVAL_EXPERIMENT == 3) {
+                    if ((board.mini_board_states[2] & third) != 0) {
+                        continue;
+                    }
+                }
+                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & third)) /2);
+                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & third)) /2);
+                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & third))  / 2);
+                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & third))   / 2);
+            }
+            int g = eval_weights[0] * (__builtin_popcount(p0_miniboards) - __builtin_popcount(p1_miniboards));
+            g += eval_weights[1] * (__builtin_popcount(p0_miniboards & (1 << 4)) - __builtin_popcount(p1_miniboards & (1 << 4)));
+            g += eval_weights[2] * (__builtin_popcount(p0_miniboards & corners) - __builtin_popcount(p1_miniboards & corners));
+            g += eval_weights[3] * (p0_global_two_in_a_row - p1_global_two_in_a_row);
+            g += eval_weights[5] * (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up);
+            base_out = stm_sign * g + eval_weights[9];
+        }
+
+        // STM-centric bonus on top of the linear/LUT eval.
+        int eval_extra(GlobalBoard &board) {
+            int extra = 0;
+            if (board.n_moves > 0) {
+                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
+                    extra += W_FREE_MOVE;
+                }
+            }
+            if constexpr (EVAL_EXPERIMENT == 2) {
+                init_mini_lut();
+                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                int active = -1;
+                if (board.n_moves > 0 && !board.prev_move_was_pass) {
+                    int sent = board.move_history.top().square;
+                    if ((out_of_play & (1 << sent)) == 0) {
+                        active = sent;
+                    }
+                }
+                int p0_w1 = 0;
+                int p1_w1 = 0;
+                for (int mb = 0; mb < 9; mb++) {
+                    if ((out_of_play & (1 << mb)) != 0) continue;
+                    if (mb == active) continue;
+                    const MiniLut &e = mini_lut[mini_index(
+                        board.mini_boards[mb].markers[0],
+                        board.mini_boards[mb].markers[1])];
+                    p0_w1 += e.p0_win1;
+                    p1_w1 += e.p1_win1;
+                }
+                int p0_fork = (p0_w1 > 1) ? (p0_w1 - 1) : 0;
+                int p1_fork = (p1_w1 > 1) ? (p1_w1 - 1) : 0;
+                int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+                extra += stm_sign * W_FORK * (p0_fork - p1_fork);
+            }
+            return extra;
+        }
+
+        int evaluate(GlobalBoard &board) {
+            int16_t idx[9];
+            int n = 0;
+            int base = 0;
+            eval_parts(board, idx, n, base);
+            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+            int local = 0;
+            for (int i = 0; i < n; i++) {
+                local += mini_score[idx[i]];
+            }
+            return base + stm_sign * local + eval_extra(board);
         }
 
 };

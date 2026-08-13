@@ -954,6 +954,7 @@ class CrossfishDev {
             }
             // Texel-tuned (per-weight Adam). SPRT vs round numbers at 20ms:
             // N: 2688 W: 1148 D: 584 L: 956 Elo +24.86 LLR 3.04
+            // Free-move +300. SPRT 20ms: N: 4640 W: 1929 D: 993 L: 1718 Elo +15.81 LLR 3.13
             int val = (p0_miniboards_held - p1_miniboards_held) * 2410;
             val += (p0_center_miniboard_held - p1_center_miniboard_held) * 836;
             val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 464;
@@ -966,7 +967,14 @@ class CrossfishDev {
 
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
             val += stm_sign * 112;
-            return stm_sign * val;
+            int score = stm_sign * val;
+            if (board.n_moves > 0) {
+                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
+                    score += 300;
+                }
+            }
+            return score;
 
         }
 

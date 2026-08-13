@@ -16,6 +16,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cstring>
+#include <fstream>
 #include <immintrin.h>
 
 // CodinGame UTTT: 1000ms first execute per player, 100ms per later move
@@ -574,6 +575,25 @@ class HumanPlayer {
 std::array<int, 3> global_total = {0, 0, 0}; //wins, draws, losses
 std::mutex global_mutex;
 std::atomic<int> completed_tasks(0);
+std::atomic<int> tune_games_done{0};
+static int tune_games_total = 0;
+static std::chrono::steady_clock::time_point tune_t0;
+
+static void log_tune_progress() {
+    int done = ++tune_games_done;
+    if (done != 100 && done != 500 && done % 1000 != 0 && done != tune_games_total) {
+        return;
+    }
+    double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - tune_t0).count();
+    if (sec < 0.001) sec = 0.001;
+    double gps = done / sec;
+    int left = (int)((tune_games_total - done) / gps + 0.5);
+    int pct = (int)((100.0 * done) / (double)tune_games_total);
+    std::lock_guard<std::mutex> lock(global_mutex);
+    std::cout << "self-play " << done << "/" << tune_games_total << " (" << pct << "%)  "
+              << (int)(sec + 0.5) << "s elapsed  ~" << left << "s left  "
+              << (int)(gps + 0.5) << " games/s" << std::endl;
+}
 
 std::array<double, 3> eloToWDL(double elo, double dlo) {
     std::array<double, 3> probabilities;
@@ -673,12 +693,6 @@ void play_game(){
             global_total[1]++; //draw
             global_mutex.unlock();
         }
-        EloResult elo = calc_elo_diff(global_total[0], global_total[2], global_total[1]);
-        int total_games = global_total[0] + global_total[1] + global_total[2];
-        std::cout << "N: " << total_games << " W: " << global_total[0] 
-                << " D: " << global_total[1] << " L: " << global_total[2] 
-                << " Elo diff: " << elo.elo_diff << " +/- " << elo.ci << " LLR: " << sprt(global_total[0], global_total[1], global_total[2]) << std::endl;
-        //reset board
         board = GlobalBoard(startpos);
     }
 }
@@ -746,6 +760,7 @@ static void verify_mini_lut() {
 
 static void verify_eval_linear() {
     CrossfishDev dev;
+    CrossfishPrev prev;
     CrossfishDev::init_mini_lut();
     std::mt19937 rng(999);
     for (int g = 0; g < 200; g++) {
@@ -760,8 +775,28 @@ static void verify_eval_linear() {
                 val += dev.eval_weights[i] * d[i];
             }
             val += stm * dev.eval_weights[9];
-            if (dev.evaluate(board) != stm * val) {
-                std::cerr << "eval linear mismatch at ply " << ply << std::endl;
+            int extra = dev.eval_extra(board);
+            int ev = dev.evaluate(board);
+            if (CrossfishDev::EVAL_EXPERIMENT != 3 && ev != stm * val + extra) {
+                std::cerr << "eval linear mismatch at ply " << ply
+                          << " eval=" << ev << " linear=" << stm * val << " extra=" << extra << std::endl;
+                std::exit(1);
+            }
+            int16_t idx[9];
+            int n = 0;
+            int base = 0;
+            dev.eval_parts(board, idx, n, base);
+            int local = 0;
+            for (int i = 0; i < n; i++) {
+                local += CrossfishDev::mini_score[idx[i]];
+            }
+            if (ev != base + stm * local + extra) {
+                std::cerr << "eval parts mismatch at ply " << ply << std::endl;
+                std::exit(1);
+            }
+            if (CrossfishDev::EVAL_EXPERIMENT == 0 && ev != prev.evaluate(board)) {
+                std::cerr << "dev vs prev eval mismatch at ply " << ply
+                          << " dev=" << ev << " prev=" << prev.evaluate(board) << std::endl;
                 std::exit(1);
             }
             std::vector<Move> moves = board.getLegalMoves();
@@ -769,7 +804,11 @@ static void verify_eval_linear() {
             board.makeMove(moves[rng() % moves.size()]);
         }
     }
-    std::cout << "eval linear combo: OK" << std::endl;
+    if (CrossfishDev::EVAL_EXPERIMENT == 0) {
+        std::cout << "eval linear combo: OK (matches Prev)" << std::endl;
+    } else {
+        std::cout << "eval linear combo: OK (experiment " << CrossfishDev::EVAL_EXPERIMENT << ")" << std::endl;
+    }
 }
 
 struct TexelPos {
@@ -847,33 +886,62 @@ static void play_tune_games(int n_games, int think_ms, std::vector<TexelPos> &ou
     global_mutex.unlock();
 }
 
-static void run_texel() {
-    const int think_ms = 10;
-    const int n_games = 3200;
-    const int n_epochs = 80;
+static const char *TEXEL_POS_PATH = "texel_pos.bin";
+
+static bool save_texel_pos(const char *path, const std::vector<TexelPos> &data) {
+    std::ofstream out(path, std::ios::binary);
+    uint64_t n = data.size();
+    out.write(reinterpret_cast<const char *>(&n), sizeof(n));
+    out.write(reinterpret_cast<const char *>(data.data()), (std::streamsize)(n * sizeof(TexelPos)));
+    return (bool)out;
+}
+
+static bool load_texel_pos(const char *path, std::vector<TexelPos> &data) {
+    std::ifstream in(path, std::ios::binary);
+    uint64_t n = 0;
+    in.read(reinterpret_cast<char *>(&n), sizeof(n));
+    if (!in || n < 1000 || n > 5000000) return false;
+    data.resize((size_t)n);
+    in.read(reinterpret_cast<char *>(data.data()), (std::streamsize)(n * sizeof(TexelPos)));
+    return (bool)in;
+}
+
+static void run_texel(bool load_saved) {
+    const int think_ms = 20;
+    const int n_games = 4800;
+    const int n_epochs = 100;
     const unsigned int n_threads = std::max(1u, std::thread::hardware_concurrency());
-    std::cout << "Texel self-play: " << n_games << " games at " << think_ms
-              << "ms on " << n_threads << " threads" << std::endl;
 
     std::vector<TexelPos> data;
-    data.reserve(n_games * 40);
-    int per = n_games / (int)n_threads;
-    int extra = n_games % (int)n_threads;
-    std::vector<std::future<void>> futures;
-    int launched = 0;
-    for (unsigned int t = 0; t < n_threads; t++) {
-        int n = per + (t < (unsigned)extra ? 1 : 0);
-        uint32_t seed = 1000u + t * 9973u;
-        futures.push_back(std::async(std::launch::async, play_tune_games, n, think_ms, std::ref(data), seed));
-        launched += n;
-    }
-    for (auto &f : futures) {
-        f.get();
-    }
-    std::cout << "positions: " << data.size() << std::endl;
-    if (data.size() < 1000) {
-        std::cerr << "not enough texel positions" << std::endl;
-        std::exit(1);
+    if (load_saved) {
+        if (!load_texel_pos(TEXEL_POS_PATH, data)) {
+            std::cerr << "failed to load " << TEXEL_POS_PATH << std::endl;
+            std::exit(1);
+        }
+        std::cout << "loaded " << data.size() << " positions from " << TEXEL_POS_PATH << std::endl;
+    } else {
+        std::cout << "Texel self-play: " << n_games << " games at " << think_ms
+                  << "ms on " << n_threads << " threads" << std::endl;
+        data.reserve(n_games * 40);
+        int per = n_games / (int)n_threads;
+        int extra = n_games % (int)n_threads;
+        std::vector<std::future<void>> futures;
+        for (unsigned int t = 0; t < n_threads; t++) {
+            int n = per + (t < (unsigned)extra ? 1 : 0);
+            uint32_t seed = 5000u + t * 9973u;
+            futures.push_back(std::async(std::launch::async, play_tune_games, n, think_ms, std::ref(data), seed));
+        }
+        for (auto &f : futures) {
+            f.get();
+        }
+        std::cout << "positions: " << data.size() << std::endl;
+        if (data.size() < 1000) {
+            std::cerr << "not enough texel positions" << std::endl;
+            std::exit(1);
+        }
+        if (save_texel_pos(TEXEL_POS_PATH, data)) {
+            std::cout << "wrote " << TEXEL_POS_PATH << std::endl;
+        }
     }
 
     std::mt19937 rng(42);
@@ -883,8 +951,10 @@ static void run_texel() {
     std::vector<TexelPos> val(data.begin() + split, data.end());
 
     double w[CrossfishDev::N_EVAL_WEIGHTS];
-    const int start_w[CrossfishDev::N_EVAL_WEIGHTS] = {2000, 1000, 500, 1500, 500, 500, 20, 10, 20, 50};
+    CrossfishDev start_bot;
+    int start_w[CrossfishDev::N_EVAL_WEIGHTS];
     for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+        start_w[i] = start_bot.eval_weights[i];
         w[i] = (double)start_w[i];
     }
 
@@ -905,12 +975,11 @@ static void run_texel() {
     for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
         step_scale[i] = std::max(std::fabs((double)start_w[i]), 10.0);
     }
-    // Base lr is a fraction of each weight's original magnitude, so
-    // miniboards (2000) and squares (20) take similar relative steps.
-    double lr = 0.02;
+    // Smaller relative steps than round 1: start weights are already a Texel local max.
+    double lr = 0.005;
     const double wmin[CrossfishDev::N_EVAL_WEIGHTS] = {500, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     const double wmax[CrossfishDev::N_EVAL_WEIGHTS] = {4000, 2500, 1500, 3000, 1500, 1500, 80, 40, 60, 120};
-    double best_val = 1e100;
+    double best_val = best_k_loss;
     double best_w[CrossfishDev::N_EVAL_WEIGHTS];
     for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
         best_w[i] = w[i];
@@ -934,7 +1003,7 @@ static void run_texel() {
             pred = std::min(1.0 - 1e-12, std::max(1e-12, pred));
             double gscale = (pred - p.y) / best_k;
             for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
-                double g = gscale * p.f[i] + 1e-5 * (w[i] - (double)start_w[i]) / step_scale[i];
+                double g = gscale * p.f[i] + 4e-5 * (w[i] - (double)start_w[i]) / step_scale[i];
                 m[i] = 0.9 * m[i] + 0.1 * g;
                 v[i] = 0.999 * v[i] + 0.001 * g * g;
                 double mhat = m[i] / (1.0 - std::pow(0.9, tstep));
@@ -960,37 +1029,383 @@ static void run_texel() {
             }
         } else {
             stale++;
-            if (stale >= 10) {
+            if (stale >= 15) {
                 std::cout << "early stop" << std::endl;
                 break;
             }
         }
     }
 
-    std::cout << "best val_loss=" << best_val << std::endl;
-    std::cout << "start: {2000, 1000, 500, 1500, 500, 500, 20, 10, 20, 50}" << std::endl;
+    std::cout << "best val_loss=" << best_val << " (start " << best_k_loss << ")" << std::endl;
+    std::cout << "start: {";
+    for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+        std::cout << start_w[i];
+        if (i + 1 < CrossfishDev::N_EVAL_WEIGHTS) std::cout << ", ";
+    }
+    std::cout << "}" << std::endl;
     std::cout << "tuned: {";
+    bool changed = false;
     for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
         int rounded = (int)std::lround(best_w[i]);
+        if (rounded != start_w[i]) changed = true;
         std::cout << rounded;
         if (i + 1 < CrossfishDev::N_EVAL_WEIGHTS) std::cout << ", ";
     }
     std::cout << "}" << std::endl;
+    if (!changed) {
+        std::cout << "kept start weights (no val improvement)" << std::endl;
+    }
     for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
         std::cout << names[i] << ": " << start_w[i] << " -> " << (int)std::lround(best_w[i])
                   << " (" << (100.0 * (best_w[i] - start_w[i]) / step_scale[i]) << "%)" << std::endl;
     }
 }
 
+#pragma pack(push, 1)
+struct LutTexelPos {
+    int16_t idx[9];
+    int8_t n;
+    int8_t stm;
+    float base;
+    float y;
+};
+#pragma pack(pop)
+
+static const char *LUT_POS_PATH = "lut_texel_pos.bin";
+static const char *MINI_SCORE_PATH = "mini_score.bin";
+
+static bool save_lut_pos(const char *path, const std::vector<LutTexelPos> &data) {
+    std::ofstream out(path, std::ios::binary);
+    uint64_t n = data.size();
+    out.write(reinterpret_cast<const char *>(&n), sizeof(n));
+    out.write(reinterpret_cast<const char *>(data.data()), (std::streamsize)(n * sizeof(LutTexelPos)));
+    return (bool)out;
+}
+
+static bool load_lut_pos(const char *path, std::vector<LutTexelPos> &data) {
+    std::ifstream in(path, std::ios::binary);
+    uint64_t n = 0;
+    in.read(reinterpret_cast<char *>(&n), sizeof(n));
+    if (!in || n < 1000 || n > 5000000) return false;
+    data.resize((size_t)n);
+    in.read(reinterpret_cast<char *>(data.data()), (std::streamsize)(n * sizeof(LutTexelPos)));
+    return (bool)in;
+}
+
+static bool save_mini_scores(const char *path, const double *score) {
+    std::ofstream out(path, std::ios::binary);
+    for (int i = 0; i < CrossfishDev::MINI_LUT_SIZE; i++) {
+        int v = (int)std::lround(score[i]);
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        int16_t s = (int16_t)v;
+        out.write(reinterpret_cast<const char *>(&s), sizeof(s));
+    }
+    return (bool)out;
+}
+
+static bool load_mini_scores(const char *path) {
+    CrossfishDev::init_mini_lut();
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    in.read(reinterpret_cast<char *>(CrossfishDev::mini_score),
+            (std::streamsize)(CrossfishDev::MINI_LUT_SIZE * sizeof(int16_t)));
+    return (bool)in && in.gcount() == (std::streamsize)(CrossfishDev::MINI_LUT_SIZE * sizeof(int16_t));
+}
+
+static double lut_eval_e(const LutTexelPos &p, const double *score) {
+    double local = 0;
+    for (int i = 0; i < p.n; i++) {
+        local += score[p.idx[i]];
+    }
+    return (double)p.base + (double)p.stm * local;
+}
+
+static double lut_texel_loss(const std::vector<LutTexelPos> &data, const double *score, double K) {
+    double loss = 0;
+    for (const LutTexelPos &p : data) {
+        double pred = texel_sigmoid(lut_eval_e(p, score) / K);
+        pred = std::min(1.0 - 1e-12, std::max(1e-12, pred));
+        loss += -p.y * std::log(pred) - (1.0 - p.y) * std::log(1.0 - pred);
+    }
+    return loss / (double)data.size();
+}
+
+static void play_lut_tune_games(int n_games, int think_ms, std::vector<LutTexelPos> &out, uint32_t seed) {
+    std::mt19937 rng(seed);
+    RandomMover random_mover;
+    CrossfishDev bot;
+    CrossfishDev::init_mini_lut();
+    std::vector<LutTexelPos> local;
+    local.reserve(n_games * 40);
+    for (int g = 0; g < n_games; g++) {
+        GlobalBoard board;
+        int n_random = 12;
+        for (int i = 0; i < n_random; i++) {
+            if (board.checkWinner() != -1) break;
+            Move m = random_mover.getMove(board);
+            board.makeMove(m);
+        }
+        std::vector<LutTexelPos> game_pos;
+        game_pos.reserve(64);
+        while (board.checkWinner() == -1) {
+            LutTexelPos p{};
+            int n = 0;
+            int base = 0;
+            bot.eval_parts(board, p.idx, n, base);
+            p.n = (int8_t)n;
+            p.stm = (board.n_moves % 2 == 0) ? 1 : -1;
+            p.base = (float)base;
+            p.y = 0;
+            game_pos.push_back(p);
+
+            Move m = bot.getMove(board, std::chrono::milliseconds(think_ms));
+            board.makeMove(m);
+        }
+        int winner = board.checkWinner();
+        for (size_t i = 0; i < game_pos.size(); i++) {
+            int stm_player = (n_random + (int)i) % 2;
+            if (winner == 2) {
+                game_pos[i].y = 0.5f;
+            } else if (winner == stm_player) {
+                game_pos[i].y = 1.0f;
+            } else {
+                game_pos[i].y = 0.0f;
+            }
+        }
+        local.insert(local.end(), game_pos.begin(), game_pos.end());
+        log_tune_progress();
+    }
+    global_mutex.lock();
+    out.insert(out.end(), local.begin(), local.end());
+    global_mutex.unlock();
+}
+
+static void run_lut_texel(bool load_saved) {
+    const int think_ms = 5;
+    const int n_games = 100000;
+    const int n_epochs = 40;
+    const unsigned int n_threads = std::max(1u, std::thread::hardware_concurrency());
+    const int N = CrossfishDev::MINI_LUT_SIZE;
+
+    std::vector<LutTexelPos> data;
+    if (load_saved) {
+        if (!load_lut_pos(LUT_POS_PATH, data)) {
+            std::cerr << "failed to load " << LUT_POS_PATH << std::endl;
+            std::exit(1);
+        }
+        std::cout << "loaded " << data.size() << " positions from " << LUT_POS_PATH << std::endl;
+    } else {
+        std::cout << "LUT Texel self-play: " << n_games << " games at " << think_ms
+                  << "ms, random prefix 12, on " << n_threads << " threads" << std::endl;
+        data.reserve(n_games * 40);
+        tune_games_done = 0;
+        tune_games_total = n_games;
+        tune_t0 = std::chrono::steady_clock::now();
+        int per = n_games / (int)n_threads;
+        int extra = n_games % (int)n_threads;
+        std::vector<std::future<void>> futures;
+        for (unsigned int t = 0; t < n_threads; t++) {
+            int n = per + (t < (unsigned)extra ? 1 : 0);
+            uint32_t seed = 9000u + t * 9973u;
+            futures.push_back(std::async(std::launch::async, play_lut_tune_games, n, think_ms, std::ref(data), seed));
+        }
+        for (auto &f : futures) {
+            f.get();
+        }
+        std::cout << "positions: " << data.size() << std::endl;
+        if (data.size() < 1000) {
+            std::cerr << "not enough texel positions" << std::endl;
+            std::exit(1);
+        }
+        if (save_lut_pos(LUT_POS_PATH, data)) {
+            std::cout << "wrote " << LUT_POS_PATH << std::endl;
+        }
+    }
+
+    CrossfishDev::init_mini_lut();
+    std::vector<double> score(N), init_score(N), best_score(N);
+    std::vector<double> m(N, 0.0), v(N, 0.0), acc(N, 0.0);
+    std::vector<int> tcount(N, 0);
+    std::vector<uint8_t> seen_mark(N, 0);
+    for (int i = 0; i < N; i++) {
+        init_score[i] = (double)CrossfishDev::mini_score[i];
+        score[i] = init_score[i];
+        best_score[i] = init_score[i];
+    }
+
+    std::vector<uint8_t> appeared(N, 0);
+    int unique = 0;
+    for (const LutTexelPos &p : data) {
+        for (int i = 0; i < p.n; i++) {
+            int idx = p.idx[i];
+            if (idx < 0 || idx >= N) {
+                std::cerr << "bad lut index " << idx << std::endl;
+                std::exit(1);
+            }
+            if (!appeared[idx]) {
+                appeared[idx] = 1;
+                unique++;
+            }
+        }
+    }
+    std::cout << "unique 3x3 states: " << unique << " / " << N << std::endl;
+
+    std::mt19937 rng(42);
+    std::shuffle(data.begin(), data.end(), rng);
+    size_t split = data.size() * 9 / 10;
+    std::vector<LutTexelPos> train(data.begin(), data.begin() + split);
+    std::vector<LutTexelPos> val(data.begin() + split, data.end());
+
+    double best_k = 400;
+    double best_k_loss = 1e100;
+    for (double K = 200; K <= 3000; K += 100) {
+        double loss = lut_texel_loss(val, score.data(), K);
+        if (loss < best_k_loss) {
+            best_k_loss = loss;
+            best_k = K;
+        }
+    }
+    std::cout << "K=" << best_k << " val_loss=" << best_k_loss << " (linear-init scores)" << std::endl;
+
+    const int BATCH = 64;
+    const double lr = 0.4;
+    const double l2 = 1e-6;
+    const double clamp_r = 2000.0;
+    double best_val = best_k_loss;
+    int stale = 0;
+    int b = 0;
+    std::vector<int> touched;
+    touched.reserve(512);
+
+    auto flush_batch = [&]() {
+        if (touched.empty()) return;
+        for (int idx : touched) {
+            tcount[idx]++;
+            double g = acc[idx] / (double)BATCH + l2 * (score[idx] - init_score[idx]);
+            m[idx] = 0.9 * m[idx] + 0.1 * g;
+            v[idx] = 0.999 * v[idx] + 0.001 * g * g;
+            double mhat = m[idx] / (1.0 - std::pow(0.9, tcount[idx]));
+            double vhat = v[idx] / (1.0 - std::pow(0.999, tcount[idx]));
+            score[idx] -= lr * mhat / (std::sqrt(vhat) + 1e-8);
+            double lo = init_score[idx] - clamp_r;
+            double hi = init_score[idx] + clamp_r;
+            if (score[idx] < lo) score[idx] = lo;
+            if (score[idx] > hi) score[idx] = hi;
+            if (score[idx] > 32767.0) score[idx] = 32767.0;
+            if (score[idx] < -32768.0) score[idx] = -32768.0;
+            acc[idx] = 0;
+            seen_mark[idx] = 0;
+        }
+        touched.clear();
+        b = 0;
+    };
+
+    for (int epoch = 1; epoch <= n_epochs; epoch++) {
+        std::shuffle(train.begin(), train.end(), rng);
+        for (const LutTexelPos &p : train) {
+            double e = lut_eval_e(p, score.data());
+            double pred = texel_sigmoid(e / best_k);
+            pred = std::min(1.0 - 1e-12, std::max(1e-12, pred));
+            double gscale = (pred - p.y) / best_k;
+            for (int i = 0; i < p.n; i++) {
+                int idx = p.idx[i];
+                if (!seen_mark[idx]) {
+                    seen_mark[idx] = 1;
+                    touched.push_back(idx);
+                }
+                acc[idx] += gscale * (double)p.stm;
+            }
+            b++;
+            if (b >= BATCH) {
+                flush_batch();
+            }
+        }
+        flush_batch();
+        double tr = lut_texel_loss(train, score.data(), best_k);
+        double va = lut_texel_loss(val, score.data(), best_k);
+        int moved = 0;
+        double max_abs = 0;
+        double sum_abs = 0;
+        for (int i = 0; i < N; i++) {
+            double dlt = std::fabs(score[i] - init_score[i]);
+            if (dlt >= 1.0) moved++;
+            if (dlt > max_abs) max_abs = dlt;
+            sum_abs += dlt;
+        }
+        std::cout << "epoch " << epoch << " train=" << tr << " val=" << va
+                  << " moved=" << moved << " max|d|=" << max_abs
+                  << " mean|d|=" << (sum_abs / (double)N) << std::endl;
+        if (va + 1e-6 < best_val) {
+            best_val = va;
+            stale = 0;
+            best_score = score;
+        } else {
+            stale++;
+            if (stale >= 8) {
+                std::cout << "early stop" << std::endl;
+                break;
+            }
+        }
+    }
+
+    std::cout << "best val_loss=" << best_val << " (start " << best_k_loss << ")" << std::endl;
+    int moved = 0;
+    double max_abs = 0;
+    int max_i = 0;
+    for (int i = 0; i < N; i++) {
+        double dlt = std::fabs(best_score[i] - init_score[i]);
+        if (dlt >= 1.0) moved++;
+        if (dlt > max_abs) {
+            max_abs = dlt;
+            max_i = i;
+        }
+    }
+    std::cout << "entries moved by >=1: " << moved << " max|d|=" << max_abs
+              << " at idx " << max_i << " " << init_score[max_i] << " -> " << best_score[max_i] << std::endl;
+
+    if (best_val + 1e-7 >= best_k_loss) {
+        std::cout << "kept linear-init scores (no val improvement)" << std::endl;
+        return;
+    }
+    if (save_mini_scores(MINI_SCORE_PATH, best_score.data())) {
+        std::cout << "wrote " << MINI_SCORE_PATH << std::endl;
+    }
+    for (int i = 0; i < N; i++) {
+        int v = (int)std::lround(best_score[i]);
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        CrossfishDev::mini_score[i] = (int16_t)v;
+    }
+    std::cout << "applied scores to Dev in this process" << std::endl;
+}
+
 int main(int argc, char** argv) {
     if (argc >= 2 && std::strcmp(argv[1], "tune") == 0) {
         CrossfishDev::init_mini_lut();
-        run_texel();
+        if (argc >= 3 && std::strcmp(argv[2], "hce") == 0) {
+            bool load_saved = argc >= 4 && std::strcmp(argv[3], "load") == 0;
+            run_texel(load_saved);
+        } else {
+            bool load_saved = argc >= 3 && std::strcmp(argv[2], "load") == 0;
+            run_lut_texel(load_saved);
+        }
         return 0;
     }
     verify_fill_movegen();
     verify_mini_lut();
     verify_eval_linear();
+    if (argc >= 2 && std::strcmp(argv[1], "verify") == 0) {
+        return 0;
+    }
+    if (argc >= 2 && std::strcmp(argv[1], "lut") == 0) {
+        if (!load_mini_scores(MINI_SCORE_PATH)) {
+            std::cerr << "failed to load " << MINI_SCORE_PATH << std::endl;
+            return 1;
+        }
+        std::cout << "loaded " << MINI_SCORE_PATH << " into Dev" << std::endl;
+    }
+    std::cout << "Dev extra experiment: " << CrossfishDev::EVAL_EXPERIMENT << std::endl;
     const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
     // const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;
@@ -1014,7 +1429,12 @@ int main(int argc, char** argv) {
         for (auto& f : futures) {
             f.get();
         }
+        int total_games = global_total[0] + global_total[1] + global_total[2];
+        EloResult elo = calc_elo_diff(global_total[0], global_total[2], global_total[1]);
         llr = sprt(global_total[0], global_total[1], global_total[2]);
+        std::cout << "N: " << total_games << " W: " << global_total[0]
+                << " D: " << global_total[1] << " L: " << global_total[2]
+                << " Elo diff: " << elo.elo_diff << " +/- " << elo.ci << " LLR: " << llr << std::endl;
     }
     return 0;
 }
