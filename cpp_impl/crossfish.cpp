@@ -24,6 +24,7 @@
 // history heuristic, 2^18 TT, less frequent time checks.
 // Alloc-free movegen: stack Move[81]/int[81] in search/qsearch instead of std::vector.
 // 3x3 LUT replaces the inner miniboard eval loop (same features, ~2x NPS).
+// Texel-tuned eval weights (per-weight Adam). SPRT 20ms: +25 Elo, LLR +3.04.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
@@ -951,20 +952,20 @@ class CrossfishDev {
                 p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1]))  / 2);
                 p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1]))   / 2);
             }
-            //should tune these coefficients
-            int val = (p0_miniboards_held - p1_miniboards_held) * 2000;
-            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 1000;
-            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
-            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1500;
-            val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
-            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 500;
-            val += (p0_center_squares_held - p1_center_squares_held) * 20;
+            // Texel-tuned (per-weight Adam). SPRT vs round numbers at 20ms:
+            // N: 2688 W: 1148 D: 584 L: 956 Elo +24.86 LLR 3.04
+            int val = (p0_miniboards_held - p1_miniboards_held) * 2410;
+            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 836;
+            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 464;
+            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1316;
+            val += (p0_two_in_a_row - p1_two_in_a_row) * 534;
+            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 424;
+            val += (p0_center_squares_held - p1_center_squares_held) * 33;
             val += (p0_corner_squares_held - p1_corner_squares_held) * 10;
-            val += (p0_squares_held - p1_squares_held)* 20;
+            val += (p0_squares_held - p1_squares_held)* 33;
 
-            //tempo bonus to help with aspiration windows
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
-            val += stm_sign * 50;
+            val += stm_sign * 112;
             return stm_sign * val;
 
         }

@@ -1,4 +1,4 @@
-// Frozen alloc-free baseline (5840146) plus LMR fail-high re-search.
+// Frozen LUT eval with original HCE weights (pre-Texel).
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -48,6 +48,123 @@ class CrossfishPrev {
         };
         int depth = 1;
 
+        struct MiniLut {
+            int8_t dead;
+            int8_t p0_tiar;
+            int8_t p1_tiar;
+            int8_t p0_win1;
+            int8_t p1_win1;
+            int8_t p0_center;
+            int8_t p1_center;
+            int8_t p0_corner;
+            int8_t p1_corner;
+            int8_t p0_sq;
+            int8_t p1_sq;
+        };
+        static constexpr int MINI_LUT_SIZE = 19683;
+        static inline MiniLut mini_lut[MINI_LUT_SIZE];
+        static inline std::once_flag mini_lut_once;
+        static constexpr int WIN_IN_ONE_WEIGHT = 300;
+
+        static int mini_index(int p0, int p1) {
+            int idx = 0;
+            idx += (p0 & 1) ? 1 : ((p1 & 1) ? 2 : 0);
+            idx += (p0 & 2) ? 3 : ((p1 & 2) ? 6 : 0);
+            idx += (p0 & 4) ? 9 : ((p1 & 4) ? 18 : 0);
+            idx += (p0 & 8) ? 27 : ((p1 & 8) ? 54 : 0);
+            idx += (p0 & 16) ? 81 : ((p1 & 16) ? 162 : 0);
+            idx += (p0 & 32) ? 243 : ((p1 & 32) ? 486 : 0);
+            idx += (p0 & 64) ? 729 : ((p1 & 64) ? 1458 : 0);
+            idx += (p0 & 128) ? 2187 : ((p1 & 128) ? 4374 : 0);
+            idx += (p0 & 256) ? 6561 : ((p1 & 256) ? 13122 : 0);
+            return idx;
+        }
+
+        static void init_mini_lut() {
+            std::call_once(mini_lut_once, []() {
+                const int win[8] = {
+                    (1 << 0) + (1 << 1) + (1 << 2),
+                    (1 << 3) + (1 << 4) + (1 << 5),
+                    (1 << 6) + (1 << 7) + (1 << 8),
+                    (1 << 0) + (1 << 3) + (1 << 6),
+                    (1 << 1) + (1 << 4) + (1 << 7),
+                    (1 << 2) + (1 << 5) + (1 << 8),
+                    (1 << 0) + (1 << 4) + (1 << 8),
+                    (1 << 2) + (1 << 4) + (1 << 6)
+                };
+                const int tiar[] = {
+                    (1 << 0) + (1 << 1),  (1 << 2),
+                    (1 << 1) + (1 << 2), (1 << 0),
+                    (1 << 3) + (1 << 4), (1 << 5),
+                    (1 << 4) + (1 << 5), (1 << 3),
+                    (1 << 6) + (1 << 7), (1 << 8),
+                    (1 << 7) + (1 << 8), (1 << 6),
+                    (1 << 0) + (1 << 3), (1 << 6),
+                    (1 << 3) + (1 << 6), (1 << 0),
+                    (1 << 1) + (1 << 4), (1 << 7),
+                    (1 << 4) + (1 << 7), (1 << 1),
+                    (1 << 2) + (1 << 5), (1 << 8),
+                    (1 << 5) + (1 << 8), (1 << 2),
+                    (1 << 0) + (1 << 4), (1 << 8),
+                    (1 << 4) + (1 << 8), (1 << 0),
+                    (1 << 2) + (1 << 4), (1 << 6),
+                    (1 << 4) + (1 << 6), (1 << 2),
+                    (1 << 0) + (1 << 2), (1 << 1),
+                    (1 << 3) + (1 << 5), (1 << 4),
+                    (1 << 6) + (1 << 8), (1 << 7),
+                    (1 << 0) + (1 << 6), (1 << 3),
+                    (1 << 1) + (1 << 7), (1 << 4),
+                    (1 << 2) + (1 << 8), (1 << 5),
+                    (1 << 0) + (1 << 8), (1 << 4),
+                    (1 << 2) + (1 << 6), (1 << 4)
+                };
+                auto has_win = [&](int markers) {
+                    for (int i = 0; i < 8; i++) {
+                        if ((markers & win[i]) == win[i]) return true;
+                    }
+                    return false;
+                };
+                const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+                const int n_pairs = (int)(sizeof(tiar) / sizeof(tiar[0]) / 2);
+                for (int idx = 0; idx < MINI_LUT_SIZE; idx++) {
+                    int p0 = 0;
+                    int p1 = 0;
+                    int t = idx;
+                    for (int s = 0; s < 9; s++) {
+                        int cell = t % 3;
+                        t /= 3;
+                        if (cell == 1) p0 |= (1 << s);
+                        else if (cell == 2) p1 |= (1 << s);
+                    }
+                    MiniLut e{};
+                    bool p0_can = false;
+                    bool p1_can = false;
+                    for (int i = 0; i < 8; i++) {
+                        if ((p1 & win[i]) == 0) p0_can = true;
+                        if ((p0 & win[i]) == 0) p1_can = true;
+                    }
+                    e.dead = (!p0_can && !p1_can) ? 1 : 0;
+                    int occ = p0 | p1;
+                    for (int s = 0; s < 9; s++) {
+                        if (occ & (1 << s)) continue;
+                        if (has_win(p0 | (1 << s))) e.p0_win1 = 1;
+                        if (has_win(p1 | (1 << s))) e.p1_win1 = 1;
+                    }
+                    for (int i = 0; i < n_pairs; i++) {
+                        e.p0_tiar = (int8_t)(e.p0_tiar + ((__builtin_popcount(p0 & tiar[i * 2]) - __builtin_popcount(p1 & tiar[i * 2 + 1])) / 2));
+                        e.p1_tiar = (int8_t)(e.p1_tiar + ((__builtin_popcount(p1 & tiar[i * 2]) - __builtin_popcount(p0 & tiar[i * 2 + 1])) / 2));
+                    }
+                    e.p0_center = (p0 >> 4) & 1;
+                    e.p1_center = (p1 >> 4) & 1;
+                    e.p0_corner = (int8_t)__builtin_popcount(p0 & corners);
+                    e.p1_corner = (int8_t)__builtin_popcount(p1 & corners);
+                    e.p0_sq = (int8_t)__builtin_popcount(p0);
+                    e.p1_sq = (int8_t)__builtin_popcount(p1);
+                    mini_lut[idx] = e;
+                }
+            });
+        }
+
         bool time_up() {
             if (stopped) return true;
             if ((nodes & 255) == 0) {
@@ -60,6 +177,7 @@ class CrossfishPrev {
         }
 
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
+            init_mini_lut();
             thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
@@ -351,7 +469,11 @@ class CrossfishPrev {
             }
         }
 
-        int evaluate(GlobalBoard &board) {
+        static constexpr int N_EVAL_WEIGHTS = 10;
+        int eval_weights[N_EVAL_WEIGHTS] = {2000, 1000, 500, 1500, 500, 500, 20, 10, 20, 50};
+
+        void eval_diffs(GlobalBoard &board, int *d) {
+            init_mini_lut();
             int p0_miniboards_held = __builtin_popcount(board.mini_board_states[0]);
             int p1_miniboards_held = __builtin_popcount(board.mini_board_states[1]);
             int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
@@ -367,44 +489,31 @@ class CrossfishPrev {
             int p1_two_in_a_row_map = 0;
             int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
 
-            int p0_tiar_temp;
-            int p1_tiar_temp;
-            int p0_markers;
-            int p1_markers;
             for (int miniboard = 0; miniboard < 9; miniboard++) {
                 if ((out_of_play & (1 << miniboard)) != 0) {
                     continue;
                 }
-                p0_markers = board.mini_boards[miniboard].markers[0];
-                p1_markers = board.mini_boards[miniboard].markers[1];
-
-                for (int i = 0; i < (int)two_in_a_row_masks.size() / 2; i++) {
-                    p0_tiar_temp = ((__builtin_popcount(p0_markers & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_markers & two_in_a_row_masks[i * 2 + 1])) /2);
-                    p1_tiar_temp = ((__builtin_popcount(p1_markers & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_markers & two_in_a_row_masks[i * 2 + 1])) /2);
-                    p0_two_in_a_row += p0_tiar_temp;
-                    p1_two_in_a_row += p1_tiar_temp;
-
-                    p0_two_in_a_row_map |= ((1 << miniboard) * p0_tiar_temp);
-                    p1_two_in_a_row_map |= ((1 << miniboard) * p1_tiar_temp);
-                }
-
-                p0_center_squares_held += __builtin_popcount(p0_markers & (1 << 4));
-                p1_center_squares_held += __builtin_popcount(p1_markers & (1 << 4));
-                p0_corner_squares_held += __builtin_popcount(p0_markers & corners);
-                p1_corner_squares_held += __builtin_popcount(p1_markers & corners);
-                p0_squares_held += __builtin_popcount(p0_markers);
-                p1_squares_held += __builtin_popcount(p1_markers);
+                const MiniLut &e = mini_lut[mini_index(
+                    board.mini_boards[miniboard].markers[0],
+                    board.mini_boards[miniboard].markers[1])];
+                p0_two_in_a_row += e.p0_tiar;
+                p1_two_in_a_row += e.p1_tiar;
+                p0_two_in_a_row_map |= ((1 << miniboard) * (e.p0_tiar != 0));
+                p1_two_in_a_row_map |= ((1 << miniboard) * (e.p1_tiar != 0));
+                p0_center_squares_held += e.p0_center;
+                p1_center_squares_held += e.p1_center;
+                p0_corner_squares_held += e.p0_corner;
+                p1_corner_squares_held += e.p1_corner;
+                p0_squares_held += e.p0_sq;
+                p1_squares_held += e.p1_sq;
             }
 
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
-
             int p0_center_miniboard_held = __builtin_popcount(p0_miniboards & (1 << 4));
             int p1_center_miniboard_held = __builtin_popcount(p1_miniboards & (1 << 4));
-
             int p0_corner_miniboards_held = __builtin_popcount(p0_miniboards & corners);
             int p1_corner_miniboards_held = __builtin_popcount(p1_miniboards & corners);
-
             int p0_global_two_in_a_row = 0;
             int p1_global_two_in_a_row = 0;
             int p0_two_in_a_rows_lined_up = 0;
@@ -415,18 +524,27 @@ class CrossfishPrev {
                 p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1]))  / 2);
                 p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1]))   / 2);
             }
-            int val = (p0_miniboards_held - p1_miniboards_held) * 2000;
-            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 1000;
-            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
-            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1500;
-            val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
-            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 500;
-            val += (p0_center_squares_held - p1_center_squares_held) * 20;
-            val += (p0_corner_squares_held - p1_corner_squares_held) * 10;
-            val += (p0_squares_held - p1_squares_held)* 20;
+            d[0] = p0_miniboards_held - p1_miniboards_held;
+            d[1] = p0_center_miniboard_held - p1_center_miniboard_held;
+            d[2] = p0_corner_miniboards_held - p1_corner_miniboards_held;
+            d[3] = p0_global_two_in_a_row - p1_global_two_in_a_row;
+            d[4] = p0_two_in_a_row - p1_two_in_a_row;
+            d[5] = p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up;
+            d[6] = p0_center_squares_held - p1_center_squares_held;
+            d[7] = p0_corner_squares_held - p1_corner_squares_held;
+            d[8] = p0_squares_held - p1_squares_held;
+            d[9] = 0;
+        }
 
+        int evaluate(GlobalBoard &board) {
+            int d[N_EVAL_WEIGHTS];
+            eval_diffs(board, d);
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
-            val += stm_sign * 50;
+            int val = 0;
+            for (int i = 0; i < 9; i++) {
+                val += eval_weights[i] * d[i];
+            }
+            val += stm_sign * eval_weights[9];
             return stm_sign * val;
         }
 

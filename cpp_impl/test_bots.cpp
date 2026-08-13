@@ -15,6 +15,7 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
+#include <cstring>
 #include <immintrin.h>
 
 // CodinGame UTTT: 1000ms first execute per player, 100ms per later move
@@ -743,8 +744,7 @@ static void verify_mini_lut() {
     std::cout << "mini lut: OK" << std::endl;
 }
 
-static void verify_eval_match() {
-    CrossfishPrev prev;
+static void verify_eval_linear() {
     CrossfishDev dev;
     CrossfishDev::init_mini_lut();
     std::mt19937 rng(999);
@@ -752,11 +752,16 @@ static void verify_eval_match() {
         GlobalBoard board;
         for (int ply = 0; ply < 90; ply++) {
             if (board.checkWinner() != -1) break;
-            int loop_eval = prev.evaluate(board);
-            int lut_eval = dev.evaluate(board);
-            if (loop_eval != lut_eval) {
-                std::cerr << "eval mismatch loop=" << loop_eval << " lut=" << lut_eval
-                          << " ply=" << ply << std::endl;
+            int d[CrossfishDev::N_EVAL_WEIGHTS];
+            dev.eval_diffs(board, d);
+            int stm = (board.n_moves % 2 == 0) ? 1 : -1;
+            int val = 0;
+            for (int i = 0; i < 9; i++) {
+                val += dev.eval_weights[i] * d[i];
+            }
+            val += stm * dev.eval_weights[9];
+            if (dev.evaluate(board) != stm * val) {
+                std::cerr << "eval linear mismatch at ply " << ply << std::endl;
                 std::exit(1);
             }
             std::vector<Move> moves = board.getLegalMoves();
@@ -764,13 +769,228 @@ static void verify_eval_match() {
             board.makeMove(moves[rng() % moves.size()]);
         }
     }
-    std::cout << "eval lut vs loop: OK" << std::endl;
+    std::cout << "eval linear combo: OK" << std::endl;
 }
 
-int main() {
+struct TexelPos {
+    int16_t f[CrossfishDev::N_EVAL_WEIGHTS];
+    float y;
+};
+
+static double texel_sigmoid(double x) {
+    if (x > 20) return 1.0;
+    if (x < -20) return 0.0;
+    return 1.0 / (1.0 + std::exp(-x));
+}
+
+static double texel_loss(const std::vector<TexelPos> &data, const double *w, double K) {
+    double loss = 0;
+    for (const TexelPos &p : data) {
+        double e = 0;
+        for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+            e += w[i] * p.f[i];
+        }
+        double pred = texel_sigmoid(e / K);
+        pred = std::min(1.0 - 1e-12, std::max(1e-12, pred));
+        loss += -p.y * std::log(pred) - (1.0 - p.y) * std::log(1.0 - pred);
+    }
+    return loss / (double)data.size();
+}
+
+static void play_tune_games(int n_games, int think_ms, std::vector<TexelPos> &out, uint32_t seed) {
+    std::mt19937 rng(seed);
+    RandomMover random_mover;
+    CrossfishDev bot;
+    CrossfishDev::init_mini_lut();
+    std::vector<TexelPos> local;
+    local.reserve(n_games * 40);
+    for (int g = 0; g < n_games; g++) {
+        GlobalBoard board;
+        int n_random = 4 + (int)(rng() % 5);
+        for (int i = 0; i < n_random; i++) {
+            if (board.checkWinner() != -1) break;
+            Move m = random_mover.getMove(board);
+            board.makeMove(m);
+        }
+        std::vector<TexelPos> game_pos;
+        game_pos.reserve(64);
+        while (board.checkWinner() == -1) {
+            int d[CrossfishDev::N_EVAL_WEIGHTS];
+            bot.eval_diffs(board, d);
+            int stm = (board.n_moves % 2 == 0) ? 1 : -1;
+            TexelPos p{};
+            for (int i = 0; i < 9; i++) {
+                p.f[i] = (int16_t)(stm * d[i]);
+            }
+            p.f[9] = 1;
+            p.y = 0;
+            game_pos.push_back(p);
+
+            Move m = bot.getMove(board, std::chrono::milliseconds(think_ms));
+            board.makeMove(m);
+        }
+        int winner = board.checkWinner();
+        for (size_t i = 0; i < game_pos.size(); i++) {
+            int stm_player = (n_random + (int)i) % 2;
+            if (winner == 2) {
+                game_pos[i].y = 0.5f;
+            } else if (winner == stm_player) {
+                game_pos[i].y = 1.0f;
+            } else {
+                game_pos[i].y = 0.0f;
+            }
+        }
+        local.insert(local.end(), game_pos.begin(), game_pos.end());
+    }
+    global_mutex.lock();
+    out.insert(out.end(), local.begin(), local.end());
+    global_mutex.unlock();
+}
+
+static void run_texel() {
+    const int think_ms = 10;
+    const int n_games = 3200;
+    const int n_epochs = 80;
+    const unsigned int n_threads = std::max(1u, std::thread::hardware_concurrency());
+    std::cout << "Texel self-play: " << n_games << " games at " << think_ms
+              << "ms on " << n_threads << " threads" << std::endl;
+
+    std::vector<TexelPos> data;
+    data.reserve(n_games * 40);
+    int per = n_games / (int)n_threads;
+    int extra = n_games % (int)n_threads;
+    std::vector<std::future<void>> futures;
+    int launched = 0;
+    for (unsigned int t = 0; t < n_threads; t++) {
+        int n = per + (t < (unsigned)extra ? 1 : 0);
+        uint32_t seed = 1000u + t * 9973u;
+        futures.push_back(std::async(std::launch::async, play_tune_games, n, think_ms, std::ref(data), seed));
+        launched += n;
+    }
+    for (auto &f : futures) {
+        f.get();
+    }
+    std::cout << "positions: " << data.size() << std::endl;
+    if (data.size() < 1000) {
+        std::cerr << "not enough texel positions" << std::endl;
+        std::exit(1);
+    }
+
+    std::mt19937 rng(42);
+    std::shuffle(data.begin(), data.end(), rng);
+    size_t split = data.size() * 9 / 10;
+    std::vector<TexelPos> train(data.begin(), data.begin() + split);
+    std::vector<TexelPos> val(data.begin() + split, data.end());
+
+    double w[CrossfishDev::N_EVAL_WEIGHTS];
+    const int start_w[CrossfishDev::N_EVAL_WEIGHTS] = {2000, 1000, 500, 1500, 500, 500, 20, 10, 20, 50};
+    for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+        w[i] = (double)start_w[i];
+    }
+
+    double best_k = 400;
+    double best_k_loss = 1e100;
+    for (double K = 200; K <= 3000; K += 100) {
+        double loss = texel_loss(val, w, K);
+        if (loss < best_k_loss) {
+            best_k_loss = loss;
+            best_k = K;
+        }
+    }
+    std::cout << "K=" << best_k << " val_loss=" << best_k_loss << " (frozen start weights)" << std::endl;
+
+    double m[CrossfishDev::N_EVAL_WEIGHTS] = {};
+    double v[CrossfishDev::N_EVAL_WEIGHTS] = {};
+    double step_scale[CrossfishDev::N_EVAL_WEIGHTS];
+    for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+        step_scale[i] = std::max(std::fabs((double)start_w[i]), 10.0);
+    }
+    // Base lr is a fraction of each weight's original magnitude, so
+    // miniboards (2000) and squares (20) take similar relative steps.
+    double lr = 0.02;
+    const double wmin[CrossfishDev::N_EVAL_WEIGHTS] = {500, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const double wmax[CrossfishDev::N_EVAL_WEIGHTS] = {4000, 2500, 1500, 3000, 1500, 1500, 80, 40, 60, 120};
+    double best_val = 1e100;
+    double best_w[CrossfishDev::N_EVAL_WEIGHTS];
+    for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+        best_w[i] = w[i];
+    }
+    int stale = 0;
+    int tstep = 0;
+    const char *names[CrossfishDev::N_EVAL_WEIGHTS] = {
+        "miniboards", "center_board", "corner_boards", "global_tiar", "local_tiar",
+        "tiar_lined", "center_sq", "corner_sq", "squares", "tempo"
+    };
+
+    for (int epoch = 1; epoch <= n_epochs; epoch++) {
+        std::shuffle(train.begin(), train.end(), rng);
+        for (const TexelPos &p : train) {
+            tstep++;
+            double e = 0;
+            for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+                e += w[i] * p.f[i];
+            }
+            double pred = texel_sigmoid(e / best_k);
+            pred = std::min(1.0 - 1e-12, std::max(1e-12, pred));
+            double gscale = (pred - p.y) / best_k;
+            for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+                double g = gscale * p.f[i] + 1e-5 * (w[i] - (double)start_w[i]) / step_scale[i];
+                m[i] = 0.9 * m[i] + 0.1 * g;
+                v[i] = 0.999 * v[i] + 0.001 * g * g;
+                double mhat = m[i] / (1.0 - std::pow(0.9, tstep));
+                double vhat = v[i] / (1.0 - std::pow(0.999, tstep));
+                w[i] -= lr * mhat / (std::sqrt(vhat) + 1e-8) * step_scale[i];
+                if (w[i] < wmin[i]) w[i] = wmin[i];
+                if (w[i] > wmax[i]) w[i] = wmax[i];
+            }
+        }
+        double tr = texel_loss(train, w, best_k);
+        double va = texel_loss(val, w, best_k);
+        std::cout << "epoch " << epoch << " train=" << tr << " val=" << va << " w=";
+        for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+            std::cout << (int)std::lround(w[i]);
+            if (i + 1 < CrossfishDev::N_EVAL_WEIGHTS) std::cout << ",";
+        }
+        std::cout << std::endl;
+        if (va + 1e-6 < best_val) {
+            best_val = va;
+            stale = 0;
+            for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+                best_w[i] = w[i];
+            }
+        } else {
+            stale++;
+            if (stale >= 10) {
+                std::cout << "early stop" << std::endl;
+                break;
+            }
+        }
+    }
+
+    std::cout << "best val_loss=" << best_val << std::endl;
+    std::cout << "start: {2000, 1000, 500, 1500, 500, 500, 20, 10, 20, 50}" << std::endl;
+    std::cout << "tuned: {";
+    for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+        int rounded = (int)std::lround(best_w[i]);
+        std::cout << rounded;
+        if (i + 1 < CrossfishDev::N_EVAL_WEIGHTS) std::cout << ", ";
+    }
+    std::cout << "}" << std::endl;
+    for (int i = 0; i < CrossfishDev::N_EVAL_WEIGHTS; i++) {
+        std::cout << names[i] << ": " << start_w[i] << " -> " << (int)std::lround(best_w[i])
+                  << " (" << (100.0 * (best_w[i] - start_w[i]) / step_scale[i]) << "%)" << std::endl;
+    }
+}
+
+int main(int argc, char** argv) {
+    if (argc >= 2 && std::strcmp(argv[1], "tune") == 0) {
+        CrossfishDev::init_mini_lut();
+        run_texel();
+        return 0;
+    }
     verify_fill_movegen();
     verify_mini_lut();
-    verify_eval_match();
+    verify_eval_linear();
     const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
     // const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;

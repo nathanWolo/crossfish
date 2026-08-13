@@ -1,4 +1,4 @@
-// Alloc-free + LMR verify + 3x3 LUT as a faster drop-in for the existing miniboard loop.
+// LUT eval with Texel-tuned weights (per-weight Adam steps).
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -469,7 +469,10 @@ class CrossfishDev {
             }
         }
 
-        int evaluate(GlobalBoard &board) {
+        static constexpr int N_EVAL_WEIGHTS = 10;
+        int eval_weights[N_EVAL_WEIGHTS] = {2410, 836, 464, 1316, 534, 424, 33, 10, 33, 112};
+
+        void eval_diffs(GlobalBoard &board, int *d) {
             init_mini_lut();
             int p0_miniboards_held = __builtin_popcount(board.mini_board_states[0]);
             int p1_miniboards_held = __builtin_popcount(board.mini_board_states[1]);
@@ -507,13 +510,10 @@ class CrossfishDev {
 
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
-
             int p0_center_miniboard_held = __builtin_popcount(p0_miniboards & (1 << 4));
             int p1_center_miniboard_held = __builtin_popcount(p1_miniboards & (1 << 4));
-
             int p0_corner_miniboards_held = __builtin_popcount(p0_miniboards & corners);
             int p1_corner_miniboards_held = __builtin_popcount(p1_miniboards & corners);
-
             int p0_global_two_in_a_row = 0;
             int p1_global_two_in_a_row = 0;
             int p0_two_in_a_rows_lined_up = 0;
@@ -524,18 +524,27 @@ class CrossfishDev {
                 p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1]))  / 2);
                 p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1]))   / 2);
             }
-            int val = (p0_miniboards_held - p1_miniboards_held) * 2000;
-            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 1000;
-            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 500;
-            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1500;
-            val += (p0_two_in_a_row - p1_two_in_a_row) * 500;
-            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 500;
-            val += (p0_center_squares_held - p1_center_squares_held) * 20;
-            val += (p0_corner_squares_held - p1_corner_squares_held) * 10;
-            val += (p0_squares_held - p1_squares_held)* 20;
+            d[0] = p0_miniboards_held - p1_miniboards_held;
+            d[1] = p0_center_miniboard_held - p1_center_miniboard_held;
+            d[2] = p0_corner_miniboards_held - p1_corner_miniboards_held;
+            d[3] = p0_global_two_in_a_row - p1_global_two_in_a_row;
+            d[4] = p0_two_in_a_row - p1_two_in_a_row;
+            d[5] = p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up;
+            d[6] = p0_center_squares_held - p1_center_squares_held;
+            d[7] = p0_corner_squares_held - p1_corner_squares_held;
+            d[8] = p0_squares_held - p1_squares_held;
+            d[9] = 0;
+        }
 
+        int evaluate(GlobalBoard &board) {
+            int d[N_EVAL_WEIGHTS];
+            eval_diffs(board, d);
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
-            val += stm_sign * 50;
+            int val = 0;
+            for (int i = 0; i < 9; i++) {
+                val += eval_weights[i] * d[i];
+            }
+            val += stm_sign * eval_weights[9];
             return stm_sign * val;
         }
 
