@@ -1,0 +1,4 @@
+{
+  "name": "crossfish",
+  "install": "bash .cursor/install.sh"
+}
