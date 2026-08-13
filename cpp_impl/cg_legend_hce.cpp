@@ -942,9 +942,37 @@ std::array<int, 3> aggregate_results(std::vector<std::future<std::array<int, 3>>
     return total;
 }
 
+static int run_match() {
+    CrossfishDev engine;
+    GlobalBoard board;
+    std::string cmd;
+    std::cout << std::unitbuf;
+    while (std::cin >> cmd) {
+        if (cmd == "NEW") {
+            engine = CrossfishDev();
+            board = GlobalBoard();
+        } else if (cmd == "APPLY") {
+            int mb, sq;
+            std::cin >> mb >> sq;
+            board.makeMove({(int8_t)mb, (int8_t)sq});
+        } else if (cmd == "GO") {
+            int ms;
+            std::cin >> ms;
+            if (ms < 1) ms = 20;
+            Move best = engine.getMove(board, std::chrono::milliseconds(ms));
+            board.makeMove(best);
+            std::cout << (int)best.mini_board << " " << (int)best.square << std::endl;
+        }
+    }
+    return 0;
+}
+
 //main function for codingame
-int main()
+int main(int argc, char** argv)
 {
+    if (argc >= 2 && std::string(argv[1]) == "match") {
+        return run_match();
+    }
 
     CrossfishDev crossfish;
     GlobalBoard board;

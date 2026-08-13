@@ -1,4 +1,4 @@
-.PHONY: test test-cpp test-python sprt verify cg clean
+.PHONY: test test-cpp test-python sprt verify cg roundrobin clean
 
 test:
 	$(MAKE) -C cpp_impl test
@@ -17,6 +17,9 @@ verify:
 
 cg:
 	$(MAKE) -C cpp_impl cg
+
+roundrobin:
+	$(MAKE) -C cpp_impl roundrobin
 
 clean:
 	$(MAKE) -C cpp_impl clean

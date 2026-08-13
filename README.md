@@ -21,6 +21,7 @@ That builds and runs the C++ unit tests, the Python rules oracle, and compiles t
 | `make test-python` | Independent Python board perft / make-undo / winners (`python_impl/test_rules.py`) |
 | `make verify` | The older smoke checks inside `test_bots.cpp`, then exit (no SPRT) |
 | `make sprt` | Strength: Dev vs Prev self-play with SPRT (slow, noisy) |
+| `make roundrobin` | 10k-game pairs of current C++ vs Legend vs Python at 20ms/move |
 | `make cg` | Compile the CodinGame submission |
 
 SPRT answers "is this stronger?". Unit tests answer "did I break the rules, hashing, eval, or search?". Do not skip `make test` because SPRT passed.
