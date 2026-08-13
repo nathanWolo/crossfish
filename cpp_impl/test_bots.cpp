@@ -17,9 +17,9 @@
 #include <algorithm>
 #include <immintrin.h>
 
-// Fast SPRT time control. CodinGame is 95ms; search features that help here
-// typically help at the longer time control too.
-static constexpr int SPRT_THINK_MS = 20;
+// CodinGame UTTT: 1000ms first execute per player, 100ms per later move
+// (engine searches 800ms / 95ms). SPRT uses the per-move budget.
+static constexpr int SPRT_THINK_MS = 95;
 #pragma GCC optimize("O3")
 #pragma GCC optimization("Ofast,unroll-loops")
 #pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
@@ -721,8 +721,56 @@ static void verify_fill_movegen() {
     std::cout << "movegen fill vs vector: OK" << std::endl;
 }
 
+static void verify_mini_lut() {
+    CrossfishDev::init_mini_lut();
+    const CrossfishDev::MiniLut &empty = CrossfishDev::mini_lut[0];
+    if (empty.dead || empty.p0_tiar || empty.p1_tiar || empty.p0_win1 || empty.p0_sq) {
+        std::cerr << "mini lut empty-board mismatch" << std::endl;
+        std::exit(1);
+    }
+    // P0 on squares 0 and 1: ternary index 1 + 3 = 4, wins by playing 2.
+    const CrossfishDev::MiniLut &row = CrossfishDev::mini_lut[4];
+    if (row.dead || row.p0_win1 == 0 || row.p0_tiar < 1) {
+        std::cerr << "mini lut win-in-one mismatch" << std::endl;
+        std::exit(1);
+    }
+    // Same row blocked by P1 on square 2: index 1 + 3 + 2*9 = 22.
+    const CrossfishDev::MiniLut &blocked = CrossfishDev::mini_lut[22];
+    if (blocked.p0_win1 || blocked.p0_tiar) {
+        std::cerr << "mini lut blocked-line mismatch" << std::endl;
+        std::exit(1);
+    }
+    std::cout << "mini lut: OK" << std::endl;
+}
+
+static void verify_eval_match() {
+    CrossfishPrev prev;
+    CrossfishDev dev;
+    CrossfishDev::init_mini_lut();
+    std::mt19937 rng(999);
+    for (int g = 0; g < 200; g++) {
+        GlobalBoard board;
+        for (int ply = 0; ply < 90; ply++) {
+            if (board.checkWinner() != -1) break;
+            int loop_eval = prev.evaluate(board);
+            int lut_eval = dev.evaluate(board);
+            if (loop_eval != lut_eval) {
+                std::cerr << "eval mismatch loop=" << loop_eval << " lut=" << lut_eval
+                          << " ply=" << ply << std::endl;
+                std::exit(1);
+            }
+            std::vector<Move> moves = board.getLegalMoves();
+            if (moves.empty()) break;
+            board.makeMove(moves[rng() % moves.size()]);
+        }
+    }
+    std::cout << "eval lut vs loop: OK" << std::endl;
+}
+
 int main() {
     verify_fill_movegen();
+    verify_mini_lut();
+    verify_eval_match();
     const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
     // const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;

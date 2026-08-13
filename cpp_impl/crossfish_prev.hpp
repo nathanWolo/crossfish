@@ -1,4 +1,4 @@
-// Frozen SPRT baseline: +121 Elo patch (Zobrist, eval skip, TT cutoffs, history).
+// Frozen alloc-free baseline (5840146) plus LMR fail-high re-search.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -64,7 +64,9 @@ class CrossfishPrev {
             nodes = 0;
             stopped = false;
             root_score = 0;
-            root_best_move = board.getLegalMoves()[0];
+            Move root_moves[81];
+            board.fillLegalMoves(root_moves);
+            root_best_move = root_moves[0];
             killer_moves = std::array<std::array<int, 9>, 128>();
             start_time = std::chrono::high_resolution_clock::now();
             depth = 1;
@@ -118,11 +120,13 @@ class CrossfishPrev {
                 alpha = stand_pat;
             }
 
-            std::vector<Move> caps = board.get_captures();
-            std::vector<int> scores = get_move_scores(caps, {99, 99}, board, ply);
-            sort_moves(caps, scores);
+            Move caps[81];
+            int scores[81];
+            int n_caps = board.fillCaptures(caps);
+            get_move_scores(caps, n_caps, {99, 99}, board, ply, scores);
+            sort_moves(caps, scores, n_caps);
             int val;
-            for (int i = 0; i < (int)caps.size(); i++) {
+            for (int i = 0; i < n_caps; i++) {
                 board.makeMove(caps[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
                 board.unmakeMove();
@@ -192,15 +196,16 @@ class CrossfishPrev {
 
             bool singular = (tt_hit && entry.depth >= depth - 3 && (entry.flag == TT_LOWER || entry.flag == TT_EXACT));
 
-            std::vector<Move> legal_moves = board.getLegalMoves();
-            std::vector<int> scores = get_move_scores(legal_moves, tt_hit ? entry.best_move : Move{99, 99}, board, ply);
-            sort_moves(legal_moves, scores);
+            Move legal_moves[81];
+            int scores[81];
+            int nmoves = board.fillLegalMoves(legal_moves);
+            get_move_scores(legal_moves, nmoves, tt_hit ? entry.best_move : Move{99, 99}, board, ply, scores);
+            sort_moves(legal_moves, scores, nmoves);
 
             Move best_move = legal_moves[0];
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
-            int nmoves = (int)legal_moves.size();
             for (int i = 0; i < nmoves; i++) {
                 bool capture = is_capture_avx(board, legal_moves[i]);
                 if (can_futility_prune && i > 0 && !capture) {
@@ -264,8 +269,8 @@ class CrossfishPrev {
             return best_val;
         }
 
-        void sort_moves(std::vector<Move>& moves, std::vector<int>& scores) {
-            for (int i = 1; i < (int)moves.size(); i++) {
+        void sort_moves(Move* moves, int* scores, int n) {
+            for (int i = 1; i < n; i++) {
                 int key = scores[i];
                 Move key_move = moves[i];
                 int j = i - 1;
@@ -312,9 +317,8 @@ class CrossfishPrev {
             return result;
         }
 
-        std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
-            std::vector<int> scores = std::vector<int>(moves.size(), 0);
-            for (int i = 0; i < (int)moves.size(); i++) {
+        void get_move_scores(Move* moves, int n, Move tt_move, GlobalBoard &board, int &ply, int* scores) {
+            for (int i = 0; i < n; i++) {
                 int move_score = 0;
                 if (moves[i].mini_board == tt_move.mini_board && moves[i].square == tt_move.square) {
                     move_score += 1000;
@@ -345,7 +349,6 @@ class CrossfishPrev {
                 move_score += history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square] / 20;
                 scores[i] = move_score;
             }
-            return scores;
         }
 
         int evaluate(GlobalBoard &board) {
