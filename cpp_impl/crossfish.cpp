@@ -22,6 +22,7 @@
 // W 349 / D 61 / L 159, +121 Elo, LLR +3.00. Changes: working Zobrist keys,
 // TT cutoffs with matching bound flags, skip finished miniboards in eval,
 // history heuristic, 2^18 TT, less frequent time checks.
+// Alloc-free movegen: stack Move[81]/int[81] in search/qsearch instead of std::vector.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
@@ -242,72 +243,66 @@ class GlobalBoard {
             return -1;
         }
 
-        std::vector<Move> get_captures() {
-            std::vector<Move> captures;
-
-            //check if we were sent to one miniboard or if we were sent to a won or drawn miniboard
+        int fillCaptures(Move* dst) {
+            int n = 0;
+            if (n_moves == 0) {
+                return 0;
+            }
             int8_t active_square = move_history.top().square;
             int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
 
-            if ((out_of_play & (1 << active_square)) == 0 ) { //we were not sent to a won or drawn board
+            if ((out_of_play & (1 << active_square)) == 0 ) {
                 int marked = mini_boards[active_square].markers[0] | mini_boards[active_square].markers[1];
-                //find all moves that capture this square
                 for (int8_t i = 0; i < 9; i++) {
-                    if ((marked & (1 << i)) == 0) //if the square is not taken
+                    if ((marked & (1 << i)) == 0)
                     {
                         Move move = {active_square, i};
                         if (is_capture_avx(move)) {
-                            captures.push_back(move);
+                            dst[n++] = move;
                         }
                     }
                 }
             }
             else {
-                //we were sent to a won or drawn board
                 for (int8_t i = 0; i < 9; i++) {
-                    if ((out_of_play & (1 << i)) == 0) //check if board i is not out of play
+                    if ((out_of_play & (1 << i)) == 0)
                     {
                         int marked = mini_boards[i].markers[0] | mini_boards[i].markers[1];
                         for (int8_t j = 0; j < 9; j++) {
-                            if ((marked & (1 << j)) == 0) //if the square is not taken
+                            if ((marked & (1 << j)) == 0)
                             {
                                 Move move = {i, j};
                                 if (is_capture_avx(move)) {
-                                    captures.push_back(move);
+                                    dst[n++] = move;
                                 }
                             }
                         }
                     }
                 }
             }
-            return captures;
+            return n;
         }
 
-        std::vector<Move> getLegalMoves() {
-            std::vector<Move> legal_moves;
-            legal_moves.reserve(9);
+        int fillLegalMoves(Move* dst) {
+            int n = 0;
             if (n_moves == 0) {
                 for (int8_t i = 0; i < 9; i++) {
                     for (int8_t j = 0; j < 9; j++) {
-                        Move move = {i, j};
-                        legal_moves.push_back(move);
+                        dst[n++] = Move{i, j};
                     }
                 }
             } else {
                 int8_t active_square = move_history.top().square;
                 int out_of_play = mini_board_states[0] | mini_board_states[1] | mini_board_states[2];
-                //check if we were sent to a won or drawn board
                 if (((out_of_play & (1 << active_square)) != 0) || prev_move_was_pass) {
-                    // we were
                     for (int8_t i = 0; i < 9; i++) {
-                        if ((out_of_play & (1 << i)) == 0) //check if board i is not out of play
+                        if ((out_of_play & (1 << i)) == 0)
                         {
+                            int marked = mini_boards[i].markers[0] | mini_boards[i].markers[1];
                             for (int8_t j = 0; j < 9; j++) {
-                                int marked = mini_boards[i].markers[0] | mini_boards[i].markers[1];
-                                if ((marked & (1 << j)) == 0) 
-                                { //if the square is not taken
-                                    Move move = {i, j};
-                                    legal_moves.push_back(move);
+                                if ((marked & (1 << j)) == 0)
+                                {
+                                    dst[n++] = Move{i, j};
                                 }
                             }
                         }
@@ -315,15 +310,26 @@ class GlobalBoard {
                 } else {
                     int marked = mini_boards[active_square].markers[0] | mini_boards[active_square].markers[1];
                     for (int8_t i = 0; i < 9; i++) {
-                        if ((marked & (1 << i)) == 0 ) //if the square is not taken
+                        if ((marked & (1 << i)) == 0 )
                         {
-                            Move move = {active_square, i};
-                            legal_moves.push_back(move);
+                            dst[n++] = Move{active_square, i};
                         }
                     }
                 }
             }
-            return legal_moves;
+            return n;
+        }
+
+        std::vector<Move> get_captures() {
+            Move buf[81];
+            int n = fillCaptures(buf);
+            return std::vector<Move>(buf, buf + n);
+        }
+
+        std::vector<Move> getLegalMoves() {
+            Move buf[81];
+            int n = fillLegalMoves(buf);
+            return std::vector<Move>(buf, buf + n);
         }
         void print_board() {
             for (int row = 0; row < 9; row++) {
@@ -442,7 +448,9 @@ class CrossfishDev {
             nodes = 0;
             stopped = false;
             root_score = 0;
-            root_best_move = board.getLegalMoves()[0];
+            Move root_moves[81];
+            board.fillLegalMoves(root_moves);
+            root_best_move = root_moves[0];
 
             //clear killers
             killer_moves = std::array<std::array<int, 9>, 128>();
@@ -516,11 +524,13 @@ class CrossfishDev {
             }
 
             //get and sort moves
-            std::vector<Move> caps = board.get_captures();
-            std::vector<int> scores = get_move_scores(caps, {99, 99}, board, ply);
-            sort_moves(caps, scores);
+            Move caps[81];
+            int scores[81];
+            int n_caps = board.fillCaptures(caps);
+            get_move_scores(caps, n_caps, {99, 99}, board, ply, scores);
+            sort_moves(caps, scores, n_caps);
             int val;
-            for (int i = 0; i < caps.size(); i++) {
+            for (int i = 0; i < n_caps; i++) {
                 board.makeMove(caps[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
                 board.unmakeMove();
@@ -593,23 +603,16 @@ class CrossfishDev {
 
             bool singular = (tt_hit && entry.depth >= depth - 3 && (entry.flag == 2 || entry.flag == 0));
         
-            std::vector<Move> legal_moves = board.getLegalMoves();
-            // if (legal_moves.empty()){
-            //     std::cerr << "LEGAL MOVES EMPTY. SHOULD NEVER REACH HERE " << "BOARD WINNER: " << board.checkWinner() << std::endl;
-            //     std::cerr << "Player to move: " << board.n_moves % 2 << "Last move: " << board.move_history.top().mini_board << ", " << board.move_history.top().square << std::endl;
-            //     board.print_board();
-            //     // std::cout << board.checkWinner() << std::endl;
-            // }
-            
-            std::vector<int> scores = get_move_scores(legal_moves, entry.best_move, board, ply);
-            //sort on moves and scores, with scores as the key
-            sort_moves(legal_moves, scores);
+            Move legal_moves[81];
+            int scores[81];
+            int nmoves = board.fillLegalMoves(legal_moves);
+            get_move_scores(legal_moves, nmoves, entry.best_move, board, ply, scores);
+            sort_moves(legal_moves, scores, nmoves);
 
             Move best_move = legal_moves[0];
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
-            int nmoves = legal_moves.size();
             for (int i = 0; i < nmoves; i++) {
                 bool capture = is_capture_avx(board, legal_moves[i]);
                 if (can_futility_prune && i > 0 && !capture) { //dont search quiet moves in already losing positions
@@ -673,9 +676,8 @@ class CrossfishDev {
 
         }
 
-        void sort_moves(std::vector<Move>& moves, std::vector<int>& scores) {
-            //sort on moves and scores, with scores as the key, in place
-            for (int i = 1; i < moves.size(); i++) {
+        void sort_moves(Move* moves, int* scores, int n) {
+            for (int i = 1; i < n; i++) {
                 int key = scores[i];
                 Move key_move = moves[i];
                 int j = i - 1;
@@ -757,9 +759,8 @@ class CrossfishDev {
         }
 
 
-        std::vector<int> get_move_scores(std::vector<Move> &moves, Move tt_move, GlobalBoard &board, int &ply) {
-            std::vector<int> scores = std::vector<int>(moves.size(), 0);
-            for (int i = 0; i < moves.size(); i++) {
+        void get_move_scores(Move* moves, int n, Move tt_move, GlobalBoard &board, int &ply, int* scores) {
+            for (int i = 0; i < n; i++) {
                 int move_score = 0;
                 if (moves[i].mini_board == tt_move.mini_board && moves[i].square == tt_move.square) {
                     move_score += 1000;
@@ -797,8 +798,6 @@ class CrossfishDev {
                 move_score += history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square] / 20;
                 scores[i] = move_score;
             }
-            return scores;
-            
         }
 
         int evaluate(GlobalBoard &board) {
