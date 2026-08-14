@@ -971,7 +971,8 @@ int main(int argc, char** argv) {
         }
         std::cout << "loaded " << MINI_SCORE_PATH << " into Dev" << std::endl;
     }
-    std::cout << "Dev extra experiment: " << CrossfishDev::EVAL_EXPERIMENT << std::endl;
+    std::cout << "Dev extra experiment: " << CrossfishDev::EVAL_EXPERIMENT
+              << " search experiment: " << CrossfishDev::SEARCH_EXPERIMENT << std::endl;
     const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
     // const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;

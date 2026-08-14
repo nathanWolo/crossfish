@@ -17,6 +17,8 @@ class CrossfishDev {
         int nodes;
         std::array<std::array<int, 9>, 128> killer_moves;
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
+        Move counter_move[9][9];
+        bool counters_ready = false;
         static const int tt_size = 1 << 18;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
@@ -70,10 +72,12 @@ class CrossfishDev {
         static constexpr int LUT_W_CENTER_SQ = 33;
         static constexpr int LUT_W_CORNER_SQ = 10;
         static constexpr int LUT_W_SQUARES = 33;
-        // 0=free-move baseline, 2=off-board forks, 3=live-third global threats
-        static constexpr int EVAL_EXPERIMENT = 0;
+        // 0=baseline (free-move + LMR late non-captures). Failed eval: 2=forks 3=live-third 4=dead-board
+        static constexpr int EVAL_EXPERIMENT = 0; // Failed: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale
+        static constexpr int SEARCH_EXPERIMENT = 0; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500
         static constexpr int W_FREE_MOVE = 300;
         static constexpr int W_FORK = 400;
+        static constexpr int W_DEAD_BOARD = 250;
 
         static int mini_index(int p0, int p1) {
             int idx = 0;
@@ -202,6 +206,14 @@ class CrossfishDev {
             board.fillLegalMoves(root_moves);
             root_best_move = root_moves[0];
             killer_moves = std::array<std::array<int, 9>, 128>();
+            if (!counters_ready) {
+                for (int i = 0; i < 9; i++) {
+                    for (int j = 0; j < 9; j++) {
+                        counter_move[i][j] = Move{99, 99};
+                    }
+                }
+                counters_ready = true;
+            }
             start_time = std::chrono::high_resolution_clock::now();
             depth = 1;
             int alpha = min_val;
@@ -252,6 +264,9 @@ class CrossfishDev {
             }
             if (alpha < stand_pat) {
                 alpha = stand_pat;
+            }
+            if (stand_pat + 4000 < alpha) {
+                return alpha;
             }
 
             Move caps[81];
@@ -313,13 +328,24 @@ class CrossfishDev {
             if (!pv_node) {
                 int stand_pat = evaluate(board);
 
-                int reverse_futility_margin = 650;
+                int reverse_futility_margin = 500;
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
                     return beta;
                 }
 
                 int futility_margin = 800;
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
+
+                if constexpr (SEARCH_EXPERIMENT == 5) {
+                    if (depth <= 2) {
+                        int ralpha = alpha - 400 * depth;
+                        if (stand_pat < ralpha) {
+                            int q = qsearch(board, alpha, beta, ply);
+                            if (stopped) return min_val;
+                            if (q < ralpha) return q;
+                        }
+                    }
+                }
             }
             if (pv_node && !tt_hit && depth > 2) {
                 search(board, 1, ply, alpha, beta, false);
@@ -335,6 +361,24 @@ class CrossfishDev {
             int nmoves = board.fillLegalMoves(legal_moves);
             get_move_scores(legal_moves, nmoves, tt_hit ? entry.best_move : Move{99, 99}, board, ply, scores);
             sort_moves(legal_moves, scores, nmoves);
+
+            if constexpr (SEARCH_EXPERIMENT == 1) {
+                bool stm_free = board.prev_move_was_pass;
+                if (!stm_free && board.n_moves > 0) {
+                    int oop = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                    stm_free = (oop & (1 << board.move_history.top().square)) != 0;
+                }
+                if (!pv_node && can_null && depth >= 3 && ply > 0 && nmoves > 1 && !stm_free) {
+                    int R = 2 + depth / 4;
+                    int nd = depth - 1 - R;
+                    if (nd < 0) nd = 0;
+                    board.pass();
+                    int null_val = -search(board, nd, ply + 1, -beta, -beta + 1, false);
+                    board.unpass();
+                    if (stopped) return min_val;
+                    if (null_val >= beta) return beta;
+                }
+            }
 
             Move best_move = legal_moves[0];
             int best_val = min_val;
@@ -356,8 +400,8 @@ class CrossfishDev {
                 }
                 else {
                     int reduction = 0;
-                    if (scores[i] < 0) {
-                        reduction = i/4;
+                    if (scores[i] < 0 || (i >= 3 && !capture)) {
+                        reduction = i / 3;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
@@ -383,8 +427,19 @@ class CrossfishDev {
                 if (alpha >= beta) {
                     killer_moves[ply][legal_moves[i].square] = 1;
                     int &h = history_table[board.n_moves % 2][legal_moves[i].mini_board][legal_moves[i].square];
-                    h += depth * depth;
-                    if (h > 10000) h = 10000;
+                    int bonus = depth * depth;
+                    h += bonus - h * bonus / 10000;
+                    int stm = board.n_moves % 2;
+                    for (int j = 0; j < i; j++) {
+                        if (is_capture_avx(board, legal_moves[j])) continue;
+                        int &hj = history_table[stm][legal_moves[j].mini_board][legal_moves[j].square];
+                        hj -= bonus;
+                        if (hj < 0) hj = 0;
+                    }
+                    if (board.n_moves > 0) {
+                        Move prev = board.move_history.top();
+                        counter_move[prev.mini_board][prev.square] = legal_moves[i];
+                    }
                     break;
                 }
             }
@@ -397,7 +452,14 @@ class CrossfishDev {
                     flag = TT_LOWER;
                 }
                 TTEntry new_entry = {depth, best_val, flag, board.zobrist_hash, best_move};
-                transposition_table[board.zobrist_hash & (tt_size - 1)] = new_entry;
+                TTEntry &slot = transposition_table[board.zobrist_hash & (tt_size - 1)];
+                if constexpr (SEARCH_EXPERIMENT == 2) {
+                    if (slot.zobrist_hash == board.zobrist_hash || slot.zobrist_hash == 0 || slot.depth <= depth) {
+                        slot = new_entry;
+                    }
+                } else {
+                    slot = new_entry;
+                }
             }
 
             return best_val;
@@ -462,6 +524,14 @@ class CrossfishDev {
 
                 if (killer_moves[ply][moves[i].square] == 1) {
                     move_score += 25;
+                }
+
+                if (board.n_moves > 0) {
+                    Move prev = board.move_history.top();
+                    Move cm = counter_move[prev.mini_board][prev.square];
+                    if (cm.mini_board == moves[i].mini_board && cm.square == moves[i].square) {
+                        move_score += 40;
+                    }
                 }
 
                 if (is_capture_avx(board, moves[i])) {
@@ -607,7 +677,12 @@ class CrossfishDev {
             if (board.n_moves > 0) {
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
-                    extra += W_FREE_MOVE;
+                    if constexpr (EVAL_EXPERIMENT == 6) {
+                        int live = 9 - __builtin_popcount(out_of_play);
+                        extra += 50 * live;
+                    } else {
+                        extra += W_FREE_MOVE;
+                    }
                 }
             }
             if constexpr (EVAL_EXPERIMENT == 2) {
@@ -635,6 +710,33 @@ class CrossfishDev {
                 int p1_fork = (p1_w1 > 1) ? (p1_w1 - 1) : 0;
                 int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
                 extra += stm_sign * W_FORK * (p0_fork - p1_fork);
+            }
+            if constexpr (EVAL_EXPERIMENT == 4) {
+                if (board.n_moves > 0 && !board.prev_move_was_pass) {
+                    int sent = board.move_history.top().square;
+                    int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                    if ((out_of_play & (1 << sent)) == 0) {
+                        init_mini_lut();
+                        const MiniLut &e = mini_lut[mini_index(
+                            board.mini_boards[sent].markers[0],
+                            board.mini_boards[sent].markers[1])];
+                        if (e.dead) {
+                            extra -= W_DEAD_BOARD;
+                        }
+                    }
+                }
+            }
+            if constexpr (EVAL_EXPERIMENT == 5) {
+                if (board.n_moves > 0 && !board.prev_move_was_pass) {
+                    int sent = board.move_history.top().square;
+                    int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                    if ((out_of_play & (1 << sent)) == 0) {
+                        int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+                        extra += stm_sign * mini_score[mini_index(
+                            board.mini_boards[sent].markers[0],
+                            board.mini_boards[sent].markers[1])];
+                    }
+                }
             }
             return extra;
         }

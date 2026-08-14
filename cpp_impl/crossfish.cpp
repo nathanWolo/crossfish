@@ -401,6 +401,8 @@ class CrossfishDev {
         int nodes;
         std::array<std::array<int, 9>, 128> killer_moves;
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
+        Move counter_move[9][9];
+        bool counters_ready = false;
         static const int tt_size = 1 << 18;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
@@ -542,6 +544,14 @@ class CrossfishDev {
 
             //clear killers
             killer_moves = std::array<std::array<int, 9>, 128>();
+            if (!counters_ready) {
+                for (int i = 0; i < 9; i++) {
+                    for (int j = 0; j < 9; j++) {
+                        counter_move[i][j] = Move{99, 99};
+                    }
+                }
+                counters_ready = true;
+            }
             // history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
             start_time = std::chrono::high_resolution_clock::now();
             depth = 1;
@@ -610,6 +620,9 @@ class CrossfishDev {
             if (alpha < stand_pat) {
                 alpha = stand_pat;
             }
+            if (stand_pat + 4000 < alpha) {
+                return alpha;
+            }
 
             //get and sort moves
             Move caps[81];
@@ -674,7 +687,7 @@ class CrossfishDev {
             if (!pv_node) {
                 int stand_pat = evaluate(board);
 
-                int reverse_futility_margin = 650;
+                int reverse_futility_margin = 500;
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
                     return beta;
                 }
@@ -718,11 +731,8 @@ class CrossfishDev {
                 }
                 else {
                     int reduction = 0;
-                    if (scores[i] < 0) {
-                        reduction = i/4; //late move reduction
-                    }
-                    else {
-                        reduction = i/6;
+                    if (scores[i] < 0 || (i >= 3 && !capture)) {
+                        reduction = i / 3; //late move reduction
                     }
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
                     if (val > alpha && val < beta) {
@@ -743,8 +753,19 @@ class CrossfishDev {
                 if (alpha >= beta) {
                     killer_moves[ply][legal_moves[i].square] = 1;
                     int &h = history_table[board.n_moves % 2][legal_moves[i].mini_board][legal_moves[i].square];
-                    h += depth * depth;
-                    if (h > 10000) h = 10000;
+                    int bonus = depth * depth;
+                    h += bonus - h * bonus / 10000;
+                    int stm = board.n_moves % 2;
+                    for (int j = 0; j < i; j++) {
+                        if (is_capture_avx(board, legal_moves[j])) continue;
+                        int &hj = history_table[stm][legal_moves[j].mini_board][legal_moves[j].square];
+                        hj -= bonus;
+                        if (hj < 0) hj = 0;
+                    }
+                    if (board.n_moves > 0) {
+                        Move prev = board.move_history.top();
+                        counter_move[prev.mini_board][prev.square] = legal_moves[i];
+                    }
                     break;
                 }
             }
@@ -859,6 +880,14 @@ class CrossfishDev {
                 //is it a killer move?
                 if (killer_moves[ply][moves[i].square] == 1) {
                     move_score += 25;
+                }
+
+                if (board.n_moves > 0) {
+                    Move prev = board.move_history.top();
+                    Move cm = counter_move[prev.mini_board][prev.square];
+                    if (cm.mini_board == moves[i].mini_board && cm.square == moves[i].square) {
+                        move_score += 40;
+                    }
                 }
 
                 //if it wins a miniboard
