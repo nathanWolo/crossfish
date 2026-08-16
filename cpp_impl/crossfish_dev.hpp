@@ -88,9 +88,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-24 failed. 25 history-cap ~-26 (history beating captures is useful).
-        // 26: use HCE+MiniNet for RFP/futility, matching qsearch leaves.
-        static constexpr int SEARCH_EXPERIMENT = 26;
+        // 19-25 failed. 26 MiniNet RFP ~-33 (HCE RFP is correct).
+        // 27: extend moves that send the opponent to our win-in-one (UTTT "check").
+        static constexpr int SEARCH_EXPERIMENT = 27;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -490,12 +490,8 @@ class CrossfishDev {
                 int extension = 0;
                 if (nmoves==1 || (singular && legal_moves[i].mini_board == entry.best_move.mini_board && legal_moves[i].square == entry.best_move.square)) {
                     extension = 1;
-                } else if constexpr (SEARCH_EXPERIMENT == 19) {
-                    if (capture) {
-                        int oop = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
-                        bool gives_free = (oop & (1 << legal_moves[i].square)) != 0;
-                        if (!gives_free) extension = 1;
-                    }
+                } else if constexpr (SEARCH_EXPERIMENT == 27) {
+                    if (sends_our_win1(board, legal_moves[i])) extension = 1;
                 }
 
                 int extra_red = 0;
@@ -516,6 +512,9 @@ class CrossfishDev {
                     }
                     if constexpr (SEARCH_EXPERIMENT == 22) {
                         if (block) do_lmr = false;
+                    }
+                    if constexpr (SEARCH_EXPERIMENT == 27) {
+                        if (extension) do_lmr = false;
                     }
                     if (do_lmr) {
                         reduction = i / 3 + extra_red;
@@ -613,6 +612,22 @@ class CrossfishDev {
             result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
             int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
             return mask != 0;
+        }
+
+        bool sends_our_win1(GlobalBoard &board, Move &move) {
+            int oop = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int sent = move.square;
+            if ((oop & (1 << sent)) != 0) return false;
+            int stm = board.n_moves % 2;
+            int p0 = board.mini_boards[sent].markers[0];
+            int p1 = board.mini_boards[sent].markers[1];
+            if (move.mini_board == sent) {
+                if (stm == 0) p0 |= (1 << move.square);
+                else p1 |= (1 << move.square);
+                if (is_capture_avx(board, move)) return false;
+            }
+            const MiniLut &e = mini_lut[mini_index(p0, p1)];
+            return stm == 0 ? (bool)e.p0_win1 : (bool)e.p1_win1;
         }
 
         bool sends_opp_win1(GlobalBoard &board, Move &move) {
