@@ -88,9 +88,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-32 failed (..., LUT scoring, fail-soft+no-LMR-captures ~-130).
-        // 33: stronger LMR, reduction i/2 instead of i/3 (more nodes for tactics).
-        static constexpr int SEARCH_EXPERIMENT = 33;
+        // 19-33 failed (..., fail-soft ~-130, LMR i/2 ~-50).
+        // 34: store a TT lower bound on reverse-futility cutoffs.
+        static constexpr int SEARCH_EXPERIMENT = 34;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -364,9 +364,9 @@ class CrossfishDev {
             int val;
             for (int i = 0; i < n_caps; i++) {
                 board.makeMove(caps[i]);
-                nnue_push(board, caps[i]);
+                if constexpr (USE_NNUE) nnue_push(board, caps[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
-                nnue_pop();
+                if constexpr (USE_NNUE) nnue_pop();
                 board.unmakeMove();
                 if (stopped) return min_val;
                 alpha = std::max(alpha, val);
@@ -422,6 +422,10 @@ class CrossfishDev {
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
+                    if constexpr (SEARCH_EXPERIMENT == 34) {
+                        transposition_table[board.zobrist_hash & (tt_size - 1)] =
+                            TTEntry{depth, beta, TT_LOWER, board.zobrist_hash, Move{99, 99}};
+                    }
                     return beta;
                 }
 
@@ -505,7 +509,7 @@ class CrossfishDev {
                 }
 
                 board.makeMove(legal_moves[i]);
-                nnue_push(board, legal_moves[i]);
+                if constexpr (USE_NNUE) nnue_push(board, legal_moves[i]);
                 if (i == 0) {
                     val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha, can_null);
                 }
@@ -523,9 +527,6 @@ class CrossfishDev {
                     }
                     if (do_lmr) {
                         reduction = i / 3 + extra_red;
-                        if constexpr (SEARCH_EXPERIMENT == 33) {
-                            reduction = i / 2 + extra_red;
-                        }
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
@@ -537,7 +538,7 @@ class CrossfishDev {
                         }
                     }
                 }
-                nnue_pop();
+                if constexpr (USE_NNUE) nnue_pop();
                 board.unmakeMove();
                 if (stopped) return min_val;
                 if (val > best_val) {
