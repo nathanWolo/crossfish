@@ -88,9 +88,11 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-34 failed. 35: skip MiniNet at qsearch when HCE already fail-highs.
-        // Also: RFP uses HCE only (was double-evaluating MiniNet then throwing it away).
-        static constexpr int SEARCH_EXPERIMENT = 35;
+        // 19-34 failed. Landed: skip MiniNet in qsearch when HCE already
+        // fail-highs. SPRT 20ms vs codingame_nnue: N 2048 W 869 D 492 L 687
+        // Elo +30.96 +/- 13.16 LLR 3.01. RFP is HCE-only (do not evaluate()
+        // then throw MiniNet away — that cost ~16% NPS).
+        static constexpr int SEARCH_EXPERIMENT = 0;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -339,14 +341,11 @@ class CrossfishDev {
                 }
             }
 
-            int stand_pat;
-            if constexpr (SEARCH_EXPERIMENT == 35) {
-                int hce = evaluate_hce(board);
-                if (hce >= beta) return beta;
-                stand_pat = hce + evaluate_mini(board);
-            } else {
-                stand_pat = evaluate(board);
+            int hce = evaluate_hce(board);
+            if (hce >= beta) {
+                return beta;
             }
+            int stand_pat = hce + evaluate_mini(board);
             if (stand_pat >= beta) {
                 return beta;
             }
