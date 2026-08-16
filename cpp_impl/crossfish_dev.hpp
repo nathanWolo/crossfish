@@ -88,9 +88,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-25 failed. 26 MiniNet RFP ~-33 (HCE RFP is correct).
-        // 27: extend moves that send the opponent to our win-in-one (UTTT "check").
-        static constexpr int SEARCH_EXPERIMENT = 27;
+        // 19-26 failed. 27 check-ext ~-148 Elo (NPS 4.6M vs 5.8M).
+        // 28: drop the 24-mask two-in-a-row loop from move ordering (NPS).
+        static constexpr int SEARCH_EXPERIMENT = 28;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -699,8 +699,10 @@ class CrossfishDev {
                     move_score += 75;
                 }
 
-                if (creates_two_in_a_row(board, moves[i])) {
-                    move_score += 50;
+                if constexpr (SEARCH_EXPERIMENT != 28) {
+                    if (creates_two_in_a_row(board, moves[i])) {
+                        move_score += 50;
+                    }
                 }
 
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
