@@ -34,7 +34,8 @@
 // 95ms N 3272 W 1257 D 942 L 1073, +19.6 +/- 10.1 Elo, LLR +3.01.
 // NPS bundle on top of that: AVX MiniNet, skip MiniNet when HCE cannot
 // reach alpha even at +8000, LUT capture/block/tiar. SPRT vs MiniNet-skip
-// baseline: 20ms N 2152 W 887 D 558 L 707, +29.1 +/- 12.7 Elo, LLR +3.01.
+// baseline: 20ms N 2152 W 887 D 558 L 707, +29.1 +/- 12.7 Elo, LLR +3.01;
+// 95ms N 2416 W 939 D 715 L 762, +25.5 +/- 11.6 Elo, LLR +3.01.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};

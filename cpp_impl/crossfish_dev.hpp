@@ -101,6 +101,8 @@ class CrossfishDev {
         // then throw MiniNet away — that cost ~16% NPS).
         // 36: NPS bundle vs that baseline — AVX MiniNet, skip MiniNet when HCE
         // cannot reach alpha even at +MINI_MAX, LUT capture/block/tiar bits.
+        // 20ms N 2152 W 887 D 558 L 707 Elo +29.13 +/- 12.67 LLR 3.01;
+        // 95ms N 2416 W 939 D 715 L 762 Elo +25.50 +/- 11.65 LLR 3.01.
         static constexpr int SEARCH_EXPERIMENT = 36;
         // Random-play MiniNet residuals reached ~4500; slack for search positions.
         static constexpr int MINI_MAX = 8000;
