@@ -67,12 +67,6 @@ class CrossfishDev {
             int8_t p1_corner;
             int8_t p0_sq;
             int8_t p1_sq;
-            // Empty squares that win / create a 2-in-a-row. Same semantics as
-            // is_capture_avx / creates_two_in_a_row, precomputed for scoring.
-            uint16_t p0_cap;
-            uint16_t p1_cap;
-            uint16_t p0_tiar_sq;
-            uint16_t p1_tiar_sq;
         };
         static constexpr int MINI_LUT_SIZE = 19683;
         static inline MiniLut mini_lut[MINI_LUT_SIZE];
@@ -94,11 +88,11 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-30 failed (capture ext, LMR d>=3, qsearch blocks, no-LMR-blocks,
+        // 19-31 failed (capture ext, LMR d>=3, qsearch blocks, no-LMR-blocks,
         // send-to-opp-win1, cont-hist, history cap, MiniNet RFP, send-our-win1
-        // ext, drop tiar ordering, LMP, 2^19 TT). 31: LUT capture/block/tiar
-        // scoring — same move order, less work per node.
-        static constexpr int SEARCH_EXPERIMENT = 31;
+        // ext, drop tiar ordering, LMP, 2^19 TT, LUT capture scoring).
+        // 32: fail-soft RFP/qsearch + never LMR captures.
+        static constexpr int SEARCH_EXPERIMENT = 32;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -214,27 +208,8 @@ class CrossfishDev {
                     int occ = p0 | p1;
                     for (int s = 0; s < 9; s++) {
                         if (occ & (1 << s)) continue;
-                        unsigned bit = 1u << s;
-                        if (has_win(p0 | (int)bit)) {
-                            e.p0_win1 = 1;
-                            e.p0_cap = (uint16_t)(e.p0_cap | bit);
-                        }
-                        if (has_win(p1 | (int)bit)) {
-                            e.p1_win1 = 1;
-                            e.p1_cap = (uint16_t)(e.p1_cap | bit);
-                        }
-                        int p0s = p0 | (int)bit;
-                        int p1s = p1 | (int)bit;
-                        for (int i = 0; i < n_pairs; i++) {
-                            int two = tiar[i * 2];
-                            int third = tiar[i * 2 + 1];
-                            if (((p0s & two) == two) && (((p1 | p0) & third) == 0)) {
-                                e.p0_tiar_sq = (uint16_t)(e.p0_tiar_sq | bit);
-                            }
-                            if (((p1s & two) == two) && (((p0 | p1) & third) == 0)) {
-                                e.p1_tiar_sq = (uint16_t)(e.p1_tiar_sq | bit);
-                            }
-                        }
+                        if (has_win(p0 | (1 << s))) e.p0_win1 = 1;
+                        if (has_win(p1 | (1 << s))) e.p1_win1 = 1;
                     }
                     for (int i = 0; i < n_pairs; i++) {
                         e.p0_tiar = (int8_t)(e.p0_tiar + ((__builtin_popcount(p0 & tiar[i * 2]) - __builtin_popcount(p1 & tiar[i * 2 + 1])) / 2));
@@ -366,6 +341,7 @@ class CrossfishDev {
 
             int stand_pat = evaluate(board);
             if (stand_pat >= beta) {
+                if constexpr (SEARCH_EXPERIMENT == 32) return stand_pat;
                 return beta;
             }
             if (alpha < stand_pat) {
@@ -449,6 +425,7 @@ class CrossfishDev {
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
+                    if constexpr (SEARCH_EXPERIMENT == 32) return stand_pat;
                     return beta;
                 }
 
@@ -539,6 +516,9 @@ class CrossfishDev {
                 else {
                     int reduction = 0;
                     bool do_lmr = (scores[i] < 0 || (i >= 3 && !capture));
+                    if constexpr (SEARCH_EXPERIMENT == 32) {
+                        do_lmr = !capture && (scores[i] < 0 || i >= 3);
+                    }
                     if constexpr (SEARCH_EXPERIMENT == 20) {
                         do_lmr = do_lmr && depth >= 3;
                     }
@@ -636,13 +616,6 @@ class CrossfishDev {
         }
 
         bool is_capture_avx(GlobalBoard &board, Move &move) {
-            if constexpr (SEARCH_EXPERIMENT == 31) {
-                const MiniLut &e = mini_lut[mini_index(
-                    board.mini_boards[move.mini_board].markers[0],
-                    board.mini_boards[move.mini_board].markers[1])];
-                unsigned bit = 1u << move.square;
-                return (board.n_moves % 2 == 0) ? (e.p0_cap & bit) : (e.p1_cap & bit);
-            }
             int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
             miniboard_markers |= (1 << move.square);
             __m256i markers_vec = _mm256_set1_epi32(miniboard_markers);
@@ -682,13 +655,6 @@ class CrossfishDev {
         }
 
         bool is_block_avx(GlobalBoard &board, Move &move) {
-            if constexpr (SEARCH_EXPERIMENT == 31) {
-                const MiniLut &e = mini_lut[mini_index(
-                    board.mini_boards[move.mini_board].markers[0],
-                    board.mini_boards[move.mini_board].markers[1])];
-                unsigned bit = 1u << move.square;
-                return (board.n_moves % 2 == 0) ? (e.p1_cap & bit) : (e.p0_cap & bit);
-            }
             int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
             opp_markers |= (1 << move.square);
             __m256i markers_vec = _mm256_set1_epi32(opp_markers);
@@ -700,18 +666,13 @@ class CrossfishDev {
         }
 
         bool creates_two_in_a_row(GlobalBoard &board, Move &move) {
-            if constexpr (SEARCH_EXPERIMENT == 31) {
-                const MiniLut &e = mini_lut[mini_index(
-                    board.mini_boards[move.mini_board].markers[0],
-                    board.mini_boards[move.mini_board].markers[1])];
-                unsigned bit = 1u << move.square;
-                return (board.n_moves % 2 == 0) ? (e.p0_tiar_sq & bit) : (e.p1_tiar_sq & bit);
-            }
             int our_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
             int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
+            int occupied = opp_markers | our_markers;
+            int ours = our_markers | (1 << move.square);
             for (int mask = 0; mask < (int)two_in_a_row_masks.size() / 2; mask++) {
-                if ((((our_markers | (1 << move.square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) &&
-                    (((opp_markers | our_markers) & two_in_a_row_masks[mask * 2 + 1]) == 0)) {
+                if (((ours & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) &&
+                    ((occupied & two_in_a_row_masks[mask * 2 + 1]) == 0)) {
                     return true;
                 }
             }
@@ -719,20 +680,6 @@ class CrossfishDev {
         }
 
         void get_move_scores(Move* moves, int n, Move tt_move, GlobalBoard &board, int &ply, int* scores) {
-            const MiniLut *mb_lut[9] = {};
-            if constexpr (SEARCH_EXPERIMENT == 31) {
-                bool have[9] = {};
-                for (int i = 0; i < n; i++) {
-                    int mb = moves[i].mini_board;
-                    if (have[mb]) continue;
-                    have[mb] = true;
-                    mb_lut[mb] = &mini_lut[mini_index(
-                        board.mini_boards[mb].markers[0],
-                        board.mini_boards[mb].markers[1])];
-                }
-            }
-            int stm = board.n_moves % 2;
-            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
             for (int i = 0; i < n; i++) {
                 int move_score = 0;
                 if (moves[i].mini_board == tt_move.mini_board && moves[i].square == tt_move.square) {
@@ -759,34 +706,21 @@ class CrossfishDev {
                     }
                 }
 
-                if constexpr (SEARCH_EXPERIMENT == 31) {
-                    const MiniLut &e = *mb_lut[moves[i].mini_board];
-                    unsigned bit = 1u << moves[i].square;
-                    if (stm == 0) {
-                        if (e.p0_cap & bit) move_score += 100;
-                        if (e.p1_cap & bit) move_score += 75;
-                        if (e.p0_tiar_sq & bit) move_score += 50;
-                    } else {
-                        if (e.p1_cap & bit) move_score += 100;
-                        if (e.p0_cap & bit) move_score += 75;
-                        if (e.p1_tiar_sq & bit) move_score += 50;
-                    }
-                } else {
-                    if (is_capture_avx(board, moves[i])) {
-                        move_score += 100;
-                    }
+                if (is_capture_avx(board, moves[i])) {
+                    move_score += 100;
+                }
 
-                    if (is_block_avx(board, moves[i])) {
-                        move_score += 75;
-                    }
+                if (is_block_avx(board, moves[i])) {
+                    move_score += 75;
+                }
 
-                    if constexpr (SEARCH_EXPERIMENT != 28) {
-                        if (creates_two_in_a_row(board, moves[i])) {
-                            move_score += 50;
-                        }
+                if constexpr (SEARCH_EXPERIMENT != 28) {
+                    if (creates_two_in_a_row(board, moves[i])) {
+                        move_score += 50;
                     }
                 }
 
+                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
                     move_score -= 250;
                 }
@@ -795,7 +729,7 @@ class CrossfishDev {
                         move_score -= 200;
                     }
                 }
-                int hs = history_table[stm][moves[i].mini_board][moves[i].square] / 20;
+                int hs = history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square] / 20;
                 if constexpr (SEARCH_EXPERIMENT == 25) {
                     if (hs > 40) hs = 40;
                 }
