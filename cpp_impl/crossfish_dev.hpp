@@ -88,9 +88,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-23 failed. 24 cont-hist faded -7 after cap.
-        // 25: cap history so saturating quiets cannot outrank captures/blocks.
-        static constexpr int SEARCH_EXPERIMENT = 25;
+        // 19-24 failed. 25 history-cap ~-26 (history beating captures is useful).
+        // 26: use HCE+MiniNet for RFP/futility, matching qsearch leaves.
+        static constexpr int SEARCH_EXPERIMENT = 26;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -415,7 +415,10 @@ class CrossfishDev {
             }
             bool can_futility_prune = false;
             if (!pv_node && !g_disable_eval_prune) {
-                int stand_pat = (USE_MINIRES || nnue_leaf_only()) ? evaluate_hce(board) : evaluate(board);
+                int stand_pat = evaluate(board);
+                if constexpr (SEARCH_EXPERIMENT != 26) {
+                    if (USE_MINIRES || nnue_leaf_only()) stand_pat = evaluate_hce(board);
+                }
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
