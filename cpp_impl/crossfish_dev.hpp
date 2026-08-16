@@ -89,8 +89,9 @@ class CrossfishDev {
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
         // 19-34 failed. Landed: skip MiniNet in qsearch when HCE already
-        // fail-highs. SPRT 20ms vs codingame_nnue: N 2048 W 869 D 492 L 687
-        // Elo +30.96 +/- 13.16 LLR 3.01. RFP is HCE-only (do not evaluate()
+        // fail-highs. SPRT vs codingame_nnue: 20ms N 2048 W 869 D 492 L 687
+        // Elo +30.96 +/- 13.16 LLR 3.01; 95ms N 3272 W 1257 D 942 L 1073
+        // Elo +19.56 +/- 10.06 LLR 3.01. RFP is HCE-only (do not evaluate()
         // then throw MiniNet away — that cost ~16% NPS).
         static constexpr int SEARCH_EXPERIMENT = 0;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
