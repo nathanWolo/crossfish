@@ -87,8 +87,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19: capture ext ~-21 Elo. 20: LMR only when depth >= 3.
-        static constexpr int SEARCH_EXPERIMENT = 20; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600 18=improving 19=capext. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500 17=PVS re-search
+        // 19: capture ext ~-21 Elo. 20: LMR depth>=3 ~-8 Elo.
+        // 21: qsearch also searches blocks (same idea as adding captures to qsearch).
+        static constexpr int SEARCH_EXPERIMENT = 21; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600 18=improving 19=capext 20=lmr3. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500 17=PVS re-search
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -349,6 +350,14 @@ class CrossfishDev {
             Move caps[81];
             int scores[81];
             int n_caps = board.fillCaptures(caps);
+            if constexpr (SEARCH_EXPERIMENT == 21) {
+                Move legal[81];
+                int nlegal = board.fillLegalMoves(legal);
+                for (int k = 0; k < nlegal && n_caps < 81; k++) {
+                    if (!is_block_avx(board, legal[k]) || is_capture_avx(board, legal[k])) continue;
+                    caps[n_caps++] = legal[k];
+                }
+            }
             get_move_scores(caps, n_caps, {99, 99}, board, ply, scores);
             sort_moves(caps, scores, n_caps);
             int val;
