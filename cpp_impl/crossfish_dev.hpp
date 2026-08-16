@@ -22,6 +22,7 @@ class CrossfishDev {
         std::array<std::array<int, 9>, 128> killer_moves;
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
         Move counter_move[9][9];
+        int cont_hist[2][9][9][9][9]{};
         bool counters_ready = false;
         static const int tt_size = 1 << 18;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
@@ -87,9 +88,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19 capext ~-21. 20 lmr3 ~-8. 21 qsearch-blocks ~-15. 22 tactical-blocks faded ~-8.
-        // 23: penalize sending the opponent to a miniboard they can complete immediately.
-        static constexpr int SEARCH_EXPERIMENT = 23; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600 18=improving 19=capext 20=lmr3 21=qblocks 22=tblocks. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500 17=PVS re-search
+        // 19 capext ~-21. 20 lmr3 ~-8. 21 qblocks ~-15. 22 tblocks ~-8. 23 send-win1 ~-70.
+        // 24: continuation history (prev move -> this move) with gravity, like Stockfish.
+        static constexpr int SEARCH_EXPERIMENT = 24;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -553,6 +554,12 @@ class CrossfishDev {
                     if (board.n_moves > 0) {
                         Move prev = board.move_history.top();
                         counter_move[prev.mini_board][prev.square] = legal_moves[i];
+                        if constexpr (SEARCH_EXPERIMENT == 24) {
+                            int &ch = cont_hist[stm][prev.mini_board][prev.square]
+                                             [legal_moves[i].mini_board][legal_moves[i].square];
+                            ch += bonus - ch * bonus / 10000;
+                            if (ch < 0) ch = 0;
+                        }
                     }
                     break;
                 }
@@ -657,6 +664,10 @@ class CrossfishDev {
                     Move cm = counter_move[prev.mini_board][prev.square];
                     if (cm.mini_board == moves[i].mini_board && cm.square == moves[i].square) {
                         move_score += 40;
+                    }
+                    if constexpr (SEARCH_EXPERIMENT == 24) {
+                        move_score += cont_hist[board.n_moves % 2][prev.mini_board][prev.square]
+                                              [moves[i].mini_board][moves[i].square] / 20;
                     }
                 }
 
