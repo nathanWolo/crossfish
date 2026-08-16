@@ -382,3 +382,12 @@ class GlobalBoard {
     }
 
 };
+
+// Fixed-depth eval SPRT: equal depth, no RFP/FP/qdelta (NNUE scale ≠ HCE pawns).
+inline int g_fixed_search_depth = 0;
+inline bool g_disable_eval_prune = false;
+// Runtime eval switch for net experiments. 0=HCE, 1=sparse NNUE, 2=mini-embedding net.
+inline int g_nnue_mode = 0;
+inline int g_nnue_residual = 0;
+inline bool g_force_hce_eval = false;
+inline char g_nnue_bin_path[512] = {0};

@@ -1,3 +1,6 @@
+#include "nnue.hpp"
+#include <memory>
+
 // Free-move +300 in baseline. Experiment extras on top.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
@@ -68,16 +71,53 @@ class CrossfishDev {
         static inline int16_t mini_score[MINI_LUT_SIZE];
         static inline std::once_flag mini_lut_once;
         static constexpr int WIN_IN_ONE_WEIGHT = 300;
+        // One pawn = one extra corner square on a live miniboard (smallest HCE feature).
+        // Kept at 10, not 1, so other terms can be tenths of a pawn. Texel freezes PAWN_IDX.
+        static constexpr int PAWN_IDX = 7;
+        static constexpr int PAWN = 10;
+        static constexpr int ASP_PAWNS = 50;
+        static constexpr int RFP_PAWNS = 50;
+        static constexpr int FP_PAWNS = 80;
+        static constexpr int QDELTA_PAWNS = 400;
+        static constexpr int FREE_MOVE_PAWNS = 30;
         static constexpr int LUT_W_TIAR = 534;
         static constexpr int LUT_W_CENTER_SQ = 33;
-        static constexpr int LUT_W_CORNER_SQ = 10;
+        static constexpr int LUT_W_CORNER_SQ = PAWN;
         static constexpr int LUT_W_SQUARES = 33;
-        // 0=baseline (free-move + LMR late non-captures). Failed eval: 2=forks 3=live-third 4=dead-board
-        static constexpr int EVAL_EXPERIMENT = 0; // Failed: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale
-        static constexpr int SEARCH_EXPERIMENT = 0; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500
-        static constexpr int W_FREE_MOVE = 300;
+        // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
+        static constexpr int EVAL_EXPERIMENT = 0;
+        static constexpr int SEARCH_EXPERIMENT = 0; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600 18=improving. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500 17=PVS re-search
+        static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
+        static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
+        NnueNet nnue;
+        std::unique_ptr<MiniNnue::Acc> mini_acc = std::make_unique<MiniNnue::Acc>();
+        CrossfishDev() {
+            if (g_nnue_sparse.weights_ready) nnue.copy_weights_from(g_nnue_sparse);
+            else nnue_load_compiled(nnue);
+        }
+
+        bool nnue_acc_on() const {
+            return !g_force_hce_eval && g_nnue_mode == 1;
+        }
+        bool mini_acc_on() const {
+            return !g_force_hce_eval && g_nnue_mode == 2 && g_nnue_mini.ready
+                && !g_nnue_mini.has_lut && g_nnue_mini.h >= 32;
+        }
+        bool nnue_leaf_only() const {
+            return g_nnue_mode == 2 && g_nnue_residual && !g_force_hce_eval;
+        }
+        void nnue_push(const GlobalBoard &after, Move m) {
+            if (nnue_acc_on()) nnue.make(after, m);
+            else if (mini_acc_on()) g_nnue_mini.make(after, m.mini_board, *mini_acc);
+        }
+        void nnue_pop() {
+            if (nnue_acc_on()) nnue.unmake();
+            else if (mini_acc_on()) g_nnue_mini.unmake(*mini_acc);
+        }
+        static constexpr int W_FREE_MOVE = FREE_MOVE_PAWNS * PAWN;
         static constexpr int W_FORK = 400;
         static constexpr int W_DEAD_BOARD = 250;
+        int tiar_loc_w[3] = {0, 0, 0}; // extras on center, corner, edge local 2-in-a-rows
 
         static int mini_index(int p0, int p1) {
             int idx = 0;
@@ -215,10 +255,21 @@ class CrossfishDev {
                 counters_ready = true;
             }
             start_time = std::chrono::high_resolution_clock::now();
+            if (nnue_acc_on()) {
+                nnue.refresh(board);
+            } else if (mini_acc_on()) {
+                g_nnue_mini.refresh(board, *mini_acc);
+            }
+            if (g_fixed_search_depth > 0) {
+                thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
+                depth = g_fixed_search_depth;
+                search(board, g_fixed_search_depth, 0, min_val, max_val);
+                return root_best_move;
+            }
             depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 500;
+            int aspiration_window = ASP_PAWNS * eval_weights[PAWN_IDX];
             while (!time_up() && (depth < 50)) {
                 int eval = search(board, depth, 0, alpha, beta);
                 if (stopped) break;
@@ -237,6 +288,28 @@ class CrossfishDev {
                 }
             }
             return root_best_move;
+        }
+
+        // One full-window search at `d`. No aspiration, no time cutoff.
+        // Returns false on timeout/unfinished sentinel. Mates clamp to ±20000.
+        static constexpr int SEARCH_SCORE_CLAMP = 20000;
+        bool search_fixed_depth(GlobalBoard &board, int d, int &out_score) {
+            init_mini_lut();
+            thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
+            nodes = 0;
+            stopped = false;
+            root_score = 0;
+            depth = d;
+            killer_moves = std::array<std::array<int, 9>, 128>();
+            start_time = std::chrono::high_resolution_clock::now();
+            if (nnue_acc_on()) nnue.refresh(board);
+            else if (mini_acc_on()) g_nnue_mini.refresh(board, *mini_acc);
+            int eval = search(board, d, 0, min_val, max_val);
+            if (stopped || eval == min_val) return false;
+            if (eval > SEARCH_SCORE_CLAMP) eval = SEARCH_SCORE_CLAMP;
+            if (eval < -SEARCH_SCORE_CLAMP) eval = -SEARCH_SCORE_CLAMP;
+            out_score = eval;
+            return true;
         }
 
         int qsearch(GlobalBoard &board, int alpha, int beta, int ply) {
@@ -265,7 +338,7 @@ class CrossfishDev {
             if (alpha < stand_pat) {
                 alpha = stand_pat;
             }
-            if (stand_pat + 4000 < alpha) {
+            if (!g_disable_eval_prune && stand_pat + QDELTA_PAWNS * eval_weights[PAWN_IDX] < alpha) {
                 return alpha;
             }
 
@@ -277,7 +350,9 @@ class CrossfishDev {
             int val;
             for (int i = 0; i < n_caps; i++) {
                 board.makeMove(caps[i]);
+                nnue_push(board, caps[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
+                nnue_pop();
                 board.unmakeMove();
                 if (stopped) return min_val;
                 alpha = std::max(alpha, val);
@@ -325,15 +400,15 @@ class CrossfishDev {
                 return qsearch(board, alpha, beta, ply);
             }
             bool can_futility_prune = false;
-            if (!pv_node) {
-                int stand_pat = evaluate(board);
+            if (!pv_node && !g_disable_eval_prune) {
+                int stand_pat = nnue_leaf_only() ? evaluate_hce(board) : evaluate(board);
 
-                int reverse_futility_margin = 500;
+                int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
                     return beta;
                 }
 
-                int futility_margin = 800;
+                int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
 
                 if constexpr (SEARCH_EXPERIMENT == 5) {
@@ -373,7 +448,9 @@ class CrossfishDev {
                     int nd = depth - 1 - R;
                     if (nd < 0) nd = 0;
                     board.pass();
+                    if (mini_acc_on()) g_nnue_mini.make(board, 0, *mini_acc);
                     int null_val = -search(board, nd, ply + 1, -beta, -beta + 1, false);
+                    if (mini_acc_on()) g_nnue_mini.unmake(*mini_acc);
                     board.unpass();
                     if (stopped) return min_val;
                     if (null_val >= beta) return beta;
@@ -395,6 +472,7 @@ class CrossfishDev {
                 }
 
                 board.makeMove(legal_moves[i]);
+                nnue_push(board, legal_moves[i]);
                 if (i == 0) {
                     val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha, can_null);
                 }
@@ -413,6 +491,7 @@ class CrossfishDev {
                         }
                     }
                 }
+                nnue_pop();
                 board.unmakeMove();
                 if (stopped) return min_val;
                 if (val > best_val) {
@@ -556,7 +635,7 @@ class CrossfishDev {
         }
 
         static constexpr int N_EVAL_WEIGHTS = 10;
-        int eval_weights[N_EVAL_WEIGHTS] = {2410, 836, 464, 1316, 534, 424, 33, 10, 33, 112};
+        int eval_weights[N_EVAL_WEIGHTS] = {2410, 836, 464, 1316, 534, 424, 33, PAWN, 33, 112};
 
         void eval_diffs(GlobalBoard &board, int *d) {
             init_mini_lut();
@@ -622,6 +701,24 @@ class CrossfishDev {
             d[9] = 0;
         }
 
+        // p0-p1 local 2-in-a-row counts on center, corner, and edge miniboards.
+        void eval_tiar_loc(GlobalBoard &board, int *d) {
+            init_mini_lut();
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+            d[0] = d[1] = d[2] = 0;
+            for (int mb = 0; mb < 9; mb++) {
+                if ((out_of_play & (1 << mb)) != 0) continue;
+                const MiniLut &e = mini_lut[mini_index(
+                    board.mini_boards[mb].markers[0],
+                    board.mini_boards[mb].markers[1])];
+                int diff = e.p0_tiar - e.p1_tiar;
+                if (mb == 4) d[0] += diff;
+                else if ((corners & (1 << mb)) != 0) d[1] += diff;
+                else d[2] += diff;
+            }
+        }
+
         // Frozen global terms + tempo, in evaluate() units: stm*global + tempo.
         // Live miniboard LUT indices are written to idx_out.
         void eval_parts(GlobalBoard &board, int16_t *idx_out, int &n_out, int &base_out) {
@@ -681,7 +778,7 @@ class CrossfishDev {
                         int live = 9 - __builtin_popcount(out_of_play);
                         extra += 50 * live;
                     } else {
-                        extra += W_FREE_MOVE;
+                        extra += FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
                     }
                 }
             }
@@ -738,10 +835,16 @@ class CrossfishDev {
                     }
                 }
             }
+            if constexpr (EVAL_EXPERIMENT == 7) {
+                int loc[3];
+                eval_tiar_loc(board, loc);
+                int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+                extra += stm_sign * (tiar_loc_w[0] * loc[0] + tiar_loc_w[1] * loc[1] + tiar_loc_w[2] * loc[2]);
+            }
             return extra;
         }
 
-        int evaluate(GlobalBoard &board) {
+        int evaluate_hce(GlobalBoard &board) {
             int16_t idx[9];
             int n = 0;
             int base = 0;
@@ -752,6 +855,25 @@ class CrossfishDev {
                 local += mini_score[idx[i]];
             }
             return base + stm_sign * local + eval_extra(board);
+        }
+
+        int evaluate(GlobalBoard &board) {
+            if (g_force_hce_eval || g_nnue_mode <= 0) {
+                return evaluate_hce(board);
+            }
+            int v = 0;
+            if (g_nnue_mode == 1) {
+                v = nnue.evaluate(board);
+            } else if (g_nnue_mode == 2) {
+                if (mini_acc->ok) v = g_nnue_mini.evaluate_acc(*mini_acc, board.n_moves);
+                else v = g_nnue_mini.evaluate(board);
+            } else {
+                return evaluate_hce(board);
+            }
+            if (g_nnue_residual) {
+                return evaluate_hce(board) + v;
+            }
+            return v;
         }
 
 };

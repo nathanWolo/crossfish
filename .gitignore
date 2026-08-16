@@ -7,6 +7,7 @@ __pycache__/
 *.so
 toolchains/
 cpp_impl/bin/
+datasets/
 
 # Distribution / packaging
 .Python

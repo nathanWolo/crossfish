@@ -12,14 +12,17 @@ all: test
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp | $(BIN)
+$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ unit_tests.cpp
 
-$(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp | $(BIN)
+$(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ test_bots.cpp
 
 $(BIN)/crossfish: crossfish.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ crossfish.cpp
+
+$(BIN)/codingame_nnue: codingame_nnue.cpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ codingame_nnue.cpp
 
 $(BIN)/cg_legend: cg_legend_hce.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ cg_legend_hce.cpp
@@ -30,7 +33,7 @@ test-cpp: $(BIN)/unit_tests
 test-python:
 	cd $(ROOT) && python3 -m unittest python_impl.test_rules -v
 
-compile-cg: $(BIN)/crossfish
+compile-cg: $(BIN)/crossfish $(BIN)/codingame_nnue
 compile-legend: $(BIN)/cg_legend
 
 roundrobin: compile-cg compile-legend

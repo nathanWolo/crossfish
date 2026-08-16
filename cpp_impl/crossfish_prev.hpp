@@ -67,6 +67,13 @@ class CrossfishPrev {
         static inline MiniLut mini_lut[MINI_LUT_SIZE];
         static inline std::once_flag mini_lut_once;
         static constexpr int WIN_IN_ONE_WEIGHT = 300;
+        static constexpr int PAWN_IDX = 7;
+        static constexpr int PAWN = 10;
+        static constexpr int ASP_PAWNS = 50;
+        static constexpr int RFP_PAWNS = 50;
+        static constexpr int FP_PAWNS = 80;
+        static constexpr int QDELTA_PAWNS = 400;
+        static constexpr int FREE_MOVE_PAWNS = 30;
 
         static int mini_index(int p0, int p1) {
             int idx = 0;
@@ -197,10 +204,16 @@ class CrossfishPrev {
                 counters_ready = true;
             }
             start_time = std::chrono::high_resolution_clock::now();
+            if (g_fixed_search_depth > 0) {
+                thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
+                depth = g_fixed_search_depth;
+                search(board, g_fixed_search_depth, 0, min_val, max_val);
+                return root_best_move;
+            }
             depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = 500;
+            int aspiration_window = ASP_PAWNS * eval_weights[PAWN_IDX];
             while (!time_up() && (depth < 50)) {
                 int eval = search(board, depth, 0, alpha, beta);
                 if (stopped) break;
@@ -247,7 +260,7 @@ class CrossfishPrev {
             if (alpha < stand_pat) {
                 alpha = stand_pat;
             }
-            if (stand_pat + 4000 < alpha) {
+            if (!g_disable_eval_prune && stand_pat + QDELTA_PAWNS * eval_weights[PAWN_IDX] < alpha) {
                 return alpha;
             }
 
@@ -307,15 +320,15 @@ class CrossfishPrev {
                 return qsearch(board, alpha, beta, ply);
             }
             bool can_futility_prune = false;
-            if (!pv_node) {
+            if (!pv_node && !g_disable_eval_prune) {
                 int stand_pat = evaluate(board);
 
-                int reverse_futility_margin = 500;
+                int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
                     return beta;
                 }
 
-                int futility_margin = 800;
+                int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
             }
             if (pv_node && !tt_hit && depth > 2) {
@@ -358,7 +371,6 @@ class CrossfishPrev {
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
-                    // Reduced searches are not allowed to fail high unchallenged.
                     if (val > alpha) {
                         val = -search(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha, can_null);
                         if (val > alpha && val < beta) {
@@ -502,7 +514,7 @@ class CrossfishPrev {
         }
 
         static constexpr int N_EVAL_WEIGHTS = 10;
-        int eval_weights[N_EVAL_WEIGHTS] = {2410, 836, 464, 1316, 534, 424, 33, 10, 33, 112};
+        int eval_weights[N_EVAL_WEIGHTS] = {2410, 836, 464, 1316, 534, 424, 33, PAWN, 33, 112};
 
         void eval_diffs(GlobalBoard &board, int *d) {
             init_mini_lut();
@@ -581,7 +593,7 @@ class CrossfishPrev {
             if (board.n_moves > 0) {
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
-                    score += 300;
+                    score += FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
                 }
             }
             return score;
