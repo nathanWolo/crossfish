@@ -88,9 +88,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19 capext ~-21. 20 lmr3 ~-8. 21 qblocks ~-15. 22 tblocks ~-8. 23 send-win1 ~-70.
-        // 24: continuation history (prev move -> this move) with gravity, like Stockfish.
-        static constexpr int SEARCH_EXPERIMENT = 24;
+        // 19-23 failed. 24 cont-hist faded -7 after cap.
+        // 25: cap history so saturating quiets cannot outrank captures/blocks.
+        static constexpr int SEARCH_EXPERIMENT = 25;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -694,7 +694,11 @@ class CrossfishDev {
                         move_score -= 200;
                     }
                 }
-                move_score += history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square] / 20;
+                int hs = history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square] / 20;
+                if constexpr (SEARCH_EXPERIMENT == 25) {
+                    if (hs > 40) hs = 40;
+                }
+                move_score += hs;
                 scores[i] = move_score;
             }
         }
