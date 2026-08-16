@@ -12,10 +12,10 @@ all: test
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp | $(BIN)
+$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ unit_tests.cpp
 
-$(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp | $(BIN)
+$(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ test_bots.cpp
 
 $(BIN)/crossfish: crossfish.cpp | $(BIN)

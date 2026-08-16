@@ -29,6 +29,9 @@
 // Texel-tuned eval weights (per-weight Adam). SPRT 20ms: +25 Elo, LLR +3.04.
 // NNUE variant: minires_d8h4 residual (D=8 H=4, 256-centroid emb).
 // Equal-depth +54 Elo; 20ms +11; 95ms +7. HCE RFP, MiniNet at qsearch.
+// Skip MiniNet at qsearch when HCE already fail-highs. SPRT vs previous
+// codingame_nnue: 20ms N 2048 W 869 D 492 L 687, +31.0 +/- 13.2 Elo, LLR +3.01;
+// 95ms N 3272 W 1257 D 942 L 1073, +19.6 +/- 10.1 Elo, LLR +3.01.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
@@ -1143,7 +1146,11 @@ class CrossfishDev {
                 }
             }
 
-            int stand_pat = evaluate(board);
+            int hce = evaluate_hce(board);
+            if (hce >= beta) {
+                return beta;
+            }
+            int stand_pat = hce + evaluate_mini(board);
             if (stand_pat >= beta) {
                 return beta;
             }

@@ -363,7 +363,7 @@ static void verify_eval_linear() {
             }
             val += stm * dev.eval_weights[9];
             int extra = dev.eval_extra(board);
-            int ev = CrossfishDev::USE_NNUE ? dev.evaluate_hce(board) : dev.evaluate(board);
+            int ev = (CrossfishDev::USE_NNUE || CrossfishDev::USE_MINIRES) ? dev.evaluate_hce(board) : dev.evaluate(board);
             if (CrossfishDev::EVAL_EXPERIMENT != 3 && ev != stm * val + extra) {
                 std::cerr << "eval linear mismatch at ply " << ply
                           << " eval=" << ev << " linear=" << stm * val << " extra=" << extra << std::endl;
@@ -381,7 +381,7 @@ static void verify_eval_linear() {
                 std::cerr << "eval parts mismatch at ply " << ply << std::endl;
                 std::exit(1);
             }
-            if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE && ev != prev.evaluate(board)) {
+            if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE && !CrossfishDev::USE_MINIRES) {
                 std::cerr << "dev vs prev eval mismatch at ply " << ply
                           << " dev=" << ev << " prev=" << prev.evaluate(board) << std::endl;
                 std::exit(1);
@@ -391,11 +391,11 @@ static void verify_eval_linear() {
             board.makeMove(moves[rng() % moves.size()]);
         }
     }
-    if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE) {
+    if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE && !CrossfishDev::USE_MINIRES) {
         std::cout << "eval linear combo: OK (matches Prev)" << std::endl;
     } else {
         std::cout << "eval linear combo: OK (experiment " << CrossfishDev::EVAL_EXPERIMENT
-                  << " nnue " << CrossfishDev::USE_NNUE << ")" << std::endl;
+                  << " nnue " << CrossfishDev::USE_NNUE << " minires " << CrossfishDev::USE_MINIRES << ")" << std::endl;
     }
 }
 
@@ -2477,7 +2477,8 @@ int main(int argc, char** argv) {
         std::cout << "loaded " << MINI_SCORE_PATH << " into Dev" << std::endl;
     }
     std::cout << "Dev extra experiment: " << CrossfishDev::EVAL_EXPERIMENT
-              << " search experiment: " << CrossfishDev::SEARCH_EXPERIMENT << std::endl;
+              << " search experiment: " << CrossfishDev::SEARCH_EXPERIMENT
+              << " minires: " << CrossfishDev::USE_MINIRES << std::endl;
     const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
     // const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;
