@@ -32,6 +32,10 @@
 // Skip MiniNet at qsearch when HCE already fail-highs. SPRT vs previous
 // codingame_nnue: 20ms N 2048 W 869 D 492 L 687, +31.0 +/- 13.2 Elo, LLR +3.01;
 // 95ms N 3272 W 1257 D 942 L 1073, +19.6 +/- 10.1 Elo, LLR +3.01.
+// NPS bundle on top of that: AVX MiniNet, skip MiniNet when HCE cannot
+// reach alpha even at +8000, LUT capture/block/tiar. SPRT vs MiniNet-skip
+// baseline: 20ms N 2152 W 887 D 558 L 707, +29.1 +/- 12.7 Elo, LLR +3.01;
+// 95ms N 2416 W 939 D 715 L 762, +25.5 +/- 11.6 Elo, LLR +3.01.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
@@ -875,7 +879,7 @@ static int evaluate_mini(const GlobalBoard &b) {
     if (!MN_READY && !mini_load_packed()) return 0;
     const int stm = b.n_moves & 1;
     const int c = mini_board_constraint(b);
-    float x[MN_IN];
+    alignas(32) float x[MN_IN];
     for (int mb = 0; mb < 9; mb++) {
         const int mine = b.mini_boards[mb].markers[stm];
         const int opp = b.mini_boards[mb].markers[stm ^ 1];
@@ -894,20 +898,27 @@ static int evaluate_mini(const GlobalBoard &b) {
         else if (b.mini_board_states[stm ^ 1] & (1 << mb)) super_cls = 2;
         else if (b.mini_board_states[2] & (1 << mb)) super_cls = 3;
         const int act = (c == mb) ? 1 : 0;
-        const float *e = MN_CENT + (int)MN_CODE[idx] * MN_D;
-        const float *s = MN_SUPER + super_cls * MN_D;
-        const float *l = MN_LOC + mb * MN_D;
-        const float *a = MN_ACTIVE + act * MN_D;
-        float *dst = x + mb * MN_D;
-        for (int i = 0; i < MN_D; i++) dst[i] = e[i] + s[i] + l[i] + a[i];
+        __m256 v = _mm256_loadu_ps(MN_CENT + (int)MN_CODE[idx] * MN_D);
+        v = _mm256_add_ps(v, _mm256_loadu_ps(MN_SUPER + super_cls * MN_D));
+        v = _mm256_add_ps(v, _mm256_loadu_ps(MN_LOC + mb * MN_D));
+        v = _mm256_add_ps(v, _mm256_loadu_ps(MN_ACTIVE + act * MN_D));
+        _mm256_store_ps(x + mb * MN_D, v);
     }
-    const float *ce = MN_CONSTR + c * MN_D;
-    for (int i = 0; i < MN_D; i++) x[9 * MN_D + i] = ce[i];
+    _mm256_store_ps(x + 9 * MN_D, _mm256_loadu_ps(MN_CONSTR + c * MN_D));
     float out = MN_B2;
     for (int j = 0; j < MN_H; j++) {
         const float *row = MN_W1 + j * MN_IN;
-        float s = MN_B1[j];
-        for (int i = 0; i < MN_IN; i++) s += row[i] * x[i];
+        __m256 vacc = _mm256_setzero_ps();
+        for (int k = 0; k < 10; k++) {
+            vacc = _mm256_add_ps(_mm256_mul_ps(_mm256_load_ps(x + k * 8),
+                                                _mm256_loadu_ps(row + k * 8)), vacc);
+        }
+        __m128 lo = _mm256_castps256_ps128(vacc);
+        __m128 hi = _mm256_extractf128_ps(vacc, 1);
+        __m128 s4 = _mm_add_ps(lo, hi);
+        s4 = _mm_add_ps(s4, _mm_movehl_ps(s4, s4));
+        s4 = _mm_add_ss(s4, _mm_shuffle_ps(s4, s4, 1));
+        float s = MN_B1[j] + _mm_cvtss_f32(s4);
         if (s > 0) out += MN_W2[j] * s;
     }
     return (int)std::lround(out);
@@ -931,10 +942,8 @@ class CrossfishDev {
         static const int tt_size = 1 << 18;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
-        //0 1 2
-        //3 4 5
-        //6 7 8
-        std::vector<int> two_in_a_row_masks = { //should this be an array instead?
+        static constexpr int N_TIAR_MASKS = 48;
+        static constexpr int two_in_a_row_masks[N_TIAR_MASKS] = {
             (1 << 0) + (1 << 1),  (1 << 2),
             (1 << 1) + (1 << 2), (1 << 0),
             (1 << 3) + (1 << 4), (1 << 5),
@@ -959,7 +968,6 @@ class CrossfishDev {
             (1 << 2) + (1 << 8), (1 << 5),
             (1 << 0) + (1 << 8), (1 << 4),
             (1 << 2) + (1 << 6), (1 << 4)
-
         };
         int depth = 1;
         static constexpr int PAWN_IDX = 7;
@@ -969,6 +977,7 @@ class CrossfishDev {
         static constexpr int FP_PAWNS = 80;
         static constexpr int QDELTA_PAWNS = 400;
         static constexpr int FREE_MOVE_PAWNS = 30;
+        static constexpr int MINI_MAX = 8000;
 
         struct MiniLut {
             int8_t p0_tiar;
@@ -982,6 +991,8 @@ class CrossfishDev {
         };
         static constexpr int MINI_LUT_SIZE = 19683;
         MiniLut mini_lut[MINI_LUT_SIZE];
+        uint16_t mini_win_sq[MINI_LUT_SIZE][2];
+        uint16_t mini_tiar_sq[MINI_LUT_SIZE][2];
         bool mini_lut_ready = false;
 
         static int mini_index(int p0, int p1) {
@@ -1000,6 +1011,16 @@ class CrossfishDev {
 
         void init_mini_lut() {
             if (mini_lut_ready) return;
+            const int win[8] = {
+                (1 << 0) + (1 << 1) + (1 << 2),
+                (1 << 3) + (1 << 4) + (1 << 5),
+                (1 << 6) + (1 << 7) + (1 << 8),
+                (1 << 0) + (1 << 3) + (1 << 6),
+                (1 << 1) + (1 << 4) + (1 << 7),
+                (1 << 2) + (1 << 5) + (1 << 8),
+                (1 << 0) + (1 << 4) + (1 << 8),
+                (1 << 2) + (1 << 4) + (1 << 6)
+            };
             const int tiar[] = {
                 (1 << 0) + (1 << 1),  (1 << 2),
                 (1 << 1) + (1 << 2), (1 << 0),
@@ -1028,6 +1049,12 @@ class CrossfishDev {
             };
             const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
             const int n_pairs = (int)(sizeof(tiar) / sizeof(tiar[0]) / 2);
+            auto has_win = [&](int markers) {
+                for (int i = 0; i < 8; i++) {
+                    if ((markers & win[i]) == win[i]) return true;
+                }
+                return false;
+            };
             for (int idx = 0; idx < MINI_LUT_SIZE; idx++) {
                 int p0 = 0;
                 int p1 = 0;
@@ -1049,6 +1076,29 @@ class CrossfishDev {
                 e.p1_corner = (int8_t)__builtin_popcount(p1 & corners);
                 e.p0_sq = (int8_t)__builtin_popcount(p0);
                 e.p1_sq = (int8_t)__builtin_popcount(p1);
+                int occ = p0 | p1;
+                uint16_t p0w = 0, p1w = 0, p0t = 0, p1t = 0;
+                for (int s = 0; s < 9; s++) {
+                    if (occ & (1 << s)) continue;
+                    if (has_win(p0 | (1 << s))) p0w = (uint16_t)(p0w | (1 << s));
+                    if (has_win(p1 | (1 << s))) p1w = (uint16_t)(p1w | (1 << s));
+                    int ours0 = p0 | (1 << s);
+                    int ours1 = p1 | (1 << s);
+                    for (int i = 0; i < n_pairs; i++) {
+                        int pair = tiar[i * 2];
+                        int third = tiar[i * 2 + 1];
+                        if (((ours0 & pair) == pair) && ((occ & third) == 0)) {
+                            p0t = (uint16_t)(p0t | (1 << s));
+                        }
+                        if (((ours1 & pair) == pair) && ((occ & third) == 0)) {
+                            p1t = (uint16_t)(p1t | (1 << s));
+                        }
+                    }
+                }
+                mini_win_sq[idx][0] = p0w;
+                mini_win_sq[idx][1] = p1w;
+                mini_tiar_sq[idx][0] = p0t;
+                mini_tiar_sq[idx][1] = p1t;
                 mini_lut[idx] = e;
             }
             mini_lut_ready = true;
@@ -1150,7 +1200,12 @@ class CrossfishDev {
             if (hce >= beta) {
                 return beta;
             }
-            int stand_pat = hce + evaluate_mini(board);
+            int stand_pat;
+            if (hce + MINI_MAX < alpha) {
+                stand_pat = hce + MINI_MAX;
+            } else {
+                stand_pat = hce + evaluate_mini(board);
+            }
             if (stand_pat >= beta) {
                 return beta;
             }
@@ -1164,8 +1219,8 @@ class CrossfishDev {
             //get and sort moves
             Move caps[81];
             int scores[81];
-            int n_caps = board.fillCaptures(caps);
-            get_move_scores(caps, n_caps, {99, 99}, board, ply, scores);
+            int n_caps = fill_captures_lut(board, caps);
+            get_move_scores(caps, n_caps, {99, 99}, board, ply, scores, true);
             sort_moves(caps, scores, n_caps);
             int val;
             for (int i = 0; i < n_caps; i++) {
@@ -1244,7 +1299,7 @@ class CrossfishDev {
             Move legal_moves[81];
             int scores[81];
             int nmoves = board.fillLegalMoves(legal_moves);
-            get_move_scores(legal_moves, nmoves, entry.best_move, board, ply, scores);
+            get_move_scores(legal_moves, nmoves, entry.best_move, board, ply, scores, false);
             sort_moves(legal_moves, scores, nmoves);
 
             Move best_move = legal_moves[0];
@@ -1354,106 +1409,100 @@ class CrossfishDev {
 
         // }
 
+        int fill_captures_lut(GlobalBoard &board, Move* dst) {
+            int n = 0;
+            if (board.n_moves == 0) return 0;
+            int active_square = board.move_history.top().square;
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int stm = board.n_moves % 2;
+            auto add_from_mb = [&](int mb) {
+                int idx = mini_index(board.mini_boards[mb].markers[0], board.mini_boards[mb].markers[1]);
+                int wins = mini_win_sq[idx][stm];
+                while (wins) {
+                    int s = __builtin_ctz(wins);
+                    wins &= wins - 1;
+                    dst[n++] = Move{(int8_t)mb, (int8_t)s};
+                }
+            };
+            if ((out_of_play & (1 << active_square)) == 0) {
+                add_from_mb(active_square);
+            } else {
+                for (int i = 0; i < 9; i++) {
+                    if ((out_of_play & (1 << i)) == 0) add_from_mb(i);
+                }
+            }
+            return n;
+        }
+
         bool is_capture_avx(GlobalBoard &board, Move &move) {
-            int miniboard_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
-            miniboard_markers |= (1 << move.square);
-
-            // Prepare a vector of miniboard_markers
-            __m256i markers_vec = _mm256_set1_epi32(miniboard_markers);
-
-            // Load win_masks into a vector
-            __m256i win_masks_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(board.win_masks.data()));
-
-            // Perform AND and compare operations
-            __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
-            //Check if any of our results are equal to the win masks
-            result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
-
-            // Aggregate results: if any of the win conditions is fully met, result is true
-            int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
-            return mask != 0;
+            int idx = mini_index(
+                board.mini_boards[move.mini_board].markers[0],
+                board.mini_boards[move.mini_board].markers[1]);
+            int stm = board.n_moves % 2;
+            return (mini_win_sq[idx][stm] & (1 << move.square)) != 0;
         }
 
         bool is_block_avx(GlobalBoard &board, Move &move) {
-            int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
-            opp_markers |= (1 << move.square);
-
-            // Prepare a vector of opp_markers
-            __m256i markers_vec = _mm256_set1_epi32(opp_markers);
-
-            // Load win_masks into a vector
-            __m256i win_masks_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(board.win_masks.data()));
-
-            // Perform AND and compare operations
-            __m256i result_vec = _mm256_and_si256(markers_vec, win_masks_vec);
-            result_vec = _mm256_cmpeq_epi32(result_vec, win_masks_vec);
-
-            // Aggregate results: if any of the win conditions is fully met, result is true
-            int mask = _mm256_movemask_ps(_mm256_castsi256_ps(result_vec));
-            return mask != 0;
+            int idx = mini_index(
+                board.mini_boards[move.mini_board].markers[0],
+                board.mini_boards[move.mini_board].markers[1]);
+            int opp = (board.n_moves + 1) % 2;
+            return (mini_win_sq[idx][opp] & (1 << move.square)) != 0;
         }
-
 
         bool creates_two_in_a_row(GlobalBoard &board, Move &move) {
-            int our_markers = board.mini_boards[move.mini_board].markers[board.n_moves % 2];
-            int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
-            bool result = false;
-
-            for (int mask = 0; mask < two_in_a_row_masks.size() / 2; mask++) {
-                result = result || ((((our_markers | (1 << move.square)) & two_in_a_row_masks[mask * 2]) == two_in_a_row_masks[mask * 2]) && 
-                (((opp_markers | our_markers) & two_in_a_row_masks[mask * 2 + 1]) == 0));
-            }
-
-            return result;
-
+            int idx = mini_index(
+                board.mini_boards[move.mini_board].markers[0],
+                board.mini_boards[move.mini_board].markers[1]);
+            int stm = board.n_moves % 2;
+            return (mini_tiar_sq[idx][stm] & (1 << move.square)) != 0;
         }
 
-
-        void get_move_scores(Move* moves, int n, Move tt_move, GlobalBoard &board, int &ply, int* scores) {
+        void get_move_scores(Move* moves, int n, Move tt_move, GlobalBoard &board, int &ply, int* scores, bool qs = false) {
+            if (n <= 1) {
+                if (n == 1) scores[0] = 0;
+                return;
+            }
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int stm = board.n_moves % 2;
+            Move cm{99, 99};
+            if (board.n_moves > 0) {
+                Move prev = board.move_history.top();
+                cm = counter_move[prev.mini_board][prev.square];
+            }
+            int last_mb = -1;
+            int last_idx = 0;
             for (int i = 0; i < n; i++) {
-                int move_score = 0;
-                if (moves[i].mini_board == tt_move.mini_board && moves[i].square == tt_move.square) {
-                    move_score += 1000;
-                    scores[i] = move_score;
+                int mb = moves[i].mini_board;
+                int sq = moves[i].square;
+                if (mb == tt_move.mini_board && sq == tt_move.square) {
+                    scores[i] = 1000;
                     continue;
                 }
-
-                //is it a killer move?
-                if (killer_moves[ply][moves[i].square] == 1) {
+                if (mb != last_mb) {
+                    last_mb = mb;
+                    last_idx = mini_index(board.mini_boards[mb].markers[0], board.mini_boards[mb].markers[1]);
+                }
+                int move_score = 0;
+                if (killer_moves[ply][sq] == 1) {
                     move_score += 25;
                 }
-
-                if (board.n_moves > 0) {
-                    Move prev = board.move_history.top();
-                    Move cm = counter_move[prev.mini_board][prev.square];
-                    if (cm.mini_board == moves[i].mini_board && cm.square == moves[i].square) {
-                        move_score += 40;
-                    }
+                if (cm.mini_board == mb && cm.square == sq) {
+                    move_score += 40;
                 }
-
-                //if it wins a miniboard
-                int miniboard_markers = board.mini_boards[moves[i].mini_board].markers[board.n_moves % 2];
-                int opp_markers = board.mini_boards[moves[i].mini_board].markers[(board.n_moves + 1) % 2];
-                if (is_capture_avx(board, moves[i])) {
+                if (!qs && (mini_win_sq[last_idx][stm] & (1 << sq))) {
                     move_score += 100;
                 }
-
-                //if it blocks a win
-                if (is_block_avx(board, moves[i])) {
+                if (mini_win_sq[last_idx][stm ^ 1] & (1 << sq)) {
                     move_score += 75;
                 }
-
-                //if it creates an unblocked 2 in a row
-                if (creates_two_in_a_row(board, moves[i])) {
+                if (mini_tiar_sq[last_idx][stm] & (1 << sq)) {
                     move_score += 50;
                 }
-
-                //if it sends the opponent to a won or drawn miniboard
-                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
-                if ((out_of_play & (1 << moves[i].square)) != 0) {
+                if ((out_of_play & (1 << sq)) != 0) {
                     move_score -= 250;
                 }
-                move_score += history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square] / 20;
+                move_score += history_table[stm][mb][sq] / 20;
                 scores[i] = move_score;
             }
         }
@@ -1514,7 +1563,7 @@ class CrossfishDev {
             int p1_global_two_in_a_row = 0;
             int p0_two_in_a_rows_lined_up = 0;
             int p1_two_in_a_rows_lined_up = 0;
-            for(int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
+            for(int i = 0; i < N_TIAR_MASKS / 2; i++) {
                 //check for global two in a rows
                 p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
                 p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
