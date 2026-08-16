@@ -88,11 +88,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-31 failed (capture ext, LMR d>=3, qsearch blocks, no-LMR-blocks,
-        // send-to-opp-win1, cont-hist, history cap, MiniNet RFP, send-our-win1
-        // ext, drop tiar ordering, LMP, 2^19 TT, LUT capture scoring).
-        // 32: fail-soft RFP/qsearch + never LMR captures.
-        static constexpr int SEARCH_EXPERIMENT = 32;
+        // 19-32 failed (..., LUT scoring, fail-soft+no-LMR-captures ~-130).
+        // 33: stronger LMR, reduction i/2 instead of i/3 (more nodes for tactics).
+        static constexpr int SEARCH_EXPERIMENT = 33;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -341,7 +339,6 @@ class CrossfishDev {
 
             int stand_pat = evaluate(board);
             if (stand_pat >= beta) {
-                if constexpr (SEARCH_EXPERIMENT == 32) return stand_pat;
                 return beta;
             }
             if (alpha < stand_pat) {
@@ -425,7 +422,6 @@ class CrossfishDev {
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
-                    if constexpr (SEARCH_EXPERIMENT == 32) return stand_pat;
                     return beta;
                 }
 
@@ -516,9 +512,6 @@ class CrossfishDev {
                 else {
                     int reduction = 0;
                     bool do_lmr = (scores[i] < 0 || (i >= 3 && !capture));
-                    if constexpr (SEARCH_EXPERIMENT == 32) {
-                        do_lmr = !capture && (scores[i] < 0 || i >= 3);
-                    }
                     if constexpr (SEARCH_EXPERIMENT == 20) {
                         do_lmr = do_lmr && depth >= 3;
                     }
@@ -530,6 +523,9 @@ class CrossfishDev {
                     }
                     if (do_lmr) {
                         reduction = i / 3 + extra_red;
+                        if constexpr (SEARCH_EXPERIMENT == 33) {
+                            reduction = i / 2 + extra_red;
+                        }
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
