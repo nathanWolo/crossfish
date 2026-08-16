@@ -581,7 +581,9 @@ struct MiniNnue {
             const float *row = w1.data() + j * 80;
             __m256 vacc = _mm256_setzero_ps();
             for (int k = 0; k < 10; k++) {
-                vacc = _mm256_fmadd_ps(_mm256_load_ps(x + k * 8), _mm256_loadu_ps(row + k * 8), vacc);
+                // mul+add instead of FMA: Makefile and CG pragmas are AVX2-only.
+                vacc = _mm256_add_ps(_mm256_mul_ps(_mm256_load_ps(x + k * 8),
+                                                    _mm256_loadu_ps(row + k * 8)), vacc);
             }
             float s = b1[(size_t)j] + hsum256(vacc);
             if (s > 0) out += w2[(size_t)j] * s;
