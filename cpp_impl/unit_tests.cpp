@@ -669,7 +669,7 @@ static void test_eval_consistency(TestCtx &ctx) {
             }
             val += stm * dev.eval_weights[9];
             int extra = dev.eval_extra(board);
-            int ev = CrossfishDev::USE_NNUE ? dev.evaluate_hce(board) : dev.evaluate(board);
+            int ev = (CrossfishDev::USE_NNUE || CrossfishDev::USE_MINIRES) ? dev.evaluate_hce(board) : dev.evaluate(board);
             if (CrossfishDev::EVAL_EXPERIMENT != 3) {
                 CHECK_EQ(ev, stm * val + extra);
             }
@@ -682,7 +682,7 @@ static void test_eval_consistency(TestCtx &ctx) {
                 local += CrossfishDev::mini_score[idx[i]];
             }
             CHECK_EQ(ev, base + stm * local + extra);
-            if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE) {
+            if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE && !CrossfishDev::USE_MINIRES) {
                 CHECK_EQ(ev, prev.evaluate(board));
             }
             std::vector<Move> moves = board.getLegalMoves();

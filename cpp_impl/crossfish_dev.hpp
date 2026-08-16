@@ -1,4 +1,5 @@
 #include "nnue.hpp"
+#include "mini_eval.hpp"
 #include <memory>
 
 // Free-move +300 in baseline. Experiment extras on top.
@@ -86,14 +87,17 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        static constexpr int SEARCH_EXPERIMENT = 0; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600 18=improving. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500 17=PVS re-search
+        // 19: extend miniboard wins that do not gift a free move.
+        static constexpr int SEARCH_EXPERIMENT = 19; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600 18=improving. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500 17=PVS re-search
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
+        static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
         NnueNet nnue;
         std::unique_ptr<MiniNnue::Acc> mini_acc = std::make_unique<MiniNnue::Acc>();
         CrossfishDev() {
             if (g_nnue_sparse.weights_ready) nnue.copy_weights_from(g_nnue_sparse);
             else nnue_load_compiled(nnue);
+            if constexpr (USE_MINIRES) mini_load_packed();
         }
 
         bool nnue_acc_on() const {
@@ -401,7 +405,7 @@ class CrossfishDev {
             }
             bool can_futility_prune = false;
             if (!pv_node && !g_disable_eval_prune) {
-                int stand_pat = nnue_leaf_only() ? evaluate_hce(board) : evaluate(board);
+                int stand_pat = (USE_MINIRES || nnue_leaf_only()) ? evaluate_hce(board) : evaluate(board);
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
@@ -469,6 +473,12 @@ class CrossfishDev {
                 int extension = 0;
                 if (nmoves==1 || (singular && legal_moves[i].mini_board == entry.best_move.mini_board && legal_moves[i].square == entry.best_move.square)) {
                     extension = 1;
+                } else if constexpr (SEARCH_EXPERIMENT == 19) {
+                    if (capture) {
+                        int oop = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                        bool gives_free = (oop & (1 << legal_moves[i].square)) != 0;
+                        if (!gives_free) extension = 1;
+                    }
                 }
 
                 board.makeMove(legal_moves[i]);
@@ -858,6 +868,11 @@ class CrossfishDev {
         }
 
         int evaluate(GlobalBoard &board) {
+            if constexpr (USE_MINIRES) {
+                if (!g_force_hce_eval) {
+                    return evaluate_hce(board) + evaluate_mini(board);
+                }
+            }
             if (g_force_hce_eval || g_nnue_mode <= 0) {
                 return evaluate_hce(board);
             }

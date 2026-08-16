@@ -1,8 +1,10 @@
-// Frozen LUT eval + free-move bonus. SPRT 20ms: +15.8 Elo, LLR +3.13.
+// Frozen codingame_nnue baseline: LUT HCE + packed MiniNet residual.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
+
+#include "mini_eval.hpp"
 
 class CrossfishPrev {
        private:
@@ -187,6 +189,7 @@ class CrossfishPrev {
 
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
             init_mini_lut();
+            mini_load_packed();
             thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
@@ -321,7 +324,7 @@ class CrossfishPrev {
             }
             bool can_futility_prune = false;
             if (!pv_node && !g_disable_eval_prune) {
-                int stand_pat = evaluate(board);
+                int stand_pat = evaluate_hce(board);
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (stand_pat - reverse_futility_margin * depth >= beta) {
@@ -580,7 +583,7 @@ class CrossfishPrev {
             d[9] = 0;
         }
 
-        int evaluate(GlobalBoard &board) {
+        int evaluate_hce(GlobalBoard &board) {
             int d[N_EVAL_WEIGHTS];
             eval_diffs(board, d);
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
@@ -597,6 +600,10 @@ class CrossfishPrev {
                 }
             }
             return score;
+        }
+
+        int evaluate(GlobalBoard &board) {
+            return evaluate_hce(board) + evaluate_mini(board);
         }
 
 };
