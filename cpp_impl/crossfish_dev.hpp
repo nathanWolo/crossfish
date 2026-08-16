@@ -88,17 +88,19 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-33 failed (..., fail-soft ~-130, LMR i/2 ~-50).
-        // 34: store a TT lower bound on reverse-futility cutoffs.
-        static constexpr int SEARCH_EXPERIMENT = 34;
+        // 19-34 failed. 35: skip MiniNet at qsearch when HCE already fail-highs.
+        // Also: RFP uses HCE only (was double-evaluating MiniNet then throwing it away).
+        static constexpr int SEARCH_EXPERIMENT = 35;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
         NnueNet nnue;
         std::unique_ptr<MiniNnue::Acc> mini_acc = std::make_unique<MiniNnue::Acc>();
         CrossfishDev() {
-            if (g_nnue_sparse.weights_ready) nnue.copy_weights_from(g_nnue_sparse);
-            else nnue_load_compiled(nnue);
+            if constexpr (USE_NNUE) {
+                if (g_nnue_sparse.weights_ready) nnue.copy_weights_from(g_nnue_sparse);
+                else nnue_load_compiled(nnue);
+            }
             if constexpr (USE_MINIRES) mini_load_packed();
         }
 
@@ -337,7 +339,14 @@ class CrossfishDev {
                 }
             }
 
-            int stand_pat = evaluate(board);
+            int stand_pat;
+            if constexpr (SEARCH_EXPERIMENT == 35) {
+                int hce = evaluate_hce(board);
+                if (hce >= beta) return beta;
+                stand_pat = hce + evaluate_mini(board);
+            } else {
+                stand_pat = evaluate(board);
+            }
             if (stand_pat >= beta) {
                 return beta;
             }
@@ -415,9 +424,9 @@ class CrossfishDev {
             }
             bool can_futility_prune = false;
             if (!pv_node && !g_disable_eval_prune) {
-                int stand_pat = evaluate(board);
-                if constexpr (SEARCH_EXPERIMENT != 26) {
-                    if (USE_MINIRES || nnue_leaf_only()) stand_pat = evaluate_hce(board);
+                int stand_pat = evaluate_hce(board);
+                if constexpr (SEARCH_EXPERIMENT == 26) {
+                    stand_pat = evaluate(board);
                 }
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
