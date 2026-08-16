@@ -1,6 +1,7 @@
 #pragma once
 // Packed MiniNet (D=8 H=4, 256-centroid emb) shared by Dev/Prev SPRT
 // and matching codingame_nnue.cpp. HCE+mini at qsearch; HCE for RFP.
+// evaluate_mini is the scalar reference; evaluate_mini_avx is the shipped path.
 
 #include <cstdint>
 #include <cstring>
