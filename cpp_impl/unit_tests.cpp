@@ -640,12 +640,83 @@ static void test_mini_index_and_lut(TestCtx &ctx) {
 
     const CrossfishDev::MiniLut &empty = CrossfishDev::mini_lut[0];
     CHECK(!empty.dead && !empty.p0_tiar && !empty.p1_tiar && !empty.p0_win1 && !empty.p0_sq);
+    CHECK_EQ(empty.p0_cap, 0);
+    CHECK_EQ(empty.p0_tiar_sq, 0);
 
     const CrossfishDev::MiniLut &row = CrossfishDev::mini_lut[4];
     CHECK(!row.dead && row.p0_win1 != 0 && row.p0_tiar >= 1);
 
     const CrossfishDev::MiniLut &blocked = CrossfishDev::mini_lut[22];
     CHECK(!blocked.p0_win1 && !blocked.p0_tiar);
+
+    const int win[8] = {
+        (1 << 0) + (1 << 1) + (1 << 2),
+        (1 << 3) + (1 << 4) + (1 << 5),
+        (1 << 6) + (1 << 7) + (1 << 8),
+        (1 << 0) + (1 << 3) + (1 << 6),
+        (1 << 1) + (1 << 4) + (1 << 7),
+        (1 << 2) + (1 << 5) + (1 << 8),
+        (1 << 0) + (1 << 4) + (1 << 8),
+        (1 << 2) + (1 << 4) + (1 << 6)
+    };
+    auto has_win = [&](int markers) {
+        for (int i = 0; i < 8; i++) {
+            if ((markers & win[i]) == win[i]) return true;
+        }
+        return false;
+    };
+    const int tiar[] = {
+        (1 << 0) + (1 << 1),  (1 << 2),
+        (1 << 1) + (1 << 2), (1 << 0),
+        (1 << 3) + (1 << 4), (1 << 5),
+        (1 << 4) + (1 << 5), (1 << 3),
+        (1 << 6) + (1 << 7), (1 << 8),
+        (1 << 7) + (1 << 8), (1 << 6),
+        (1 << 0) + (1 << 3), (1 << 6),
+        (1 << 3) + (1 << 6), (1 << 0),
+        (1 << 1) + (1 << 4), (1 << 7),
+        (1 << 4) + (1 << 7), (1 << 1),
+        (1 << 2) + (1 << 5), (1 << 8),
+        (1 << 5) + (1 << 8), (1 << 2),
+        (1 << 0) + (1 << 4), (1 << 8),
+        (1 << 4) + (1 << 8), (1 << 0),
+        (1 << 2) + (1 << 4), (1 << 6),
+        (1 << 4) + (1 << 6), (1 << 2),
+        (1 << 0) + (1 << 2), (1 << 1),
+        (1 << 3) + (1 << 5), (1 << 4),
+        (1 << 6) + (1 << 8), (1 << 7),
+        (1 << 0) + (1 << 6), (1 << 3),
+        (1 << 1) + (1 << 7), (1 << 4),
+        (1 << 2) + (1 << 8), (1 << 5),
+        (1 << 0) + (1 << 8), (1 << 4),
+        (1 << 2) + (1 << 6), (1 << 4)
+    };
+    for (int p0 = 0; p0 < 512; p0++) {
+        for (int p1 = 0; p1 < 512; p1++) {
+            if (p0 & p1) continue;
+            const CrossfishDev::MiniLut &e = CrossfishDev::mini_lut[CrossfishDev::mini_index(p0, p1)];
+            int occ = p0 | p1;
+            uint16_t want_cap0 = 0, want_cap1 = 0, want_t0 = 0, want_t1 = 0;
+            for (int s = 0; s < 9; s++) {
+                if (occ & (1 << s)) continue;
+                unsigned bit = 1u << s;
+                if (has_win(p0 | (int)bit)) want_cap0 = (uint16_t)(want_cap0 | bit);
+                if (has_win(p1 | (int)bit)) want_cap1 = (uint16_t)(want_cap1 | bit);
+                int p0s = p0 | (int)bit;
+                int p1s = p1 | (int)bit;
+                for (int i = 0; i < 24; i++) {
+                    int two = tiar[i * 2];
+                    int third = tiar[i * 2 + 1];
+                    if (((p0s & two) == two) && (((p1 | p0) & third) == 0)) want_t0 = (uint16_t)(want_t0 | bit);
+                    if (((p1s & two) == two) && (((p0 | p1) & third) == 0)) want_t1 = (uint16_t)(want_t1 | bit);
+                }
+            }
+            CHECK_EQ(e.p0_cap, want_cap0);
+            CHECK_EQ(e.p1_cap, want_cap1);
+            CHECK_EQ(e.p0_tiar_sq, want_t0);
+            CHECK_EQ(e.p1_tiar_sq, want_t1);
+        }
+    }
 }
 
 static void test_eval_consistency(TestCtx &ctx) {
