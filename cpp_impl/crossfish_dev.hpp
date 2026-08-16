@@ -87,9 +87,9 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19 capext ~-21. 20 lmr3 ~-8. 21 qsearch-blocks ~-15.
-        // 22: treat blocks as tactical — do not futility-prune or LMR them.
-        static constexpr int SEARCH_EXPERIMENT = 22; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600 18=improving 19=capext 20=lmr3 21=qblocks. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500 17=PVS re-search
+        // 19 capext ~-21. 20 lmr3 ~-8. 21 qsearch-blocks ~-15. 22 tactical-blocks faded ~-8.
+        // 23: penalize sending the opponent to a miniboard they can complete immediately.
+        static constexpr int SEARCH_EXPERIMENT = 23; // Failed: 1=NMP 2=TTrep 5=razor 6=qTT 7=TT20 8=asp 10=killers 13=IID2 16=fp600 18=improving 19=capext 20=lmr3 21=qblocks 22=tblocks. Landed: 3=LMR 4=g 9=c 11=malus 12=qdelta 14=i/3 15=RFP500 17=PVS re-search
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
@@ -494,6 +494,11 @@ class CrossfishDev {
                     }
                 }
 
+                int extra_red = 0;
+                if constexpr (SEARCH_EXPERIMENT == 23) {
+                    if (sends_opp_win1(board, legal_moves[i])) extra_red = 1;
+                }
+
                 board.makeMove(legal_moves[i]);
                 nnue_push(board, legal_moves[i]);
                 if (i == 0) {
@@ -509,7 +514,7 @@ class CrossfishDev {
                         if (block) do_lmr = false;
                     }
                     if (do_lmr) {
-                        reduction = i / 3;
+                        reduction = i / 3 + extra_red;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
@@ -600,6 +605,18 @@ class CrossfishDev {
             return mask != 0;
         }
 
+        bool sends_opp_win1(GlobalBoard &board, Move &move) {
+            int oop = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int sent = move.square;
+            if ((oop & (1 << sent)) != 0) return false;
+            if (move.mini_board == sent) return false;
+            const MiniLut &e = mini_lut[mini_index(
+                board.mini_boards[sent].markers[0],
+                board.mini_boards[sent].markers[1])];
+            int opp = (board.n_moves + 1) % 2;
+            return (opp == 0) ? e.p0_win1 : e.p1_win1;
+        }
+
         bool is_block_avx(GlobalBoard &board, Move &move) {
             int opp_markers = board.mini_boards[move.mini_board].markers[(board.n_moves + 1) % 2];
             opp_markers |= (1 << move.square);
@@ -658,6 +675,11 @@ class CrossfishDev {
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if ((out_of_play & (1 << moves[i].square)) != 0) {
                     move_score -= 250;
+                }
+                if constexpr (SEARCH_EXPERIMENT == 23) {
+                    if (sends_opp_win1(board, moves[i])) {
+                        move_score -= 200;
+                    }
                 }
                 move_score += history_table[board.n_moves % 2][moves[i].mini_board][moves[i].square] / 20;
                 scores[i] = move_score;
