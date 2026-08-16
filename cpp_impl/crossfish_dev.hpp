@@ -24,7 +24,7 @@ class CrossfishDev {
         Move counter_move[9][9];
         int cont_hist[2][9][9][9][9]{};
         bool counters_ready = false;
-        static const int tt_size = 1 << 18;
+        static const int tt_size = 1 << 19;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
         std::vector<int> two_in_a_row_masks = {
@@ -88,9 +88,8 @@ class CrossfishDev {
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
         static constexpr int EVAL_EXPERIMENT = 0;
-        // 19-27 failed. 28 skip-tiar-order ~-30.
-        // 29: late-move prune quiets at depth 1-2.
-        static constexpr int SEARCH_EXPERIMENT = 29;
+        // 19-29 failed. 30: 2^19 TT (2x). TT20 failed; try one doubling only.
+        static constexpr int SEARCH_EXPERIMENT = 30;
         static constexpr int USE_NNUE = 0; // Failed: WDL replace -675; Phase B d6 -364; residual 20ms -267 / 95ms -231 / d4-noprune -159
         static constexpr int NNUE_RESIDUAL = 0; // 1: evaluate = HCE + nnue
         static constexpr int USE_MINIRES = 1; // packed MiniNet residual, matching codingame_nnue.cpp
