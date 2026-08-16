@@ -775,6 +775,73 @@ static void test_ttentry_layout_matches_store(TestCtx &ctx) {
     CHECK_EQ(e.best_move.square, 5);
 }
 
+static void test_mini_avx_matches_scalar(TestCtx &ctx) {
+    mini_load_packed();
+    std::mt19937 rng(20260816);
+    int max_abs = 0;
+    int disagree = 0;
+    for (int g = 0; g < 40; g++) {
+        GlobalBoard board;
+        for (int ply = 0; ply < 30; ply++) {
+            int a = evaluate_mini(board);
+            int b = evaluate_mini_avx(board);
+            int d = a - b;
+            if (d < 0) d = -d;
+            if (d > 1) disagree++;
+            int abs_a = a < 0 ? -a : a;
+            if (abs_a > max_abs) max_abs = abs_a;
+            std::vector<Move> legal = board.getLegalMoves();
+            if (legal.empty() || board.checkWinner() != -1) break;
+            board.makeMove(legal[rng() % legal.size()]);
+        }
+    }
+    CHECK_EQ(disagree, 0);
+    CHECK(max_abs < 20000);
+}
+
+static void test_lut_capture_block_tiar(TestCtx &ctx) {
+    CrossfishDev::init_mini_lut();
+    CrossfishDev dev;
+    std::mt19937 rng(7);
+    for (int g = 0; g < 50; g++) {
+        GlobalBoard board;
+        for (int ply = 0; ply < 40; ply++) {
+            if (board.checkWinner() != -1) break;
+            Move legal[81];
+            int n = board.fillLegalMoves(legal);
+            if (n == 0) break;
+            for (int i = 0; i < n; i++) {
+                CHECK_EQ(dev.is_capture_avx(board, legal[i]), board.is_capture_avx(legal[i]));
+                int opp = (board.n_moves + 1) % 2;
+                int opp_m = board.mini_boards[legal[i].mini_board].markers[opp] | (1 << legal[i].square);
+                CHECK_EQ(dev.is_block_avx(board, legal[i]), scalar_has_win(opp_m));
+                int ours = board.mini_boards[legal[i].mini_board].markers[board.n_moves % 2] | (1 << legal[i].square);
+                int occ = board.mini_boards[legal[i].mini_board].markers[0]
+                        | board.mini_boards[legal[i].mini_board].markers[1];
+                bool tiar = false;
+                for (int k = 0; k < CrossfishDev::N_TIAR_MASKS / 2; k++) {
+                    int pair = CrossfishDev::two_in_a_row_masks[k * 2];
+                    int third = CrossfishDev::two_in_a_row_masks[k * 2 + 1];
+                    if (((ours & pair) == pair) && ((occ & third) == 0)) {
+                        tiar = true;
+                        break;
+                    }
+                }
+                CHECK_EQ(dev.creates_two_in_a_row(board, legal[i]), tiar);
+            }
+            Move caps_a[81];
+            Move caps_b[81];
+            int na = board.fillCaptures(caps_a);
+            int nb = dev.fill_captures_lut(board, caps_b);
+            CHECK_EQ(na, nb);
+            for (int i = 0; i < na; i++) {
+                CHECK(same_move(caps_a[i], caps_b[i]));
+            }
+            board.makeMove(legal[rng() % n]);
+        }
+    }
+}
+
 using TestFn = void (*)(TestCtx &);
 
 int main() {
@@ -801,6 +868,8 @@ int main() {
         {"search_returns_legal", test_search_returns_legal},
         {"search_takes_instant_win", test_search_takes_instant_win},
         {"ttentry_layout_matches_store", test_ttentry_layout_matches_store},
+        {"mini_avx_matches_scalar", test_mini_avx_matches_scalar},
+        {"lut_capture_block_tiar", test_lut_capture_block_tiar},
     };
 
     int passed = 0;

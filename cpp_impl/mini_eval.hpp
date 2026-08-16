@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cmath>
+#include <immintrin.h>
 
 #include "global_board.hpp"
 
@@ -519,6 +520,63 @@ static int evaluate_mini(const GlobalBoard &b) {
         const float *row = MN_W1 + j * MN_IN;
         float s = MN_B1[j];
         for (int i = 0; i < MN_IN; i++) s += row[i] * x[i];
+        if (s > 0) out += MN_W2[j] * s;
+    }
+    return (int)std::lround(out);
+}
+
+// AVX2 MiniNet. Same network as evaluate_mini; mul+add (not FMA) to match
+// the codingame AVX2-only target. Horizontal-add order can differ by 1
+// from the scalar path after lround.
+static float mini_hsum256(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 s = _mm_add_ps(lo, hi);
+    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s = _mm_add_ss(s, _mm_shuffle_ps(s, s, 1));
+    return _mm_cvtss_f32(s);
+}
+
+static int evaluate_mini_avx(const GlobalBoard &b) {
+    static_assert(MN_D == 8 && MN_IN == 80, "AVX MiniNet path is D=8 / IN=80");
+    if (!MN_READY && !mini_load_packed()) return 0;
+    const int stm = b.n_moves & 1;
+    const int c = mini_board_constraint(b);
+    alignas(32) float x[MN_IN];
+    for (int mb = 0; mb < 9; mb++) {
+        const int mine = b.mini_boards[mb].markers[stm];
+        const int opp = b.mini_boards[mb].markers[stm ^ 1];
+        int idx = 0;
+        idx += (mine & 1) ? 1 : ((opp & 1) ? 2 : 0);
+        idx += (mine & 2) ? 3 : ((opp & 2) ? 6 : 0);
+        idx += (mine & 4) ? 9 : ((opp & 4) ? 18 : 0);
+        idx += (mine & 8) ? 27 : ((opp & 8) ? 54 : 0);
+        idx += (mine & 16) ? 81 : ((opp & 16) ? 162 : 0);
+        idx += (mine & 32) ? 243 : ((opp & 32) ? 486 : 0);
+        idx += (mine & 64) ? 729 : ((opp & 64) ? 1458 : 0);
+        idx += (mine & 128) ? 2187 : ((opp & 128) ? 4374 : 0);
+        idx += (mine & 256) ? 6561 : ((opp & 256) ? 13122 : 0);
+        int super_cls = 0;
+        if (b.mini_board_states[stm] & (1 << mb)) super_cls = 1;
+        else if (b.mini_board_states[stm ^ 1] & (1 << mb)) super_cls = 2;
+        else if (b.mini_board_states[2] & (1 << mb)) super_cls = 3;
+        const int act = (c == mb) ? 1 : 0;
+        __m256 v = _mm256_loadu_ps(MN_CENT + (int)MN_CODE[idx] * MN_D);
+        v = _mm256_add_ps(v, _mm256_loadu_ps(MN_SUPER + super_cls * MN_D));
+        v = _mm256_add_ps(v, _mm256_loadu_ps(MN_LOC + mb * MN_D));
+        v = _mm256_add_ps(v, _mm256_loadu_ps(MN_ACTIVE + act * MN_D));
+        _mm256_store_ps(x + mb * MN_D, v);
+    }
+    _mm256_store_ps(x + 9 * MN_D, _mm256_loadu_ps(MN_CONSTR + c * MN_D));
+    float out = MN_B2;
+    for (int j = 0; j < MN_H; j++) {
+        const float *row = MN_W1 + j * MN_IN;
+        __m256 vacc = _mm256_setzero_ps();
+        for (int k = 0; k < 10; k++) {
+            vacc = _mm256_add_ps(_mm256_mul_ps(_mm256_load_ps(x + k * 8),
+                                                _mm256_loadu_ps(row + k * 8)), vacc);
+        }
+        float s = MN_B1[j] + mini_hsum256(vacc);
         if (s > 0) out += MN_W2[j] * s;
     }
     return (int)std::lround(out);

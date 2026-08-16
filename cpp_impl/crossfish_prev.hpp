@@ -256,7 +256,11 @@ class CrossfishPrev {
                 }
             }
 
-            int stand_pat = evaluate(board);
+            int hce = evaluate_hce(board);
+            if (hce >= beta) {
+                return beta;
+            }
+            int stand_pat = hce + evaluate_mini(board);
             if (stand_pat >= beta) {
                 return beta;
             }
