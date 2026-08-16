@@ -1012,20 +1012,24 @@ class CrossfishDev {
                 }
             }
             if constexpr (EVAL_EXPERIMENT == 9) {
-                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
-                int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
-                if ((out_of_play & (1 << 4)) == 0) {
-                    extra += stm_sign * W_CENTER_MB_STONES * (
-                        __builtin_popcount(board.mini_boards[4].markers[0]) -
-                        __builtin_popcount(board.mini_boards[4].markers[1]));
-                }
-                const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
-                for (int mb = 0; mb < 9; mb++) {
-                    if ((corners & (1 << mb)) == 0) continue;
-                    if ((out_of_play & (1 << mb)) != 0) continue;
-                    extra += stm_sign * W_CORNER_MB_STONES * (
-                        __builtin_popcount(board.mini_boards[mb].markers[0]) -
-                        __builtin_popcount(board.mini_boards[mb].markers[1]));
+                // Only while MiniNet is still near 0. Later, won-miniboard
+                // terms already price the center/corners and this double-counts.
+                if (board.n_moves < 20) {
+                    int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                    int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+                    if ((out_of_play & (1 << 4)) == 0) {
+                        extra += stm_sign * W_CENTER_MB_STONES * (
+                            __builtin_popcount(board.mini_boards[4].markers[0]) -
+                            __builtin_popcount(board.mini_boards[4].markers[1]));
+                    }
+                    const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+                    for (int mb = 0; mb < 9; mb++) {
+                        if ((corners & (1 << mb)) == 0) continue;
+                        if ((out_of_play & (1 << mb)) != 0) continue;
+                        extra += stm_sign * W_CORNER_MB_STONES * (
+                            __builtin_popcount(board.mini_boards[mb].markers[0]) -
+                            __builtin_popcount(board.mini_boards[mb].markers[1]));
+                    }
                 }
             }
             if constexpr (EVAL_EXPERIMENT == 7) {
