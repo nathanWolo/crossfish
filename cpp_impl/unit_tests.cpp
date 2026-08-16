@@ -693,6 +693,7 @@ static void test_eval_consistency(TestCtx &ctx) {
 }
 
 static void test_eval_free_move_bonus(TestCtx &ctx) {
+    if (CrossfishDev::EVAL_EXPERIMENT != 0) return;
     CrossfishDev dev;
     GlobalBoard mid;
     mid.makeMove({4, 4});

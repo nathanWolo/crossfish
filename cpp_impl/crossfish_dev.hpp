@@ -93,7 +93,8 @@ class CrossfishDev {
         static constexpr int LUT_W_CORNER_SQ = PAWN;
         static constexpr int LUT_W_SQUARES = 33;
         // 0=baseline. Failed eval: 2=forks 3=live-third 4=dead-board 5=active-local 6=free-scale 7=tiar-loc 8=utttai HCE
-        static constexpr int EVAL_EXPERIMENT = 0;
+        // 9: extra HCE for stones on unfinished center/corner miniboards (opening).
+        static constexpr int EVAL_EXPERIMENT = 9;
         // 19-34 failed. Landed: skip MiniNet in qsearch when HCE already
         // fail-highs (20ms +31 / 95ms +20). Then NPS bundle 36: AVX MiniNet,
         // skip MiniNet when HCE cannot reach alpha even at +MINI_MAX, LUT
@@ -137,6 +138,10 @@ class CrossfishDev {
         static constexpr int W_FREE_MOVE = FREE_MOVE_PAWNS * PAWN;
         static constexpr int W_FORK = 400;
         static constexpr int W_DEAD_BOARD = 250;
+        // Stones on unfinished center/corner miniboards. HCE only scores *won*
+        // miniboards (2410/836/464); MiniNet is ~0 for the first dozen plies.
+        static constexpr int W_CENTER_MB_STONES = 30;
+        static constexpr int W_CORNER_MB_STONES = 12;
         int tiar_loc_w[3] = {0, 0, 0}; // extras on center, corner, edge local 2-in-a-rows
 
         static int mini_index(int p0, int p1) {
@@ -1003,6 +1008,27 @@ class CrossfishDev {
                         extra += stm_sign * mini_score[mini_index(
                             board.mini_boards[sent].markers[0],
                             board.mini_boards[sent].markers[1])];
+                    }
+                }
+            }
+            if constexpr (EVAL_EXPERIMENT == 9) {
+                // Only while MiniNet is still near 0. Later, won-miniboard
+                // terms already price the center/corners and this double-counts.
+                if (board.n_moves < 20) {
+                    int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                    int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+                    if ((out_of_play & (1 << 4)) == 0) {
+                        extra += stm_sign * W_CENTER_MB_STONES * (
+                            __builtin_popcount(board.mini_boards[4].markers[0]) -
+                            __builtin_popcount(board.mini_boards[4].markers[1]));
+                    }
+                    const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+                    for (int mb = 0; mb < 9; mb++) {
+                        if ((corners & (1 << mb)) == 0) continue;
+                        if ((out_of_play & (1 << mb)) != 0) continue;
+                        extra += stm_sign * W_CORNER_MB_STONES * (
+                            __builtin_popcount(board.mini_boards[mb].markers[0]) -
+                            __builtin_popcount(board.mini_boards[mb].markers[1]));
                     }
                 }
             }
