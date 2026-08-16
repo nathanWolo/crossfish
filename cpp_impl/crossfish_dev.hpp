@@ -666,8 +666,10 @@ class CrossfishDev {
                         move_score += 40;
                     }
                     if constexpr (SEARCH_EXPERIMENT == 24) {
-                        move_score += cont_hist[board.n_moves % 2][prev.mini_board][prev.square]
-                                              [moves[i].mini_board][moves[i].square] / 20;
+                        int chs = cont_hist[board.n_moves % 2][prev.mini_board][prev.square]
+                                           [moves[i].mini_board][moves[i].square] / 20;
+                        if (chs > 40) chs = 40;
+                        move_score += chs;
                     }
                 }
 
