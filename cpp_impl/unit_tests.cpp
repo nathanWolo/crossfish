@@ -12,7 +12,6 @@
 
 #include "global_board.hpp"
 #include "crossfish_dev.hpp"
-#include "crossfish_prev.hpp"
 
 // Frozen startpos perft, matched against the independent Python oracle
 // in python_impl/test_rules.py (same UTTT send-to / finished-board rules).
@@ -650,7 +649,6 @@ static void test_mini_index_and_lut(TestCtx &ctx) {
 
 static void test_eval_consistency(TestCtx &ctx) {
     CrossfishDev dev;
-    CrossfishPrev prev;
     CrossfishDev::init_mini_lut();
     std::mt19937 rng(999);
     GlobalBoard empty;
@@ -669,10 +667,8 @@ static void test_eval_consistency(TestCtx &ctx) {
             }
             val += stm * dev.eval_weights[9];
             int extra = dev.eval_extra(board);
-            int ev = (CrossfishDev::USE_NNUE || CrossfishDev::USE_MINIRES) ? dev.evaluate_hce(board) : dev.evaluate(board);
-            if (CrossfishDev::EVAL_EXPERIMENT != 3) {
-                CHECK_EQ(ev, stm * val + extra);
-            }
+            int ev = dev.evaluate_hce(board);
+            CHECK_EQ(ev, stm * val + extra);
             int16_t idx[9];
             int n = 0;
             int base = 0;
@@ -682,9 +678,6 @@ static void test_eval_consistency(TestCtx &ctx) {
                 local += CrossfishDev::mini_score[idx[i]];
             }
             CHECK_EQ(ev, base + stm * local + extra);
-            if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE && !CrossfishDev::USE_MINIRES) {
-                CHECK_EQ(ev, prev.evaluate(board));
-            }
             std::vector<Move> moves = board.getLegalMoves();
             if (moves.empty()) break;
             board.makeMove(moves[rng() % moves.size()]);

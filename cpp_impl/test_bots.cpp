@@ -30,6 +30,7 @@ static int g_sprt_think_ms = 20;
 #pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
 
 #include "global_board.hpp"
+#include "nnue.hpp"
 #include "crossfish_prev.hpp"
 #include "crossfish_dev.hpp"
 
@@ -347,7 +348,6 @@ static void verify_utttai_state() {
 
 static void verify_eval_linear() {
     CrossfishDev dev;
-    CrossfishPrev prev;
     CrossfishDev::init_mini_lut();
     std::mt19937 rng(999);
     for (int g = 0; g < 200; g++) {
@@ -363,8 +363,8 @@ static void verify_eval_linear() {
             }
             val += stm * dev.eval_weights[9];
             int extra = dev.eval_extra(board);
-            int ev = (CrossfishDev::USE_NNUE || CrossfishDev::USE_MINIRES) ? dev.evaluate_hce(board) : dev.evaluate(board);
-            if (CrossfishDev::EVAL_EXPERIMENT != 3 && ev != stm * val + extra) {
+            int ev = dev.evaluate_hce(board);
+            if (ev != stm * val + extra) {
                 std::cerr << "eval linear mismatch at ply " << ply
                           << " eval=" << ev << " linear=" << stm * val << " extra=" << extra << std::endl;
                 std::exit(1);
@@ -381,22 +381,12 @@ static void verify_eval_linear() {
                 std::cerr << "eval parts mismatch at ply " << ply << std::endl;
                 std::exit(1);
             }
-            if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE && !CrossfishDev::USE_MINIRES) {
-                std::cerr << "dev vs prev eval mismatch at ply " << ply
-                          << " dev=" << ev << " prev=" << prev.evaluate(board) << std::endl;
-                std::exit(1);
-            }
             std::vector<Move> moves = board.getLegalMoves();
             if (moves.empty()) break;
             board.makeMove(moves[rng() % moves.size()]);
         }
     }
-    if (CrossfishDev::EVAL_EXPERIMENT == 0 && !CrossfishDev::USE_NNUE && !CrossfishDev::USE_MINIRES) {
-        std::cout << "eval linear combo: OK (matches Prev)" << std::endl;
-    } else {
-        std::cout << "eval linear combo: OK (experiment " << CrossfishDev::EVAL_EXPERIMENT
-                  << " nnue " << CrossfishDev::USE_NNUE << " minires " << CrossfishDev::USE_MINIRES << ")" << std::endl;
-    }
+    std::cout << "eval linear combo: OK" << std::endl;
 }
 
 static void verify_nnue_incremental() {
@@ -1730,203 +1720,6 @@ static void run_texel_utttai(const char *dir_arg, bool load_saved) {
 }
 
 #pragma pack(push, 1)
-struct TiarLocPos {
-    float e0;
-    int16_t f[3];
-    float y;
-};
-#pragma pack(pop)
-
-static const char *TIAR_POS_PATH = "tiar_texel_pos.bin";
-
-static double tiar_loc_eval_e(const TiarLocPos &p, const double *w) {
-    return (double)p.e0 + w[0] * p.f[0] + w[1] * p.f[1] + w[2] * p.f[2];
-}
-
-static double tiar_loc_loss(const std::vector<TiarLocPos> &data, const double *w, double K) {
-    double loss = 0;
-    for (const TiarLocPos &p : data) {
-        double pred = texel_sigmoid(tiar_loc_eval_e(p, w) / K);
-        pred = std::min(1.0 - 1e-12, std::max(1e-12, pred));
-        loss += -p.y * std::log(pred) - (1.0 - p.y) * std::log(1.0 - pred);
-    }
-    return loss / (double)data.size();
-}
-
-static void play_tiar_tune_games(int n_games, int think_ms, std::vector<TiarLocPos> &out, uint32_t seed) {
-    std::mt19937 rng(seed);
-    RandomMover random_mover;
-    CrossfishDev bot;
-    bot.tiar_loc_w[0] = bot.tiar_loc_w[1] = bot.tiar_loc_w[2] = 0;
-    CrossfishDev::init_mini_lut();
-    std::vector<TiarLocPos> local;
-    local.reserve(n_games * 40);
-    for (int g = 0; g < n_games; g++) {
-        GlobalBoard board;
-        int n_random = 4 + (int)(rng() % 5);
-        for (int i = 0; i < n_random; i++) {
-            if (board.checkWinner() != -1) break;
-            Move m = random_mover.getMove(board);
-            board.makeMove(m);
-        }
-        std::vector<TiarLocPos> game_pos;
-        game_pos.reserve(64);
-        while (board.checkWinner() == -1) {
-            int loc[3];
-            bot.eval_tiar_loc(board, loc);
-            int stm = (board.n_moves % 2 == 0) ? 1 : -1;
-            TiarLocPos p{};
-            p.e0 = (float)bot.evaluate(board);
-            p.f[0] = (int16_t)(stm * loc[0]);
-            p.f[1] = (int16_t)(stm * loc[1]);
-            p.f[2] = (int16_t)(stm * loc[2]);
-            p.y = 0;
-            game_pos.push_back(p);
-            Move m = bot.getMove(board, std::chrono::milliseconds(think_ms));
-            board.makeMove(m);
-        }
-        int winner = board.checkWinner();
-        for (size_t i = 0; i < game_pos.size(); i++) {
-            int stm_player = (n_random + (int)i) % 2;
-            if (winner == 2) game_pos[i].y = 0.5f;
-            else if (winner == stm_player) game_pos[i].y = 1.0f;
-            else game_pos[i].y = 0.0f;
-        }
-        local.insert(local.end(), game_pos.begin(), game_pos.end());
-        log_tune_progress();
-    }
-    global_mutex.lock();
-    out.insert(out.end(), local.begin(), local.end());
-    global_mutex.unlock();
-}
-
-static void run_texel_tiar(bool load_saved) {
-    const int think_ms = 20;
-    const int n_games = 4800;
-    const int n_epochs = 80;
-    const unsigned int n_threads = std::max(1u, std::thread::hardware_concurrency());
-    const char *names[3] = {"center_tiar_extra", "corner_tiar_extra", "edge_tiar_extra"};
-
-    std::vector<TiarLocPos> data;
-    if (load_saved) {
-        std::ifstream in(TIAR_POS_PATH, std::ios::binary);
-        uint64_t n = 0;
-        in.read(reinterpret_cast<char *>(&n), sizeof(n));
-        if (!in || n < 1000 || n > 5000000) {
-            std::cerr << "failed to load " << TIAR_POS_PATH << std::endl;
-            std::exit(1);
-        }
-        data.resize((size_t)n);
-        in.read(reinterpret_cast<char *>(data.data()), (std::streamsize)(n * sizeof(TiarLocPos)));
-        std::cout << "loaded " << data.size() << " positions from " << TIAR_POS_PATH << std::endl;
-    } else {
-        std::cout << "Tiar-loc Texel self-play: " << n_games << " games at " << think_ms
-                  << "ms on " << n_threads << " threads" << std::endl;
-        data.reserve(n_games * 40);
-        tune_games_done = 0;
-        tune_games_total = n_games;
-        tune_t0 = std::chrono::steady_clock::now();
-        int per = n_games / (int)n_threads;
-        int extra = n_games % (int)n_threads;
-        std::vector<std::future<void>> futures;
-        for (unsigned int t = 0; t < n_threads; t++) {
-            int n = per + (t < (unsigned)extra ? 1 : 0);
-            uint32_t seed = 8000u + t * 9973u;
-            futures.push_back(std::async(std::launch::async, play_tiar_tune_games, n, think_ms, std::ref(data), seed));
-        }
-        for (auto &f : futures) f.get();
-        std::cout << "positions: " << data.size() << std::endl;
-        if (data.size() < 1000) {
-            std::cerr << "not enough texel positions" << std::endl;
-            std::exit(1);
-        }
-        std::ofstream out(TIAR_POS_PATH, std::ios::binary);
-        uint64_t n = data.size();
-        out.write(reinterpret_cast<const char *>(&n), sizeof(n));
-        out.write(reinterpret_cast<const char *>(data.data()), (std::streamsize)(n * sizeof(TiarLocPos)));
-        std::cout << "wrote " << TIAR_POS_PATH << std::endl;
-    }
-
-    std::mt19937 rng(42);
-    std::shuffle(data.begin(), data.end(), rng);
-    size_t split = data.size() * 9 / 10;
-    std::vector<TiarLocPos> train(data.begin(), data.begin() + split);
-    std::vector<TiarLocPos> val(data.begin() + split, data.end());
-
-    double w[3] = {0, 0, 0};
-    double zero[3] = {0, 0, 0};
-    double best_k = 400;
-    double best_k_loss = 1e100;
-    for (double K = 200; K <= 3000; K += 100) {
-        double loss = tiar_loc_loss(val, zero, K);
-        if (loss < best_k_loss) {
-            best_k_loss = loss;
-            best_k = K;
-        }
-    }
-    std::cout << "K=" << best_k << " val_loss=" << best_k_loss << " (extras=0)" << std::endl;
-
-    double m[3] = {};
-    double v[3] = {};
-    const double step_scale = 100.0;
-    double lr = 0.01;
-    const double wmin = -400;
-    const double wmax = 800;
-    double best_val = best_k_loss;
-    double best_w[3] = {0, 0, 0};
-    int stale = 0;
-    int tstep = 0;
-
-    for (int epoch = 1; epoch <= n_epochs; epoch++) {
-        std::shuffle(train.begin(), train.end(), rng);
-        for (const TiarLocPos &p : train) {
-            tstep++;
-            double e = tiar_loc_eval_e(p, w);
-            double pred = texel_sigmoid(e / best_k);
-            pred = std::min(1.0 - 1e-12, std::max(1e-12, pred));
-            double gscale = (pred - p.y) / best_k;
-            for (int i = 0; i < 3; i++) {
-                double g = gscale * p.f[i] + 4e-5 * w[i] / step_scale;
-                m[i] = 0.9 * m[i] + 0.1 * g;
-                v[i] = 0.999 * v[i] + 0.001 * g * g;
-                double mhat = m[i] / (1.0 - std::pow(0.9, tstep));
-                double vhat = v[i] / (1.0 - std::pow(0.999, tstep));
-                w[i] -= lr * mhat / (std::sqrt(vhat) + 1e-8) * step_scale;
-                if (w[i] < wmin) w[i] = wmin;
-                if (w[i] > wmax) w[i] = wmax;
-            }
-        }
-        double tr = tiar_loc_loss(train, w, best_k);
-        double va = tiar_loc_loss(val, w, best_k);
-        std::cout << "epoch " << epoch << " train=" << tr << " val=" << va
-                  << " w=" << (int)std::lround(w[0]) << "," << (int)std::lround(w[1])
-                  << "," << (int)std::lround(w[2]) << std::endl;
-        if (va + 1e-6 < best_val) {
-            best_val = va;
-            stale = 0;
-            best_w[0] = w[0];
-            best_w[1] = w[1];
-            best_w[2] = w[2];
-        } else {
-            stale++;
-            if (stale >= 15) {
-                std::cout << "early stop" << std::endl;
-                break;
-            }
-        }
-    }
-
-    std::cout << "best val_loss=" << best_val << " (start " << best_k_loss << ")" << std::endl;
-    std::cout << "tuned extras: {" << (int)std::lround(best_w[0]) << ", "
-              << (int)std::lround(best_w[1]) << ", " << (int)std::lround(best_w[2])
-              << "}  (center, corner, edge on top of 534)" << std::endl;
-    for (int i = 0; i < 3; i++) {
-        std::cout << names[i] << ": 0 -> " << (int)std::lround(best_w[i])
-                  << "  effective=" << (534 + (int)std::lround(best_w[i])) << std::endl;
-    }
-}
-
-#pragma pack(push, 1)
 struct LutTexelPos {
     int16_t idx[9];
     int8_t n;
@@ -2416,9 +2209,6 @@ int main(int argc, char** argv) {
                 bool load_saved = argc >= 4 && std::strcmp(argv[3], "load") == 0;
                 run_texel(load_saved);
             }
-        } else if (argc >= 3 && std::strcmp(argv[2], "tiar") == 0) {
-            bool load_saved = argc >= 4 && std::strcmp(argv[3], "load") == 0;
-            run_texel_tiar(load_saved);
         } else {
             bool load_saved = argc >= 3 && std::strcmp(argv[2], "load") == 0;
             run_lut_texel(load_saved);
@@ -2461,10 +2251,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cout << "SPRT think ms: " << g_sprt_think_ms
+              << " eval=HCE+MiniNet"
               << " nnue_mode=" << g_nnue_mode
-              << " residual=" << g_nnue_residual
-              << " USE_NNUE=" << CrossfishDev::USE_NNUE
-              << " NNUE_RESIDUAL=" << CrossfishDev::NNUE_RESIDUAL;
+              << " residual=" << g_nnue_residual;
     if (g_nnue_bin_path[0]) {
         std::cout << " nnue_bin=" << g_nnue_bin_path;
     }
@@ -2476,9 +2265,6 @@ int main(int argc, char** argv) {
         }
         std::cout << "loaded " << MINI_SCORE_PATH << " into Dev" << std::endl;
     }
-    std::cout << "Dev extra experiment: " << CrossfishDev::EVAL_EXPERIMENT
-              << " search experiment: " << CrossfishDev::SEARCH_EXPERIMENT
-              << " minires: " << CrossfishDev::USE_MINIRES << std::endl;
     const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
     // const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;

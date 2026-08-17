@@ -2,7 +2,9 @@
 """Pack a trained MiniNet .bin into cpp_impl/codingame_nnue.cpp.
 
 Builds the CodinGame file from crossfish.cpp + minires_d8h4.bin (or another
-CFM2 MiniNet blob from nnue_train_mininet.py).
+CFM2 MiniNet blob from nnue_train_mininet.py). The HCE-only CG source has a
+packing marker just before CrossfishDev; this script inserts the clustered
+MiniNet blob and switches RFP to HCE / qsearch leaves to HCE+mini.
 
 The full 19683x8 embedding table does not fit the 100k-character CG cap.
 Cluster the rows into 256 centroids (seed 0). Reconstruction corr vs the
@@ -252,10 +254,10 @@ def transform(src: str, b64: str, raw_bytes: int) -> str:
         "// Equal-depth +54 Elo; 20ms +11; 95ms +7. HCE RFP, MiniNet at qsearch.",
         1,
     )
-    start = src.find("\n// NNUE packed weights + inference\n")
+    start = src.find("\n// MiniNet packing marker for tools/nnue_emit_mininet_cg.py\n")
     end = src.find("\nclass CrossfishDev {")
     if start < 0 or end < 0:
-        raise SystemExit("could not find sparse NNUE block in crossfish.cpp")
+        raise SystemExit("could not find MiniNet packing marker in crossfish.cpp")
     blob_decl = (
         f"// MiniNet residual weights (k-means-256 embeddings)\n"
         f"static const int MINI_PACK_RAW_BYTES = {raw_bytes};\n"
@@ -263,15 +265,11 @@ def transform(src: str, b64: str, raw_bytes: int) -> str:
     )
     src = src[: start + 1] + blob_decl + MINI_HELPERS + src[end + 1 :]
 
-    src = src.replace("        static constexpr int USE_NNUE = 0;\n        NnueNet nnue;\n", "")
     src = src.replace(
-        "            if (!nnue.weights_ready) nnue_load_packed(nnue);\n"
-        "            if constexpr (USE_NNUE) nnue.refresh(board);\n",
-        "            mini_load_packed();\n",
+        "            init_mini_lut();\n            thinking_time = thinking_time_passed;",
+        "            init_mini_lut();\n            mini_load_packed();\n            thinking_time = thinking_time_passed;",
+        1,
     )
-    src = src.replace("                if constexpr (USE_NNUE) nnue.make(board, caps[i]);\n", "")
-    src = src.replace("                if constexpr (USE_NNUE) nnue.unmake();\n", "")
-    src = src.replace("                if constexpr (USE_NNUE) nnue.make(board, legal_moves[i]);\n", "")
 
     src = src.replace(
         "            if (!pv_node) {\n                int stand_pat = evaluate(board);",
@@ -280,8 +278,7 @@ def transform(src: str, b64: str, raw_bytes: int) -> str:
     )
 
     src = src.replace(
-        "        int evaluate(GlobalBoard &board) {\n            if constexpr (USE_NNUE) {\n"
-        "                return nnue.evaluate(board);\n            }\n            init_mini_lut();",
+        "        int evaluate(GlobalBoard &board) {\n            init_mini_lut();",
         "        int evaluate_hce(GlobalBoard &board) {\n            init_mini_lut();",
         1,
     )
