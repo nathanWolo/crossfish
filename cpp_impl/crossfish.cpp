@@ -390,205 +390,7 @@ class GlobalBoard {
 
 };
 
-// NNUE packed weights + inference
-static const int NNUE_PACK_RAW_BYTES = 15020;
-static const char NNUE_PACK_B64[] = R"NNUE(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)NNUE";
-
-
-struct NnueNet {
-    static constexpr int N_SQ_F = 162;
-    static constexpr int N_FEAT = 199;
-    static constexpr int H = 32;
-    static constexpr int L2 = 32;
-    static constexpr int QA = 127;
-    static constexpr int QB = 64;
-    static constexpr int SUPER_BASE = 162;
-    static constexpr int CONSTR_BASE = 189;
-    static constexpr int UNDO_MAX = 128;
-    int32_t acc[2][H]{};
-    int16_t w0[N_FEAT * H]{};
-    int16_t b0[H]{};
-    int8_t w1[L2 * (2 * H)]{};
-    int32_t b1[L2]{};
-    int8_t w2[L2]{};
-    int32_t b2 = 0;
-    int scale = 2410;
-    int constraint = 9;
-    int undo_n = 0;
-    int32_t undo_acc[UNDO_MAX][2][H]{};
-    int undo_constraint[UNDO_MAX]{};
-    bool weights_ready = false;
-
-    static int board_constraint(const GlobalBoard &b) {
-        if (b.n_moves == 0 || b.prev_move_was_pass) return 9;
-        int sent = b.move_history.top().square;
-        int oop = b.mini_board_states[0] | b.mini_board_states[1] | b.mini_board_states[2];
-        if ((oop & (1 << sent)) != 0) return 9;
-        return sent;
-    }
-    static int sq_feat(int pers, int mb, int sq, int owner) {
-        return (mb * 9 + sq) * 2 + ((owner == pers) ? 0 : 1);
-    }
-    static int super_feat(int pers, int mb, int winner) {
-        int cls = (winner == 2) ? 2 : ((winner == pers) ? 0 : 1);
-        return SUPER_BASE + mb * 3 + cls;
-    }
-    void add_feat(int pers, int f) {
-        const int16_t *w = w0 + f * H;
-        for (int h = 0; h < H; h++) acc[pers][h] += w[h];
-    }
-    void sub_feat(int pers, int f) {
-        const int16_t *w = w0 + f * H;
-        for (int h = 0; h < H; h++) acc[pers][h] -= w[h];
-    }
-    void add_both_constr(int c) {
-        add_feat(0, CONSTR_BASE + c);
-        add_feat(1, CONSTR_BASE + c);
-    }
-    void sub_both_constr(int c) {
-        sub_feat(0, CONSTR_BASE + c);
-        sub_feat(1, CONSTR_BASE + c);
-    }
-    void reset_bias() {
-        for (int p = 0; p < 2; p++) for (int h = 0; h < H; h++) acc[p][h] = b0[h];
-    }
-    void refresh(const GlobalBoard &b) {
-        reset_bias();
-        for (int mb = 0; mb < 9; mb++) {
-            int p0 = b.mini_boards[mb].markers[0];
-            int p1 = b.mini_boards[mb].markers[1];
-            for (int sq = 0; sq < 9; sq++) {
-                if (p0 & (1 << sq)) {
-                    add_feat(0, sq_feat(0, mb, sq, 0));
-                    add_feat(1, sq_feat(1, mb, sq, 0));
-                }
-                if (p1 & (1 << sq)) {
-                    add_feat(0, sq_feat(0, mb, sq, 1));
-                    add_feat(1, sq_feat(1, mb, sq, 1));
-                }
-            }
-            if (b.mini_board_states[0] & (1 << mb)) {
-                add_feat(0, super_feat(0, mb, 0));
-                add_feat(1, super_feat(1, mb, 0));
-            } else if (b.mini_board_states[1] & (1 << mb)) {
-                add_feat(0, super_feat(0, mb, 1));
-                add_feat(1, super_feat(1, mb, 1));
-            } else if (b.mini_board_states[2] & (1 << mb)) {
-                add_feat(0, super_feat(0, mb, 2));
-                add_feat(1, super_feat(1, mb, 2));
-            }
-        }
-        constraint = board_constraint(b);
-        add_both_constr(constraint);
-        undo_n = 0;
-    }
-    void make(const GlobalBoard &after, Move m) {
-        if (undo_n >= UNDO_MAX) { refresh(after); return; }
-        memcpy(undo_acc[undo_n][0], acc[0], sizeof(acc[0]));
-        memcpy(undo_acc[undo_n][1], acc[1], sizeof(acc[1]));
-        undo_constraint[undo_n] = constraint;
-        undo_n++;
-        int who = (after.n_moves - 1) & 1;
-        int mb = m.mini_board;
-        int sq = m.square;
-        add_feat(0, sq_feat(0, mb, sq, who));
-        add_feat(1, sq_feat(1, mb, sq, who));
-        if (after.mini_board_states[0] & (1 << mb)) {
-            add_feat(0, super_feat(0, mb, 0)); add_feat(1, super_feat(1, mb, 0));
-        } else if (after.mini_board_states[1] & (1 << mb)) {
-            add_feat(0, super_feat(0, mb, 1)); add_feat(1, super_feat(1, mb, 1));
-        } else if (after.mini_board_states[2] & (1 << mb)) {
-            add_feat(0, super_feat(0, mb, 2)); add_feat(1, super_feat(1, mb, 2));
-        }
-        int nc = board_constraint(after);
-        if (nc != constraint) {
-            sub_both_constr(constraint);
-            add_both_constr(nc);
-            constraint = nc;
-        }
-    }
-    void unmake() {
-        if (undo_n <= 0) return;
-        undo_n--;
-        memcpy(acc[0], undo_acc[undo_n][0], sizeof(acc[0]));
-        memcpy(acc[1], undo_acc[undo_n][1], sizeof(acc[1]));
-        constraint = undo_constraint[undo_n];
-    }
-    static int crelu(int32_t x) {
-        if (x < 0) return 0;
-        if (x > QA) return QA;
-        return (int)x;
-    }
-    int evaluate_stm(int stm) const {
-        int c[2 * H];
-        const int32_t *a_stm = acc[stm];
-        const int32_t *a_nsm = acc[stm ^ 1];
-        for (int h = 0; h < H; h++) {
-            c[h] = crelu(a_stm[h]);
-            c[H + h] = crelu(a_nsm[h]);
-        }
-        int32_t h2[L2];
-        for (int j = 0; j < L2; j++) {
-            int32_t s = b1[j];
-            const int8_t *row = w1 + j * (2 * H);
-            for (int i = 0; i < 2 * H; i++) s += c[i] * (int32_t)row[i];
-            h2[j] = crelu(s / QB);
-        }
-        int32_t out = b2;
-        for (int j = 0; j < L2; j++) out += h2[j] * (int32_t)w2[j];
-        return (int)((out * (int64_t)scale) / (int64_t)(QB * QA));
-    }
-    int evaluate(const GlobalBoard &b) const { return evaluate_stm(b.n_moves & 1); }
-};
-
-static int nnue_b64_decode(const char *s, unsigned char *out, int out_max) {
-    auto val = [](char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '+') return 62;
-        if (c == '/') return 63;
-        return -1;
-    };
-    int n = 0, acc = 0, bits = 0;
-    for (const char *p = s; *p; p++) {
-        int d = val(*p);
-        if (d < 0) continue;
-        acc = (acc << 6) | d;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            if (n >= out_max) return -1;
-            out[n++] = (unsigned char)((acc >> bits) & 255);
-        }
-    }
-    return n;
-}
-
-static bool nnue_unpack_blob(NnueNet &n, const unsigned char *p, int n_bytes) {
-    const int need = 4 + 4 + 4 + NnueNet::N_FEAT * NnueNet::H * 2 + NnueNet::H * 2
-                     + NnueNet::L2 * (2 * NnueNet::H) + NnueNet::L2 * 4 + NnueNet::L2;
-    if (n_bytes < need) return false;
-    if (p[0] != 'C' || p[1] != 'F' || p[2] != 'N' || p[3] != '1') return false;
-    int off = 4;
-    memcpy(&n.scale, p + off, 4); off += 4;
-    memcpy(&n.b2, p + off, 4); off += 4;
-    memcpy(n.w0, p + off, sizeof(n.w0)); off += (int)sizeof(n.w0);
-    memcpy(n.b0, p + off, sizeof(n.b0)); off += (int)sizeof(n.b0);
-    memcpy(n.w1, p + off, sizeof(n.w1)); off += (int)sizeof(n.w1);
-    memcpy(n.b1, p + off, sizeof(n.b1)); off += (int)sizeof(n.b1);
-    memcpy(n.w2, p + off, sizeof(n.w2));
-    n.weights_ready = true;
-    return true;
-}
-
-static unsigned char NNUE_BLOB_BUF[20000];
-static bool nnue_load_packed(NnueNet &n) {
-    if (n.weights_ready) return true;
-    int nb = nnue_b64_decode(NNUE_PACK_B64, NNUE_BLOB_BUF, (int)sizeof(NNUE_BLOB_BUF));
-    if (nb < 0) return false;
-    return nnue_unpack_blob(n, NNUE_BLOB_BUF, nb);
-}
+// MiniNet packing marker for tools/nnue_emit_mininet_cg.py
 
 class CrossfishDev {
        private:
@@ -646,8 +448,6 @@ class CrossfishDev {
         static constexpr int FP_PAWNS = 80;
         static constexpr int QDELTA_PAWNS = 400;
         static constexpr int FREE_MOVE_PAWNS = 30;
-        static constexpr int USE_NNUE = 0;
-        NnueNet nnue;
 
         struct MiniLut {
             int8_t p0_tiar;
@@ -745,8 +545,6 @@ class CrossfishDev {
         }
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
             init_mini_lut();
-            if (!nnue.weights_ready) nnue_load_packed(nnue);
-            if constexpr (USE_NNUE) nnue.refresh(board);
             thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
@@ -846,9 +644,7 @@ class CrossfishDev {
             int val;
             for (int i = 0; i < n_caps; i++) {
                 board.makeMove(caps[i]);
-                if constexpr (USE_NNUE) nnue.make(board, caps[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
-                if constexpr (USE_NNUE) nnue.unmake();
                 board.unmakeMove();
                 alpha = std::max(alpha, val);
                 if (alpha >= beta) {
@@ -941,7 +737,6 @@ class CrossfishDev {
                 }
 
                 board.makeMove(legal_moves[i]);
-                if constexpr (USE_NNUE) nnue.make(board, legal_moves[i]);
                 if (i == 0) {
                     val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha, can_null);
                 }
@@ -959,7 +754,6 @@ class CrossfishDev {
                         }
                     }
                 }
-                if constexpr (USE_NNUE) nnue.unmake();
                 board.unmakeMove();
                 if (stopped) return min_val;
                 if (val > best_val) {
@@ -1139,9 +933,6 @@ class CrossfishDev {
         }
 
         int evaluate(GlobalBoard &board) {
-            if constexpr (USE_NNUE) {
-                return nnue.evaluate(board);
-            }
             init_mini_lut();
             /*use bitscan to count number of won miniboards for both players*/
             int p0_miniboards_held = __builtin_popcount(board.mini_board_states[0]);

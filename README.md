@@ -2,7 +2,7 @@
 
 Entry for the UVicAI UTTT tournament (first place) and a CodinGame Ultimate Tic-Tac-Toe engine.
 
-The **active engine is C++**. `cpp_impl/crossfish.cpp` is the CodinGame submission (single file). Local search experiments live in `cpp_impl/crossfish_dev.hpp` vs the frozen previous in `cpp_impl/crossfish_prev.hpp`. `cpp_impl/cg_legend_hce.cpp` is a snapshot from the first Legend hit. The Python tree under `python_impl/` is legacy.
+The **active engine is C++**. `cpp_impl/codingame_nnue.cpp` is the CodinGame MiniNet submission. `cpp_impl/crossfish.cpp` is the self-contained HCE bot used as the packing source for that file. Local SPRT compares `cpp_impl/crossfish_dev.hpp` against the frozen previous in `cpp_impl/crossfish_prev.hpp`. `cpp_impl/cg_legend_hce.cpp` is a snapshot from the first Legend hit. The Python tree under `python_impl/` is legacy.
 
 ## Verify a change
 
@@ -12,7 +12,7 @@ Run this after every engine/rules/eval change. It is fast and deterministic:
 make test
 ```
 
-That builds and runs the C++ unit tests, the Python rules oracle, and compiles the CodinGame binaries (`crossfish.cpp` and the Legend snapshot) so they still build.
+That builds and runs the C++ unit tests, the Python rules oracle, and compiles the CodinGame binaries (`codingame_nnue.cpp`, `crossfish.cpp`, and the Legend snapshot) so they still build.
 
 | Target | What it checks |
 | --- | --- |
@@ -40,6 +40,7 @@ Startpos perft is frozen in both C++ and Python. If one suite's counts change, u
 
 - `cpp_impl/global_board.hpp` — board, movegen, make/unmake (shared by tests and SPRT)
 - `cpp_impl/crossfish_dev.hpp` / `crossfish_prev.hpp` — search + eval
-- `cpp_impl/crossfish.cpp` — self-contained CG bot
+- `cpp_impl/codingame_nnue.cpp` — MiniNet CodinGame submission
+- `cpp_impl/crossfish.cpp` — self-contained HCE CG bot (packing source for MiniNet)
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting
