@@ -994,21 +994,21 @@ static void dump_nnue_search(int depth, int n_pos, const char *path, bool play_o
 
 static void pin_nnue_scale() {
     CrossfishDev::init_mini_lut();
-    CrossfishDev dev;
     CrossfishDev hce;
+    nnue_load_compiled(g_nnue_sparse);
     std::mt19937 rng(7);
     std::vector<int> hs, ns;
     hs.reserve(8000);
     ns.reserve(8000);
-    int saved = dev.nnue.scale;
-    dev.nnue.scale = NnueNet::QA * NnueNet::QB;
+    int saved = g_nnue_sparse.scale;
+    g_nnue_sparse.scale = NnueNet::QA * NnueNet::QB;
     for (int g = 0; g < 250; g++) {
         GlobalBoard board;
         for (int ply = 0; ply < 80; ply++) {
             if (board.checkWinner() != -1) break;
-            dev.nnue.refresh(board);
+            g_nnue_sparse.refresh(board);
             int h = hce.evaluate_hce(board);
-            int n = dev.nnue.evaluate(board);
+            int n = g_nnue_sparse.evaluate(board);
             if (h != 0 && n != 0) {
                 hs.push_back(std::abs(h));
                 ns.push_back(std::abs(n));
@@ -1034,15 +1034,16 @@ static void pin_nnue_scale() {
               << " old_scale=" << saved
               << " new_scale=" << scale << std::endl;
     GlobalBoard empty;
-    dev.nnue.scale = scale;
-    dev.nnue.refresh(empty);
+    g_nnue_sparse.scale = scale;
+    g_nnue_sparse.refresh(empty);
     std::cout << "empty HCE=" << hce.evaluate_hce(empty)
-              << " NNUE=" << dev.nnue.evaluate(empty) << std::endl;
+              << " NNUE=" << g_nnue_sparse.evaluate(empty) << std::endl;
 }
 
 static void report_nnue_hce_fit() {
     CrossfishDev::init_mini_lut();
     CrossfishDev dev;
+    nnue_load_compiled(g_nnue_sparse);
     std::mt19937 rng(7);
     std::vector<double> hs, ns;
     hs.reserve(12000);
@@ -1051,9 +1052,9 @@ static void report_nnue_hce_fit() {
         GlobalBoard board;
         for (int ply = 0; ply < 80; ply++) {
             if (board.checkWinner() != -1) break;
-            dev.nnue.refresh(board);
+            g_nnue_sparse.refresh(board);
             hs.push_back((double)dev.evaluate_hce(board));
-            ns.push_back((double)dev.nnue.evaluate(board));
+            ns.push_back((double)g_nnue_sparse.evaluate(board));
             std::vector<Move> moves = board.getLegalMoves();
             if (moves.empty()) break;
             board.makeMove(moves[rng() % moves.size()]);
@@ -1086,7 +1087,7 @@ static void report_nnue_hce_fit() {
     double cov = sum_hn / n - mean_h * mean_n;
     double corr = (var_h > 1 && var_n > 1) ? cov / std::sqrt(var_h * var_n) : 0;
     GlobalBoard empty;
-    dev.nnue.refresh(empty);
+    g_nnue_sparse.refresh(empty);
     std::cout << "nnue vs HCE fit: n=" << n
               << " mae=" << (sum_ae / n)
               << " median|e|=" << ae[n / 2]
@@ -1094,15 +1095,16 @@ static void report_nnue_hce_fit() {
               << " bias=" << (sum_e / n)
               << " corr=" << corr << std::endl;
     std::cout << "empty HCE=" << dev.evaluate_hce(empty)
-              << " NNUE=" << dev.nnue.evaluate(empty)
-              << " scale=" << dev.nnue.scale
-              << " crelu_max=" << dev.nnue.crelu_max
-              << " asinh_s=" << dev.nnue.asinh_s << std::endl;
+              << " NNUE=" << g_nnue_sparse.evaluate(empty)
+              << " scale=" << g_nnue_sparse.scale
+              << " crelu_max=" << g_nnue_sparse.crelu_max
+              << " asinh_s=" << g_nnue_sparse.asinh_s << std::endl;
 }
 
 static void report_nnue_search_fit(int depth) {
     CrossfishDev::init_mini_lut();
     CrossfishDev dev;
+    nnue_load_compiled(g_nnue_sparse);
     std::mt19937 rng(7);
     std::vector<double> ss, ns, hs;
     Move buf[81];
@@ -1115,9 +1117,9 @@ static void report_nnue_search_fit(int depth) {
             int score = 0;
             GlobalBoard search_board = board;
             if (dev.search_fixed_depth(search_board, depth, score)) {
-                dev.nnue.refresh(board);
+                g_nnue_sparse.refresh(board);
                 ss.push_back((double)score);
-                ns.push_back((double)dev.nnue.evaluate(board));
+                ns.push_back((double)g_nnue_sparse.evaluate(board));
                 hs.push_back((double)dev.evaluate_hce(board));
             }
             board.makeMove(buf[rng() % nmoves]);
@@ -1151,7 +1153,7 @@ static void report_nnue_search_fit(int depth) {
     GlobalBoard empty;
     int empty_s = 0;
     dev.search_fixed_depth(empty, depth, empty_s);
-    dev.nnue.refresh(empty);
+    g_nnue_sparse.refresh(empty);
     std::cout << "nnue vs search d=" << depth << " fit: n=" << n
               << " mae=" << mae_of(ns, ss)
               << " corr=" << corr_of(ns, ss)
@@ -1159,7 +1161,7 @@ static void report_nnue_search_fit(int depth) {
               << " search_vs_hce_corr=" << corr_of(ss, hs) << std::endl;
     std::cout << "empty HCE=" << dev.evaluate_hce(empty)
               << " search=" << empty_s
-              << " NNUE=" << dev.nnue.evaluate(empty) << std::endl;
+              << " NNUE=" << g_nnue_sparse.evaluate(empty) << std::endl;
 }
 
 struct TexelPos {
