@@ -1014,13 +1014,13 @@ class CrossfishDev {
             int8_t p1_sq;
         };
         static constexpr int MINI_LUT_SIZE = 19683;
-        MiniLut mini_lut[MINI_LUT_SIZE];
-        uint16_t mini_win_sq[MINI_LUT_SIZE][2];
-        uint16_t mini_tiar_sq[MINI_LUT_SIZE][2];
-        int16_t fast_local_score[1 << 18];
-        uint8_t fast_tiar_flags[1 << 18];
-        uint8_t fast_threat_count[1 << 18];
-        bool mini_lut_ready = false;
+        static inline MiniLut mini_lut[MINI_LUT_SIZE];
+        static inline uint16_t mini_win_sq[MINI_LUT_SIZE][2];
+        static inline uint16_t mini_tiar_sq[MINI_LUT_SIZE][2];
+        static inline int16_t fast_local_score[1 << 18];
+        static inline uint8_t fast_tiar_flags[1 << 18];
+        static inline uint8_t fast_threat_count[1 << 18];
+        static inline bool mini_lut_ready = false;
 
         static int mini_index(int p0, int p1) {
             int idx = 0;

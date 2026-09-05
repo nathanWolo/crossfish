@@ -7,7 +7,7 @@ ROOT := $(abspath ..)
 PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,python3)
 BIN := $(SRC_DIR)/bin
 
-.PHONY: all test test-cpp test-python sprt verify cg compile-cg compile-legend roundrobin clean
+.PHONY: all test test-cpp test-python sprt verify cg compile-cg compile-legend cg-input roundrobin clean
 
 all: test
 
@@ -26,6 +26,9 @@ $(BIN)/crossfish: crossfish.cpp | $(BIN)
 $(BIN)/codingame_nnue: codingame_nnue.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ codingame_nnue.cpp
 
+$(BIN)/cg_input: cg_input.cpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ cg_input.cpp
+
 $(BIN)/cg_legend: cg_legend_hce.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ cg_legend_hce.cpp
 
@@ -34,8 +37,9 @@ test-cpp: $(BIN)/unit_tests
 
 test-python:
 	cd $(ROOT) && $(PYTHON) -m unittest python_impl.test_rules -v
+	cd $(ROOT) && $(PYTHON) -m unittest discover -s tools -p 'test_*.py' -v
 
-compile-cg: $(BIN)/crossfish $(BIN)/codingame_nnue
+compile-cg: $(BIN)/crossfish $(BIN)/codingame_nnue $(BIN)/cg_input
 compile-legend: $(BIN)/cg_legend
 
 roundrobin: compile-cg compile-legend
@@ -50,6 +54,9 @@ sprt: $(BIN)/test_bots
 	$(BIN)/test_bots
 
 cg: compile-cg
+
+cg-input:
+	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
 
 clean:
 	rm -rf $(BIN)
