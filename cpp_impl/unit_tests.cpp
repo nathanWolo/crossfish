@@ -792,6 +792,25 @@ static void test_mini_avx_matches_scalar(TestCtx &ctx) {
     CHECK(max_abs < 20000);
 }
 
+static void test_mini_fast_matches_scalar(TestCtx &ctx) {
+    mini_load_packed();
+    std::mt19937 rng(20260905);
+    int max_diff = 0;
+    for (int g = 0; g < 80; g++) {
+        GlobalBoard board;
+        for (int ply = 0; ply < 50; ply++) {
+            int a = evaluate_mini(board);
+            int b = evaluate_mini_fast(board);
+            int d = std::abs(a - b);
+            if (d > max_diff) max_diff = d;
+            std::vector<Move> legal = board.getLegalMoves();
+            if (legal.empty() || board.checkWinner() != -1) break;
+            board.makeMove(legal[rng() % legal.size()]);
+        }
+    }
+    CHECK(max_diff <= 2);
+}
+
 static void test_lut_capture_block_tiar(TestCtx &ctx) {
     CrossfishDev::init_mini_lut();
     CrossfishDev dev;
@@ -862,6 +881,7 @@ int main() {
         {"search_takes_instant_win", test_search_takes_instant_win},
         {"ttentry_layout_matches_store", test_ttentry_layout_matches_store},
         {"mini_avx_matches_scalar", test_mini_avx_matches_scalar},
+        {"mini_fast_matches_scalar", test_mini_fast_matches_scalar},
         {"lut_capture_block_tiar", test_lut_capture_block_tiar},
     };
 

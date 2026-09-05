@@ -1,8 +1,10 @@
 CXX ?= g++
 CXXFLAGS ?= -O3 -std=c++17 -mavx2 -mbmi -mbmi2 -mlzcnt -mpopcnt -pthread
 CXXFLAGS += -Wno-unknown-pragmas
+FILESYSTEM_LIB := $(shell major=`$(CXX) -dumpversion | cut -d. -f1`; test "$$major" -lt 9 && printf '%s' '-lstdc++fs')
 SRC_DIR := $(abspath .)
 ROOT := $(abspath ..)
+PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,python3)
 BIN := $(SRC_DIR)/bin
 
 .PHONY: all test test-cpp test-python sprt verify cg compile-cg compile-legend roundrobin clean
@@ -16,7 +18,7 @@ $(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.h
 	$(CXX) $(CXXFLAGS) -o $@ unit_tests.cpp
 
 $(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp | $(BIN)
-	$(CXX) $(CXXFLAGS) -o $@ test_bots.cpp
+	$(CXX) $(CXXFLAGS) -o $@ test_bots.cpp $(FILESYSTEM_LIB)
 
 $(BIN)/crossfish: crossfish.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ crossfish.cpp
@@ -31,7 +33,7 @@ test-cpp: $(BIN)/unit_tests
 	$(BIN)/unit_tests
 
 test-python:
-	cd $(ROOT) && python3 -m unittest python_impl.test_rules -v
+	cd $(ROOT) && $(PYTHON) -m unittest python_impl.test_rules -v
 
 compile-cg: $(BIN)/crossfish $(BIN)/codingame_nnue
 compile-legend: $(BIN)/cg_legend

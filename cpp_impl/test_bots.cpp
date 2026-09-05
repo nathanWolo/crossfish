@@ -19,12 +19,23 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#if __has_include(<filesystem>)
 #include <filesystem>
+namespace fs = std::filesystem;
+#else
+#include <experimental/filesystem>
+namespace fs = std::experimental::filesystem;
+#endif
 #include <immintrin.h>
 
 // CodinGame UTTT: 1000ms first execute per player, 100ms per later move
 // (engine searches 800ms / 95ms). SPRT uses the per-move budget.
 static int g_sprt_think_ms = 20;
+static double g_sprt_elo0 = 0;
+static double g_sprt_elo1 = 5;
+static double g_sprt_llr_bound = 3;
+static int g_sprt_max_games = 0;
+static unsigned int g_sprt_threads = 0;
 #pragma GCC optimize("O3")
 #pragma GCC optimization("Ofast,unroll-loops")
 #pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
@@ -189,16 +200,12 @@ double sprt(int wins, int draws, int losses) {
     if (wins == 0 || losses == 0 || draws == 0) {
         return 0;
     }
-    //testing that we're gaining 5 or more elo
-    double elo0 = 0;
-    double elo1 = 5;
-    
     double n = wins + draws + losses;
 
     double dlo = wdlToElo(wins / n, draws / n, losses / n).second;
 
-    std::array<double, 3> probabilities0 = eloToWDL(elo0, dlo);
-    std::array<double, 3> probabilities1 = eloToWDL(elo1, dlo);
+    std::array<double, 3> probabilities0 = eloToWDL(g_sprt_elo0, dlo);
+    std::array<double, 3> probabilities1 = eloToWDL(g_sprt_elo1, dlo);
 
     return (double)wins * log(probabilities1[0] / probabilities0[0]) 
         + (double)draws * log(probabilities1[1] / probabilities0[1])
@@ -490,9 +497,9 @@ static void dump_nnue_wdl(int n_games, int think_ms, const char *path) {
     const unsigned int n_threads = std::max(1u, std::thread::hardware_concurrency());
     std::cout << "NNUE dump: " << n_games << " games at " << think_ms
               << "ms on " << n_threads << " threads -> " << path << std::endl;
-    std::filesystem::path p(path);
+    fs::path p(path);
     if (p.has_parent_path()) {
-        std::filesystem::create_directories(p.parent_path());
+        fs::create_directories(p.parent_path());
     }
     std::vector<NnueDumpPos> data;
     data.reserve((size_t)n_games * 40);
@@ -554,9 +561,9 @@ static void dump_nnue_hce(int n_pos, const char *path) {
     std::cout << "HCE dump: ~" << n_pos << " positions from " << n_games
               << " random games on " << n_threads << " threads -> " << path << std::endl;
     CrossfishDev::init_mini_lut();
-    std::filesystem::path p(path);
+    fs::path p(path);
     if (p.has_parent_path()) {
-        std::filesystem::create_directories(p.parent_path());
+        fs::create_directories(p.parent_path());
     }
     std::vector<NnueDumpPos> data;
     data.reserve((size_t)n_games * 45);
@@ -622,17 +629,17 @@ static std::string find_data_file(const char *name) {
         nullptr,
     };
     for (const char *p : cands) {
-        if (p && std::filesystem::exists(p)) return p;
+        if (p && fs::exists(p)) return p;
     }
     std::string rels[] = {
         std::string("datasets/") + name,
         std::string("../datasets/") + name,
         std::string("../../datasets/") + name,
-        std::string("datasets/") + std::filesystem::path(name).filename().string(),
-        std::string("../../datasets/") + std::filesystem::path(name).filename().string(),
+        std::string("datasets/") + fs::path(name).filename().string(),
+        std::string("../../datasets/") + fs::path(name).filename().string(),
     };
     for (const std::string &p : rels) {
-        if (std::filesystem::exists(p)) return p;
+        if (fs::exists(p)) return p;
     }
     return {};
 }
@@ -815,9 +822,9 @@ static bool prepare_board_for_search(GlobalBoard &board, const char *s) {
 }
 
 static void write_nnue_dump(const char *path, const std::vector<NnueDumpPos> &data) {
-    std::filesystem::path p(path);
+    fs::path p(path);
     if (p.has_parent_path()) {
-        std::filesystem::create_directories(p.parent_path());
+        fs::create_directories(p.parent_path());
     }
     std::ofstream out(path, std::ios::binary);
     char magic[8] = {'N','N','U','E','W','D','L','1'};
@@ -1487,10 +1494,10 @@ static bool load_utttai_state(GlobalBoard &board, const char *s) {
     return true;
 }
 
-static void collect_depth_files(const std::filesystem::path &root, std::vector<std::filesystem::path> &out) {
-    if (!std::filesystem::exists(root)) return;
-    for (const auto &ent : std::filesystem::recursive_directory_iterator(root)) {
-        if (!ent.is_regular_file()) continue;
+static void collect_depth_files(const fs::path &root, std::vector<fs::path> &out) {
+    if (!fs::exists(root)) return;
+    for (const auto &ent : fs::recursive_directory_iterator(root)) {
+        if (!fs::is_regular_file(ent.path())) continue;
         std::string name = ent.path().filename().string();
         if (name.size() >= 5 && name.compare(0, 5, "depth") == 0 && ent.path().extension() == ".txt") {
             out.push_back(ent.path());
@@ -1548,7 +1555,7 @@ static void run_texel_utttai(const char *dir_arg, bool load_saved) {
     cands.push_back("../../datasets/stage2-nmcts");
     cands.push_back("C:/Users/natha/crossfish/datasets/stage2-nmcts");
 
-    std::vector<std::filesystem::path> files;
+    std::vector<fs::path> files;
     std::string used;
     for (const std::string &c : cands) {
         files.clear();
@@ -2249,10 +2256,35 @@ int main(int argc, char** argv) {
             }
         }
     }
+    if (const char *s = std::getenv("SPRT_THINK_MS")) {
+        g_sprt_think_ms = std::max(1, std::atoi(s));
+    }
+    if (const char *s = std::getenv("SPRT_ELO0")) {
+        g_sprt_elo0 = std::atof(s);
+    }
+    if (const char *s = std::getenv("SPRT_ELO1")) {
+        g_sprt_elo1 = std::atof(s);
+    }
+    if (const char *s = std::getenv("SPRT_LLR_BOUND")) {
+        g_sprt_llr_bound = std::max(0.1, std::atof(s));
+    }
+    if (const char *s = std::getenv("SPRT_MAX_GAMES")) {
+        g_sprt_max_games = std::max(0, std::atoi(s));
+    }
+    if (const char *s = std::getenv("SPRT_THREADS")) {
+        g_sprt_threads = (unsigned int)std::max(1, std::atoi(s));
+    }
+    if (!(g_sprt_elo1 > g_sprt_elo0)) {
+        std::cerr << "SPRT_ELO1 must be greater than SPRT_ELO0" << std::endl;
+        return 1;
+    }
     if (!nnue_init_runtime()) {
         return 1;
     }
     std::cout << "SPRT think ms: " << g_sprt_think_ms
+              << " H0=" << g_sprt_elo0
+              << " H1=" << g_sprt_elo1
+              << " bound=" << g_sprt_llr_bound
               << " eval=HCE+MiniNet"
               << " nnue_mode=" << g_nnue_mode
               << " residual=" << g_nnue_residual;
@@ -2267,7 +2299,9 @@ int main(int argc, char** argv) {
         }
         std::cout << "loaded " << MINI_SCORE_PATH << " into Dev" << std::endl;
     }
-    const unsigned int n_threads = std::thread::hardware_concurrency(); // Get the number of threads supported by the hardware
+    const unsigned int n_threads = g_sprt_threads
+        ? g_sprt_threads
+        : std::max(1u, std::thread::hardware_concurrency());
     // const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;
     double llr = 0;
@@ -2282,7 +2316,9 @@ int main(int argc, char** argv) {
     dev.getMove(board, thinking_time);
     int dev_nps = dev.nodes;
     std::cout << "Prev NPS: " << prev_nps << " Dev NPS: " << dev_nps << std::endl;
-    while(abs(llr) < 3) {
+    int total_games = 0;
+    while (std::abs(llr) < g_sprt_llr_bound
+           && (g_sprt_max_games == 0 || total_games < g_sprt_max_games)) {
         std::vector<std::future<void>> futures;
         for (unsigned int i = 0; i < n_threads; ++i) {
             futures.push_back(std::async(std::launch::async, play_game));
@@ -2290,12 +2326,21 @@ int main(int argc, char** argv) {
         for (auto& f : futures) {
             f.get();
         }
-        int total_games = global_total[0] + global_total[1] + global_total[2];
+        total_games = global_total[0] + global_total[1] + global_total[2];
         EloResult elo = calc_elo_diff(global_total[0], global_total[2], global_total[1]);
         llr = sprt(global_total[0], global_total[1], global_total[2]);
         std::cout << "N: " << total_games << " W: " << global_total[0]
                 << " D: " << global_total[1] << " L: " << global_total[2]
                 << " Elo diff: " << elo.elo_diff << " +/- " << elo.ci << " LLR: " << llr << std::endl;
+    }
+    if (llr >= g_sprt_llr_bound) {
+        std::cout << "SPRT PASS: H1 " << g_sprt_elo1
+                  << " Elo favored over H0 " << g_sprt_elo0 << std::endl;
+    } else if (llr <= -g_sprt_llr_bound) {
+        std::cout << "SPRT FAIL: H0 " << g_sprt_elo0
+                  << " Elo favored over H1 " << g_sprt_elo1 << std::endl;
+    } else {
+        std::cout << "SPRT INCONCLUSIVE at " << total_games << " games" << std::endl;
     }
     return 0;
 }

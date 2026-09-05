@@ -1,11 +1,17 @@
-// Frozen codingame_nnue baseline: LUT HCE + packed MiniNet residual.
+#include "mini_eval.hpp"
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <mutex>
+#include <vector>
+
+// Frozen 2026-09-05 pre-optimization baseline for local SPRT.
+// HCE at RFP/futility; HCE + packed MiniNet residual at qsearch leaves.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
-
-#include "mini_eval.hpp"
-#include <cstdint>
 
 class CrossfishPrev {
        private:
@@ -69,10 +75,14 @@ class CrossfishPrev {
         };
         static constexpr int MINI_LUT_SIZE = 19683;
         static inline MiniLut mini_lut[MINI_LUT_SIZE];
+        static inline int16_t mini_score[MINI_LUT_SIZE];
+        // Separate from MiniLut so HCE's hot LUT stays compact. Bit s set iff
+        // playing square s wins / makes a 2-in-a-row for that player.
         static inline uint16_t mini_win_sq[MINI_LUT_SIZE][2];
         static inline uint16_t mini_tiar_sq[MINI_LUT_SIZE][2];
         static inline std::once_flag mini_lut_once;
-        static constexpr int WIN_IN_ONE_WEIGHT = 300;
+        // One pawn = one extra corner square on a live miniboard (smallest HCE feature).
+        // Kept at 10, not 1, so other terms can be tenths of a pawn. Texel freezes PAWN_IDX.
         static constexpr int PAWN_IDX = 7;
         static constexpr int PAWN = 10;
         static constexpr int ASP_PAWNS = 50;
@@ -80,7 +90,17 @@ class CrossfishPrev {
         static constexpr int FP_PAWNS = 80;
         static constexpr int QDELTA_PAWNS = 400;
         static constexpr int FREE_MOVE_PAWNS = 30;
+        static constexpr int LUT_W_TIAR = 534;
+        static constexpr int LUT_W_CENTER_SQ = 33;
+        static constexpr int LUT_W_CORNER_SQ = PAWN;
+        static constexpr int LUT_W_SQUARES = 33;
+        // Random-play MiniNet residuals reached ~4500; slack for search positions.
         static constexpr int MINI_MAX = 8000;
+        CrossfishPrev() {
+            mini_load_packed();
+        }
+
+        static constexpr int W_FREE_MOVE = FREE_MOVE_PAWNS * PAWN;
 
         static int mini_index(int p0, int p1) {
             int idx = 0;
@@ -200,6 +220,13 @@ class CrossfishPrev {
                     e.p0_sq = (int8_t)__builtin_popcount(p0);
                     e.p1_sq = (int8_t)__builtin_popcount(p1);
                     mini_lut[idx] = e;
+                    int s = LUT_W_TIAR * (e.p0_tiar - e.p1_tiar)
+                          + LUT_W_CENTER_SQ * (e.p0_center - e.p1_center)
+                          + LUT_W_CORNER_SQ * (e.p0_corner - e.p1_corner)
+                          + LUT_W_SQUARES * (e.p0_sq - e.p1_sq);
+                    if (s > 32767) s = 32767;
+                    if (s < -32768) s = -32768;
+                    mini_score[idx] = (int16_t)s;
                 }
             });
         }
@@ -217,7 +244,6 @@ class CrossfishPrev {
 
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
             init_mini_lut();
-            mini_load_packed();
             thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
@@ -265,6 +291,26 @@ class CrossfishPrev {
             return root_best_move;
         }
 
+        // One full-window search at `d`. No aspiration, no time cutoff.
+        // Returns false on timeout/unfinished sentinel. Mates clamp to ±20000.
+        static constexpr int SEARCH_SCORE_CLAMP = 20000;
+        bool search_fixed_depth(GlobalBoard &board, int d, int &out_score) {
+            init_mini_lut();
+            thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
+            nodes = 0;
+            stopped = false;
+            root_score = 0;
+            depth = d;
+            killer_moves = std::array<std::array<int, 9>, 128>();
+            start_time = std::chrono::high_resolution_clock::now();
+            int eval = search(board, d, 0, min_val, max_val);
+            if (stopped || eval == min_val) return false;
+            if (eval > SEARCH_SCORE_CLAMP) eval = SEARCH_SCORE_CLAMP;
+            if (eval < -SEARCH_SCORE_CLAMP) eval = -SEARCH_SCORE_CLAMP;
+            out_score = eval;
+            return true;
+        }
+
         int qsearch(GlobalBoard &board, int alpha, int beta, int ply) {
             if (time_up()) return min_val;
             nodes++;
@@ -290,6 +336,7 @@ class CrossfishPrev {
             }
             int stand_pat;
             if (hce + MINI_MAX < alpha) {
+                // MiniNet is clamped near ±2000; it cannot raise alpha or fail high.
                 stand_pat = hce + MINI_MAX;
             } else {
                 stand_pat = hce + evaluate_mini_avx(board);
@@ -323,7 +370,7 @@ class CrossfishPrev {
             return alpha;
         }
 
-        int search(GlobalBoard &board, int depth, int ply, int alpha, int beta,  bool can_null = true) {
+        int search(GlobalBoard &board, int depth, int ply, int alpha, int beta) {
             if (time_up()) return min_val;
             nodes++;
             int winner = board.checkWinner();
@@ -372,7 +419,7 @@ class CrossfishPrev {
                 can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
             }
             if (pv_node && !tt_hit && depth > 2) {
-                search(board, 1, ply, alpha, beta, false);
+                search(board, 1, ply, alpha, beta);
                 if (stopped) return min_val;
                 entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
                 tt_hit = (entry.zobrist_hash == board.zobrist_hash) && (board.zobrist_hash != 0);
@@ -402,19 +449,21 @@ class CrossfishPrev {
 
                 board.makeMove(legal_moves[i]);
                 if (i == 0) {
-                    val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha, can_null);
+                    val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                 }
                 else {
                     int reduction = 0;
-                    if (scores[i] < 0 || (i >= 3 && !capture)) {
+                    bool do_lmr = (scores[i] < 0 || (i >= 3 && !capture));
+                    if (do_lmr) {
                         reduction = i / 3;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
-                    val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
+                    val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha);
+                    // Reduced searches are not allowed to fail high unchallenged.
                     if (val > alpha) {
-                        val = -search(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha, can_null);
+                        val = -search(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha);
                         if (val > alpha && val < beta) {
-                            val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha, can_null);
+                            val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                         }
                     }
                 }
@@ -571,7 +620,8 @@ class CrossfishPrev {
                 if ((out_of_play & (1 << sq)) != 0) {
                     move_score -= 250;
                 }
-                move_score += history_table[stm][mb][sq] / 20;
+                int hs = history_table[stm][mb][sq] / 20;
+                move_score += hs;
                 scores[i] = move_score;
             }
         }
@@ -643,26 +693,78 @@ class CrossfishPrev {
             d[9] = 0;
         }
 
-        int evaluate_hce(GlobalBoard &board) {
-            int d[N_EVAL_WEIGHTS];
-            eval_diffs(board, d);
+        // Frozen global terms + tempo, in evaluate() units: stm*global + tempo.
+        // Live miniboard LUT indices are written to idx_out.
+        void eval_parts(GlobalBoard &board, int16_t *idx_out, int &n_out, int &base_out) {
+            init_mini_lut();
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
-            int val = 0;
-            for (int i = 0; i < 9; i++) {
-                val += eval_weights[i] * d[i];
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int p0_two_in_a_row_map = 0;
+            int p1_two_in_a_row_map = 0;
+            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+            n_out = 0;
+            for (int miniboard = 0; miniboard < 9; miniboard++) {
+                if ((out_of_play & (1 << miniboard)) != 0) {
+                    continue;
+                }
+                int idx = mini_index(
+                    board.mini_boards[miniboard].markers[0],
+                    board.mini_boards[miniboard].markers[1]);
+                idx_out[n_out++] = (int16_t)idx;
+                const MiniLut &e = mini_lut[idx];
+                p0_two_in_a_row_map |= ((1 << miniboard) * (e.p0_tiar != 0));
+                p1_two_in_a_row_map |= ((1 << miniboard) * (e.p1_tiar != 0));
             }
-            val += stm_sign * eval_weights[9];
-            int score = stm_sign * val;
+
+            int p0_miniboards = board.mini_board_states[0];
+            int p1_miniboards = board.mini_board_states[1];
+            int p0_global_two_in_a_row = 0;
+            int p1_global_two_in_a_row = 0;
+            int p0_two_in_a_rows_lined_up = 0;
+            int p1_two_in_a_rows_lined_up = 0;
+            for(int i = 0; i < N_TIAR_MASKS / 2; i++) {
+                int third = two_in_a_row_masks[i * 2 + 1];
+                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & third)) /2);
+                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & third)) /2);
+                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & third))  / 2);
+                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & third))   / 2);
+            }
+            int g = eval_weights[0] * (__builtin_popcount(p0_miniboards) - __builtin_popcount(p1_miniboards));
+            g += eval_weights[1] * (__builtin_popcount(p0_miniboards & (1 << 4)) - __builtin_popcount(p1_miniboards & (1 << 4)));
+            g += eval_weights[2] * (__builtin_popcount(p0_miniboards & corners) - __builtin_popcount(p1_miniboards & corners));
+            g += eval_weights[3] * (p0_global_two_in_a_row - p1_global_two_in_a_row);
+            g += eval_weights[5] * (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up);
+            base_out = stm_sign * g + eval_weights[9];
+        }
+
+        // STM-centric bonus on top of the linear/LUT eval.
+        int eval_extra(GlobalBoard &board) {
             if (board.n_moves > 0) {
                 int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
-                    score += FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
+                    return FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
                 }
             }
-            return score;
+            return 0;
+        }
+
+        int evaluate_hce(GlobalBoard &board) {
+            int16_t idx[9];
+            int n = 0;
+            int base = 0;
+            eval_parts(board, idx, n, base);
+            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+            int local = 0;
+            for (int i = 0; i < n; i++) {
+                local += mini_score[idx[i]];
+            }
+            return base + stm_sign * local + eval_extra(board);
         }
 
         int evaluate(GlobalBoard &board) {
+            if (g_force_hce_eval) {
+                return evaluate_hce(board);
+            }
             return evaluate_hce(board) + evaluate_mini_avx(board);
         }
 

@@ -6,6 +6,13 @@ The **active engine is C++**. `cpp_impl/codingame_nnue.cpp` is the CodinGame Min
 
 ## Verify a change
 
+For the Python oracle, create the optional repo-local environment once:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
 Run this after every engine/rules/eval change. It is fast and deterministic:
 
 ```bash
@@ -25,6 +32,29 @@ That builds and runs the C++ unit tests, the Python rules oracle, and compiles t
 | `make cg` | Compile the CodinGame submission |
 
 SPRT answers "is this stronger?". Unit tests answer "did I break the rules, hashing, eval, or search?". Do not skip `make test` because SPRT passed.
+
+SPRT hypotheses can be overridden through the environment. For example, this
+tests whether Dev clears +50 Elo instead of the default 0-vs-5 screen:
+
+```bash
+SPRT_ELO0=50 SPRT_ELO1=55 make sprt
+```
+
+Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`, and
+`SPRT_THREADS`.
+
+## Latest strength result
+
+On 2026-09-05, projected MiniNet first-layer lookups plus precomputed HCE local
+scores/global threats passed the strict 20ms SPRT against the frozen pre-change
+engine:
+
+```text
+N: 1184 W: 611 D: 293 L: 280
+Elo diff: +99.7854 +/- 17.6482
+LLR: +3.06318 (H0=+50, H1=+55) — PASS
+Prev NPS: 4,320,256  Dev NPS: 8,737,280
+```
 
 Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
 

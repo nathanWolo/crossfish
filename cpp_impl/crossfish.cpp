@@ -461,6 +461,9 @@ class CrossfishDev {
         };
         static constexpr int MINI_LUT_SIZE = 19683;
         MiniLut mini_lut[MINI_LUT_SIZE];
+        int16_t fast_local_score[1 << 18];
+        uint8_t fast_tiar_flags[1 << 18];
+        uint8_t fast_threat_count[1 << 18];
         bool mini_lut_ready = false;
 
         static int mini_index(int p0, int p1) {
@@ -529,6 +532,28 @@ class CrossfishDev {
                 e.p0_sq = (int8_t)__builtin_popcount(p0);
                 e.p1_sq = (int8_t)__builtin_popcount(p1);
                 mini_lut[idx] = e;
+            }
+            for (int p0 = 0; p0 < 512; p0++) {
+                for (int p1 = 0; p1 < 512; p1++) {
+                    int packed = (p0 << 9) | p1;
+                    if ((p0 & p1) == 0) {
+                        const MiniLut &e = mini_lut[mini_index(p0, p1)];
+                        fast_local_score[packed] =
+                            534 * (e.p0_tiar - e.p1_tiar)
+                            + 33 * (e.p0_center - e.p1_center)
+                            + PAWN * (e.p0_corner - e.p1_corner)
+                            + 33 * (e.p0_sq - e.p1_sq);
+                        fast_tiar_flags[packed] =
+                            (e.p0_tiar != 0) | ((e.p1_tiar != 0) << 1);
+                    }
+                    int threats = 0;
+                    for (int i = 0; i < (int)two_in_a_row_masks.size() / 2; i++) {
+                        int pair = two_in_a_row_masks[i * 2];
+                        int third = two_in_a_row_masks[i * 2 + 1];
+                        threats += ((p0 & pair) == pair) && ((p1 & third) == 0);
+                    }
+                    fast_threat_count[packed] = (uint8_t)threats;
+                }
             }
             mini_lut_ready = true;
         }
@@ -934,86 +959,39 @@ class CrossfishDev {
 
         int evaluate(GlobalBoard &board) {
             init_mini_lut();
-            /*use bitscan to count number of won miniboards for both players*/
-            int p0_miniboards_held = __builtin_popcount(board.mini_board_states[0]);
-            int p1_miniboards_held = __builtin_popcount(board.mini_board_states[1]);
-            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2]; 
-            //count two in a rows for both players
-            int p0_two_in_a_row = 0;
-            int p1_two_in_a_row = 0;
-            //square counts
-            int p0_center_squares_held = 0;
-            int p1_center_squares_held = 0;
-            int p0_corner_squares_held = 0;
-            int p1_corner_squares_held = 0;
-            int p0_squares_held = 0;
-            int p1_squares_held = 0;
-            //idea, keep a map of two in a rows. Two in a rows that form two in a rows with other two in a rows are worth more
-            int p0_two_in_a_row_map = 0;
-            int p1_two_in_a_row_map = 0;
-            //corner mask
-            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
-
-            for (int miniboard = 0; miniboard < 9; miniboard++) {
-                if ((out_of_play & (1 << miniboard)) != 0) {
-                    continue;
-                }
-                const MiniLut &e = mini_lut[mini_index(
-                    board.mini_boards[miniboard].markers[0],
-                    board.mini_boards[miniboard].markers[1])];
-                p0_two_in_a_row += e.p0_tiar;
-                p1_two_in_a_row += e.p1_tiar;
-                p0_two_in_a_row_map |= ((1 << miniboard) * (e.p0_tiar != 0));
-                p1_two_in_a_row_map |= ((1 << miniboard) * (e.p1_tiar != 0));
-                p0_center_squares_held += e.p0_center;
-                p1_center_squares_held += e.p1_center;
-                p0_corner_squares_held += e.p0_corner;
-                p1_corner_squares_held += e.p1_corner;
-                p0_squares_held += e.p0_sq;
-                p1_squares_held += e.p1_sq;
-            }
-
-
-            //also check for 2 in a rows in the out of play miniboards
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
-            
-            int p0_center_miniboard_held = __builtin_popcount(p0_miniboards & (1 << 4));
-            int p1_center_miniboard_held = __builtin_popcount(p1_miniboards & (1 << 4));
-            
-            int p0_corner_miniboards_held = __builtin_popcount(p0_miniboards & corners);
-            int p1_corner_miniboards_held = __builtin_popcount(p1_miniboards & corners);
-
-            int p0_global_two_in_a_row = 0;
-            int p1_global_two_in_a_row = 0;
-            int p0_two_in_a_rows_lined_up = 0;
-            int p1_two_in_a_rows_lined_up = 0;
-            for(int i = 0; i < two_in_a_row_masks.size() / 2; i++) {
-                //check for global two in a rows
-                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
-                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
-                //check for two in a rows that line up
-                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1]))  / 2);
-                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1]))   / 2);
+            int out_of_play = p0_miniboards | p1_miniboards | board.mini_board_states[2];
+            int live = (~out_of_play) & 511;
+            int local = 0;
+            int p0_two_in_a_row_map = 0;
+            int p1_two_in_a_row_map = 0;
+            while (live) {
+                int mb = __builtin_ctz(live);
+                live &= live - 1;
+                int packed = (board.mini_boards[mb].markers[0] << 9)
+                           | board.mini_boards[mb].markers[1];
+                local += fast_local_score[packed];
+                int flags = fast_tiar_flags[packed];
+                p0_two_in_a_row_map |= (flags & 1) << mb;
+                p1_two_in_a_row_map |= ((flags >> 1) & 1) << mb;
             }
-            // Texel-tuned (per-weight Adam). SPRT vs round numbers at 20ms:
-            // N: 2688 W: 1148 D: 584 L: 956 Elo +24.86 LLR 3.04
-            // Free-move +300. SPRT 20ms: N: 4640 W: 1929 D: 993 L: 1718 Elo +15.81 LLR 3.13
-            int val = (p0_miniboards_held - p1_miniboards_held) * 2410;
-            val += (p0_center_miniboard_held - p1_center_miniboard_held) * 836;
-            val += (p0_corner_miniboards_held - p1_corner_miniboards_held) * 464;
-            val += (p0_global_two_in_a_row - p1_global_two_in_a_row) * 1316;
-            val += (p0_two_in_a_row - p1_two_in_a_row) * 534;
-            val += (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up) * 424;
-            val += (p0_center_squares_held - p1_center_squares_held) * 33;
-            val += (p0_corner_squares_held - p1_corner_squares_held) * PAWN;
-            val += (p0_squares_held - p1_squares_held)* 33;
-
+            const int corners = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 8);
+            int val = 2410 * (__builtin_popcount(p0_miniboards)
+                            - __builtin_popcount(p1_miniboards));
+            val += 836 * (((p0_miniboards >> 4) & 1) - ((p1_miniboards >> 4) & 1));
+            val += 464 * (__builtin_popcount(p0_miniboards & corners)
+                          - __builtin_popcount(p1_miniboards & corners));
+            val += 1316 * ((int)fast_threat_count[(p0_miniboards << 9) | p1_miniboards]
+                           - (int)fast_threat_count[(p1_miniboards << 9) | p0_miniboards]);
+            val += 424 * ((int)fast_threat_count[
+                              ((p0_miniboards | p0_two_in_a_row_map) << 9) | p1_miniboards]
+                          - (int)fast_threat_count[
+                              ((p1_miniboards | p1_two_in_a_row_map) << 9) | p0_miniboards]);
+            val += local;
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
-            val += stm_sign * 112;
-            int score = stm_sign * val;
+            int score = stm_sign * val + 112;
             if (board.n_moves > 0) {
-                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
                 if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
                     score += FREE_MOVE_PAWNS * PAWN;
                 }
