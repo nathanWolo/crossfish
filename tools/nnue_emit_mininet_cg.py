@@ -178,6 +178,52 @@ static float MN_B1[MN_H];
 static float MN_W2[MN_H];
 static float MN_B2 = 0;
 static bool MN_READY = false;
+static uint8_t MN_MASK_CODE[1 << 18];
+alignas(64) static float MN_FAST_BASE[MN_H], MN_FAST_CONSTR[10][MN_H];
+alignas(64) static float MN_FAST_MB[9][MN_K][8][MN_H];
+
+static int mini_mask_index(int mine, int opp) {
+    int idx = 0;
+    idx += (mine & 1) ? 1 : ((opp & 1) ? 2 : 0);
+    idx += (mine & 2) ? 3 : ((opp & 2) ? 6 : 0);
+    idx += (mine & 4) ? 9 : ((opp & 4) ? 18 : 0);
+    idx += (mine & 8) ? 27 : ((opp & 8) ? 54 : 0);
+    idx += (mine & 16) ? 81 : ((opp & 16) ? 162 : 0);
+    idx += (mine & 32) ? 243 : ((opp & 32) ? 486 : 0);
+    idx += (mine & 64) ? 729 : ((opp & 64) ? 1458 : 0);
+    idx += (mine & 128) ? 2187 : ((opp & 128) ? 4374 : 0);
+    idx += (mine & 256) ? 6561 : ((opp & 256) ? 13122 : 0);
+    return idx;
+}
+
+static void mini_build_fast_tables() {
+    for (int mine = 0; mine < 512; mine++) for (int opp = 0; opp < 512; opp++)
+        MN_MASK_CODE[(mine << 9) | opp] =
+            (mine & opp) ? 0 : MN_CODE[mini_mask_index(mine, opp)];
+    for (int h = 0; h < MN_H; h++) {
+        const float *row = MN_W1 + h * MN_IN;
+        float base = MN_B1[h];
+        for (int mb = 0; mb < 9; mb++) for (int d = 0; d < MN_D; d++)
+            base += row[mb * MN_D + d] * MN_LOC[mb * MN_D + d];
+        MN_FAST_BASE[h] = base;
+        for (int c = 0; c < 10; c++) {
+            float v = 0;
+            for (int d = 0; d < MN_D; d++)
+                v += row[9 * MN_D + d] * MN_CONSTR[c * MN_D + d];
+            MN_FAST_CONSTR[c][h] = v;
+        }
+    }
+    for (int mb = 0; mb < 9; mb++) for (int code = 0; code < MN_K; code++)
+        for (int sc = 0; sc < 4; sc++) for (int act = 0; act < 2; act++)
+            for (int h = 0; h < MN_H; h++) {
+                const float *row = MN_W1 + h * MN_IN + mb * MN_D;
+                float v = 0;
+                for (int d = 0; d < MN_D; d++)
+                    v += row[d] * (MN_CENT[code * MN_D + d]
+                        + MN_SUPER[sc * MN_D + d] + MN_ACTIVE[act * MN_D + d]);
+                MN_FAST_MB[mb][code][sc * 2 + act][h] = v;
+            }
+}
 
 static bool mini_load_packed() {
     if (MN_READY) return true;
@@ -197,6 +243,7 @@ static bool mini_load_packed() {
     memcpy(MN_B1, buf + off, MN_H * 4); off += MN_H * 4;
     memcpy(MN_W2, buf + off, MN_H * 4); off += MN_H * 4;
     memcpy(&MN_B2, buf + off, 4);
+    mini_build_fast_tables();
     MN_READY = true;
     return true;
 }
@@ -205,41 +252,25 @@ static int evaluate_mini(const GlobalBoard &b) {
     if (!MN_READY && !mini_load_packed()) return 0;
     const int stm = b.n_moves & 1;
     const int c = mini_board_constraint(b);
-    float x[MN_IN];
+    float h0 = MN_FAST_BASE[0] + MN_FAST_CONSTR[c][0];
+    float h1 = MN_FAST_BASE[1] + MN_FAST_CONSTR[c][1];
+    float h2 = MN_FAST_BASE[2] + MN_FAST_CONSTR[c][2];
+    float h3 = MN_FAST_BASE[3] + MN_FAST_CONSTR[c][3];
     for (int mb = 0; mb < 9; mb++) {
         const int mine = b.mini_boards[mb].markers[stm];
         const int opp = b.mini_boards[mb].markers[stm ^ 1];
-        int idx = 0;
-        idx += (mine & 1) ? 1 : ((opp & 1) ? 2 : 0);
-        idx += (mine & 2) ? 3 : ((opp & 2) ? 6 : 0);
-        idx += (mine & 4) ? 9 : ((opp & 4) ? 18 : 0);
-        idx += (mine & 8) ? 27 : ((opp & 8) ? 54 : 0);
-        idx += (mine & 16) ? 81 : ((opp & 16) ? 162 : 0);
-        idx += (mine & 32) ? 243 : ((opp & 32) ? 486 : 0);
-        idx += (mine & 64) ? 729 : ((opp & 64) ? 1458 : 0);
-        idx += (mine & 128) ? 2187 : ((opp & 128) ? 4374 : 0);
-        idx += (mine & 256) ? 6561 : ((opp & 256) ? 13122 : 0);
-        int super_cls = 0;
-        if (b.mini_board_states[stm] & (1 << mb)) super_cls = 1;
-        else if (b.mini_board_states[stm ^ 1] & (1 << mb)) super_cls = 2;
-        else if (b.mini_board_states[2] & (1 << mb)) super_cls = 3;
-        const int act = (c == mb) ? 1 : 0;
-        const float *e = MN_CENT + (int)MN_CODE[idx] * MN_D;
-        const float *s = MN_SUPER + super_cls * MN_D;
-        const float *l = MN_LOC + mb * MN_D;
-        const float *a = MN_ACTIVE + act * MN_D;
-        float *dst = x + mb * MN_D;
-        for (int i = 0; i < MN_D; i++) dst[i] = e[i] + s[i] + l[i] + a[i];
+        int sc = 0, bit = 1 << mb;
+        if (b.mini_board_states[stm] & bit) sc = 1;
+        else if (b.mini_board_states[stm ^ 1] & bit) sc = 2;
+        else if (b.mini_board_states[2] & bit) sc = 3;
+        const float *v = MN_FAST_MB[mb][MN_MASK_CODE[(mine << 9) | opp]][sc * 2 + (c == mb)];
+        h0 += v[0]; h1 += v[1]; h2 += v[2]; h3 += v[3];
     }
-    const float *ce = MN_CONSTR + c * MN_D;
-    for (int i = 0; i < MN_D; i++) x[9 * MN_D + i] = ce[i];
     float out = MN_B2;
-    for (int j = 0; j < MN_H; j++) {
-        const float *row = MN_W1 + j * MN_IN;
-        float s = MN_B1[j];
-        for (int i = 0; i < MN_IN; i++) s += row[i] * x[i];
-        if (s > 0) out += MN_W2[j] * s;
-    }
+    if (h0 > 0) out += MN_W2[0] * h0;
+    if (h1 > 0) out += MN_W2[1] * h1;
+    if (h2 > 0) out += MN_W2[2] * h2;
+    if (h3 > 0) out += MN_W2[3] * h3;
     return (int)std::lround(out);
 }
 
