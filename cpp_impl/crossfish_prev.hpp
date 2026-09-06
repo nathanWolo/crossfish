@@ -14,7 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen immediate-global-win-ordering SPRT winner on 2026-09-06.
+// Frozen incremental-HCE SPRT winner on 2026-09-06.
 class CrossfishPrev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -48,6 +48,17 @@ class CrossfishPrev {
         // quantities the static eval can be measured against.
         static constexpr int CORR_MATE_BOUND = 90000;
         std::array<std::array<std::array<int, CORR_MASKS>, CORR_MB>, 2> corr_hist{};
+
+        struct HceUndo {
+            int16_t score = 0;
+            uint8_t flags = 0;
+        };
+        int hce_local_score = 0;
+        std::array<int, 2> hce_tiar_maps{};
+        std::array<int16_t, 9> hce_mb_scores{};
+        std::array<uint8_t, 9> hce_mb_flags{};
+        std::array<HceUndo, 128> hce_undo{};
+        bool hce_acc_ready = false;
 
         struct CompactTTEntry {
             uint64_t zobrist_hash = 0;
@@ -430,11 +441,65 @@ class CrossfishPrev {
             return n;
         }
 
+        void set_hce_mb(GlobalBoard &board, int mb) {
+            int bit = 1 << mb;
+            hce_local_score -= hce_mb_scores[mb];
+            hce_tiar_maps[0] &= ~bit;
+            hce_tiar_maps[1] &= ~bit;
+
+            int score = 0;
+            int flags = 0;
+            int out_of_play = board.mini_board_states[0]
+                            | board.mini_board_states[1]
+                            | board.mini_board_states[2];
+            if ((out_of_play & bit) == 0) {
+                int packed = (board.mini_boards[mb].markers[0] << 9)
+                           | board.mini_boards[mb].markers[1];
+                score = fast_local_score[packed];
+                flags = fast_tiar_flags[packed];
+            }
+            hce_mb_scores[mb] = (int16_t)score;
+            hce_mb_flags[mb] = (uint8_t)flags;
+            hce_local_score += score;
+            hce_tiar_maps[0] |= (flags & 1) << mb;
+            hce_tiar_maps[1] |= ((flags >> 1) & 1) << mb;
+        }
+
+        void init_hce_acc(GlobalBoard &board) {
+            hce_local_score = 0;
+            hce_tiar_maps = {};
+            hce_mb_scores = {};
+            hce_mb_flags = {};
+            for (int mb = 0; mb < 9; mb++) {
+                set_hce_mb(board, mb);
+            }
+            hce_acc_ready = true;
+        }
+
+        void restore_hce_mb(int ply, int mb) {
+            int bit = 1 << mb;
+            hce_local_score -= hce_mb_scores[mb];
+            hce_tiar_maps[0] &= ~bit;
+            hce_tiar_maps[1] &= ~bit;
+            HceUndo old = hce_undo[ply];
+            hce_mb_scores[mb] = old.score;
+            hce_mb_flags[mb] = old.flags;
+            hce_local_score += old.score;
+            hce_tiar_maps[0] |= (old.flags & 1) << mb;
+            hce_tiar_maps[1] |= ((old.flags >> 1) & 1) << mb;
+        }
+
         void make_move_fast(GlobalBoard &board, const Move &move) {
             int stm = board.n_moves & 1;
             int bit = 1 << move.square;
             int mb_bit = 1 << move.mini_board;
             int before = board.mini_boards[move.mini_board].markers[stm];
+            if (hce_acc_ready) {
+                hce_undo[board.n_moves] = {
+                    hce_mb_scores[move.mini_board],
+                    hce_mb_flags[move.mini_board]
+                };
+            }
             if (board.n_moves > 0) {
                 board.zobrist_hash ^= board.legal_mini_board_hashes[board.move_history.top().square];
             }
@@ -455,6 +520,9 @@ class CrossfishPrev {
             }
             board.zobrist_hash ^= board.player_to_move_hash;
             board.n_moves++;
+            if (hce_acc_ready) {
+                set_hce_mb(board, move.mini_board);
+            }
         }
 
         void unmake_move_fast(GlobalBoard &board) {
@@ -480,6 +548,9 @@ class CrossfishPrev {
             if (board.n_moves > 0) {
                 board.zobrist_hash ^= board.legal_mini_board_hashes[board.move_history.top().square];
             }
+            if (hce_acc_ready) {
+                restore_hce_mb(board.n_moves, move.mini_board);
+            }
         }
 
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
@@ -492,6 +563,7 @@ class CrossfishPrev {
             Move root_moves[81];
             fill_legal_moves_fast(board, root_moves);
             root_best_move = root_moves[0];
+            init_hce_acc(board);
             killer_moves = std::array<std::array<int, 9>, 128>();
             if (!counters_ready) {
                 for (int i = 0; i < 9; i++) {
@@ -543,6 +615,7 @@ class CrossfishPrev {
             stopped = false;
             root_score = 0;
             depth = d;
+            init_hce_acc(board);
             killer_moves = std::array<std::array<int, 9>, 128>();
             corr_hist = {};
             start_time = std::chrono::high_resolution_clock::now();
@@ -573,7 +646,7 @@ class CrossfishPrev {
                 }
             }
 
-            int hce = corrected_eval(board, evaluate_hce(board));
+            int hce = corrected_eval(board, evaluate_hce_incremental(board));
             if (hce >= beta) {
                 return beta;
             }
@@ -654,7 +727,7 @@ class CrossfishPrev {
             int static_eval = 0;
             bool have_static = false;
             if (!pv_node && !g_disable_eval_prune) {
-                static_eval = corrected_eval(board, evaluate_hce(board));
+                static_eval = corrected_eval(board, evaluate_hce_incremental(board));
                 have_static = true;
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
@@ -1015,25 +1088,12 @@ class CrossfishPrev {
             return 0;
         }
 
-        int evaluate_hce(GlobalBoard &board) {
+        int finish_hce(GlobalBoard &board, int local,
+                       int p0_two_in_a_row_map,
+                       int p1_two_in_a_row_map) {
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
-            int out_of_play = p0_miniboards | p1_miniboards | board.mini_board_states[2];
-            int live = (~out_of_play) & 511;
-            int local = 0;
-            int p0_two_in_a_row_map = 0;
-            int p1_two_in_a_row_map = 0;
-            while (live) {
-                int miniboard = __builtin_ctz(live);
-                live &= live - 1;
-                int packed = (board.mini_boards[miniboard].markers[0] << 9)
-                           | board.mini_boards[miniboard].markers[1];
-                local += fast_local_score[packed];
-                int flags = fast_tiar_flags[packed];
-                p0_two_in_a_row_map |= (flags & 1) << miniboard;
-                p1_two_in_a_row_map |= ((flags >> 1) & 1) << miniboard;
-            }
             const int corners = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 8);
             int global = eval_weights[0]
                 * (__builtin_popcount(p0_miniboards) - __builtin_popcount(p1_miniboards));
@@ -1051,6 +1111,36 @@ class CrossfishPrev {
                    - (int)fast_threat_count[
                        ((p1_miniboards | p1_two_in_a_row_map) << 9) | p0_miniboards]);
             return stm_sign * (global + local) + eval_weights[9] + eval_extra(board);
+        }
+
+        int evaluate_hce(GlobalBoard &board) {
+            int out_of_play = board.mini_board_states[0]
+                            | board.mini_board_states[1]
+                            | board.mini_board_states[2];
+            int live = (~out_of_play) & 511;
+            int local = 0;
+            int p0_two_in_a_row_map = 0;
+            int p1_two_in_a_row_map = 0;
+            while (live) {
+                int miniboard = __builtin_ctz(live);
+                live &= live - 1;
+                int packed = (board.mini_boards[miniboard].markers[0] << 9)
+                           | board.mini_boards[miniboard].markers[1];
+                local += fast_local_score[packed];
+                int flags = fast_tiar_flags[packed];
+                p0_two_in_a_row_map |= (flags & 1) << miniboard;
+                p1_two_in_a_row_map |= ((flags >> 1) & 1) << miniboard;
+            }
+            return finish_hce(board, local, p0_two_in_a_row_map,
+                              p1_two_in_a_row_map);
+        }
+
+        int evaluate_hce_incremental(GlobalBoard &board) {
+            if (!hce_acc_ready) {
+                return evaluate_hce(board);
+            }
+            return finish_hce(board, hce_local_score, hce_tiar_maps[0],
+                              hce_tiar_maps[1]);
         }
 
         int evaluate(GlobalBoard &board) {
