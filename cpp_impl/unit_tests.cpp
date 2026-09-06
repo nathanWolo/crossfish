@@ -771,6 +771,21 @@ static void test_ttentry_layout_matches_store(TestCtx &ctx) {
     CHECK_EQ(e.zobrist_hash, 0xabcull);
     CHECK_EQ(e.best_move.mini_board, 3);
     CHECK_EQ(e.best_move.square, 5);
+
+    CHECK_EQ(sizeof(CrossfishDev::CompactTTEntry), 16u);
+    for (int mb = 0; mb < 9; mb++) {
+        for (int sq = 0; sq < 9; sq++) {
+            Move move{mb, sq};
+            Move roundtrip =
+                CrossfishDev::unpack_tt_move(CrossfishDev::pack_tt_move(move));
+            CHECK_EQ(roundtrip.mini_board, mb);
+            CHECK_EQ(roundtrip.square, sq);
+        }
+    }
+    Move invalid = CrossfishDev::unpack_tt_move(
+        CrossfishDev::pack_tt_move(Move{99, 99}));
+    CHECK_EQ(invalid.mini_board, 99);
+    CHECK_EQ(invalid.square, 99);
 }
 
 static void test_mini_avx_matches_scalar(TestCtx &ctx) {
