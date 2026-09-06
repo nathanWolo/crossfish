@@ -684,9 +684,7 @@ class CrossfishDev {
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha);
                     // Reduced searches are not allowed to fail high unchallenged.
                     if (val > alpha) {
-                        if (reduction > 0) {
-                            val = -search(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha);
-                        }
+                        val = -search(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha);
                         if (val > alpha && val < beta) {
                             val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                         }
