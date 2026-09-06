@@ -11,7 +11,12 @@
 #include <vector>
 
 #include "global_board.hpp"
-#include "crossfish_dev.hpp"
+// Candidate engines can be unit-tested without editing the tracked header:
+//   -DCROSSFISH_DEV_HEADER='"/path/candidate.hpp"'
+#ifndef CROSSFISH_DEV_HEADER
+#define CROSSFISH_DEV_HEADER "crossfish_dev.hpp"
+#endif
+#include CROSSFISH_DEV_HEADER
 
 // Frozen startpos perft, matched against the independent Python oracle
 // in python_impl/test_rules.py (same UTTT send-to / finished-board rules).

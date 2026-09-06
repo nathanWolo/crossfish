@@ -1,6 +1,13 @@
 CXX ?= g++
-CXXFLAGS ?= -O3 -std=c++17 -mavx2 -mbmi -mbmi2 -mlzcnt -mpopcnt -pthread
-CXXFLAGS += -Wno-unknown-pragmas
+UNAME_M := $(shell uname -m)
+ifeq ($(filter x86_64 i386 i686 amd64,$(UNAME_M)),)
+# Non-x86 host: compat/immintrin.h maps the AVX2 intrinsics onto NEON via simde.
+ARCH_FLAGS ?= -Icompat -I$(shell brew --prefix simde 2>/dev/null)/include
+else
+ARCH_FLAGS ?= -mavx2 -mbmi -mbmi2 -mlzcnt -mpopcnt
+endif
+CXXFLAGS ?= -O3 -std=c++17 $(ARCH_FLAGS) -pthread
+CXXFLAGS += -Wno-unknown-pragmas -Wno-ignored-attributes
 FILESYSTEM_LIB := $(shell major=`$(CXX) -dumpversion | cut -d. -f1`; test "$$major" -lt 9 && printf '%s' '-lstdc++fs')
 SRC_DIR := $(abspath .)
 ROOT := $(abspath ..)
