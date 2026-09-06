@@ -413,7 +413,8 @@ wO/zgECuVVxAPCAVQAVVNkB/gEHAGmsxwEeVMcBKTC3AVA0WQCiLXEDt6WxAqQJmQA8ebMCUlXvAWu90
 BsCsIPq/pbAGQNsgA8DnJwXA1Y39P2D4/D9BgQNACKPLPhzR0D63nb8+cfTUPl3fckC4R3NAnh92QPdQdEAAAAAA
 )MNUE";
 
-static int mini_board_constraint(const GlobalBoard &b) {
+template <typename Board>
+static int mini_board_constraint(const Board &b) {
     if (b.n_moves == 0 || b.prev_move_was_pass) return 9;
     int sent = b.move_history.top().square;
     int oop = b.mini_board_states[0] | b.mini_board_states[1] | b.mini_board_states[2];
@@ -657,7 +658,8 @@ static int evaluate_mini_avx(const GlobalBoard &b) {
 // super-board class, and active-board flag. Summing those four-neuron
 // projections avoids rebuilding 80 features and running 40 vector products
 // at every qsearch leaf.
-static int evaluate_mini_fast(const GlobalBoard &b) {
+template <typename Board>
+static int evaluate_mini_fast(const Board &b) {
     if (!MN_READY && !mini_load_packed()) return 0;
     const int stm = b.n_moves & 1;
     const int c = mini_board_constraint(b);
