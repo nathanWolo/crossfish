@@ -340,6 +340,9 @@ This section is the other half of the history. Retrying these without a new hypo
   does not fire. Do not retry without a deeper time control.
 - qsearch TT, second attempt on the #10 baseline: **−0.9 ± 10.6** at N=3000. Independently
   reproduces the earlier verdict above. Two baselines, same answer.
+- Capture-only ProbCut on the #14 (corrhist+LMR) baseline: added and reverted in PR #10.
+  Do not retry without a new margin story.
+- Skip duplicate full-depth PVS probes on the same baseline: added and reverted in PR #10.
 
 **Nets**
 
@@ -373,8 +376,9 @@ A honest running story, not a sum:
 5. Search becomes selective at 95 ms: **+80** as a bundle.
 6. MiniNet is a *small* timed gain (**+7 to +11** vs HCE) and a *large* equal-depth gain (**+54**), then skip/AVX buy back the tax (**+20 to +31**, then **+26 to +29**).
 7. Precomputed HCE + MiniNet projection: **~2× NPS**, **+50 to +100** timed depending on the hypothesis, same leaf.
+8. Correction history + log LMR: **+33** at 20 ms. Then the #15 hot-path bundle: another **+40** at 20 ms, mostly speed (1.56× NPS) plus persist-corrhist and global-win ordering.
 
-CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet moved 82 → 68. The September speed patch is the current ship. Absolute ladder Elo is noisy and not what SPRT measures.
+CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet moved 82 → 68. The September hot-path bundle is the current ship. Absolute ladder Elo is noisy and not what SPRT measures.
 
 ---
 
@@ -382,8 +386,8 @@ CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet m
 
 | Piece | Role |
 | --- | --- |
-| `crossfish_prev.hpp` | Frozen last accepted engine (the #10 speed engine, `c2aae17`) |
-| `crossfish_dev.hpp` | Current landed Dev (adds #14 correction history + log LMR) |
+| `crossfish_prev.hpp` | Frozen last accepted engine (#15 hot-path bundle) |
+| `crossfish_dev.hpp` | Same program as Prev until the next experiment |
 | `mini_eval.hpp` | Packed D=8 H=4 residual |
 | `codingame_nnue.cpp` | Readable CG bot |
 | `cg_input.cpp` | Minified paste file |
@@ -432,3 +436,61 @@ section 11; it is 20 KB, not `1<<18`, but the rule stands.
 
 Shipped: `codingame_nnue.cpp` and `cg_input.cpp` carry this Dev. Independent 20 ms
 SPRT on the merge host: N 1920 W 784 D 533 L 603, **+32.85 ± 13.25**, LLR +3.10.
+
+---
+
+## 15. Hot-path LUTs, compact TT, persist corrhist (6 September 2026)
+
+GitHub PR #10. Five landed changes on top of #14 (`ab420b3`), measured as one
+bundle. Two more search ideas were tried and reverted (graves in section 11).
+
+Independent official 20 ms SPRT vs `ab420b3` (H0=0, H1=+5, bound=3, max games
+uncapped). Tip Prev was already frozen to this winner, so `make sprt` on the
+branch is a null test; this run compiled PR Dev against main's Dev renamed to
+Prev.
+
+```text
+N: 1536 W: 642 D: 427 L: 467
+Elo diff: +39.76 +/- 14.83
+LLR: +3.04 (H0=0, H1=+5) — PASS
+Prev NPS: 15,877,888  Dev NPS: 24,697,088
+```
+
+Author reported a longer H0=+50 / H1=+55 run at N=6624, **+57.91 ± 7.31**, LLR
++3.02. Think-ms was not written down. The official 20 ms gate is the ship
+number; the author's larger point estimate is the same direction with a tighter
+CI if it was also 20 ms.
+
+**What actually changed**
+
+- **Exact local-win LUTs** (`fast_win_moves` / `fast_has_win`, 512 entries).
+  One player's 9-bit occupancy is enough: opponent stones are just squares that
+  are not ours, so they block lines the same way `mini_win_sq[ternary][stm]`
+  did. Used for capture/block, capture movegen, `check_winner_fast`, and
+  `make_move_fast` win detection. Replaces AVX line tests in the hot path.
+- **Fast make / unmake / movegen / winner.** Search no longer calls
+  `GlobalBoard::makeMove` / `fillLegalMoves` / `checkWinner`. Legal-move order
+  matches the slow path (ctz is low-square-first, same as 0..8). Snap and
+  incremental-HCE oracles are in `lut_capture_block_tiar`.
+- **Compact TT, still `1<<18` entries.** 16 bytes: hash, score, `i16` depth,
+  flag, packed move (`mb*9+sq`, 255 = none). Same slot count, about half the
+  old `TTEntry` footprint, so more of the table stays in cache. Depth as
+  `int16` is safer than the CG `int8` it replaced.
+- **Persist correction history across `getMove`.** History and TT already
+  survived between moves; corrhist was the leftover per-move wipe. `search_fixed_depth`
+  still zeros it, so Texel stays clean. `play_game` reuses the same bot objects
+  for both paired games, so game 2 inherits Dev's table from game 1. That can
+  plump the persist-corrhist slice; it is also how CG will play (one object,
+  one match).
+- **`+800` if a capture completes a global win.** TT stays at 1000, so a
+  winning capture scores 900 and does not override the hash move.
+- **Incremental HCE.** Per-mini local score and 2-in-a-row flags ride
+  make/unmake; `evaluate_hce` remains the oracle. Global terms still read live
+  mini-states. Same leaf as #14.
+
+This is more than one axis. Sequential freezes were the research loop; the
+gate is the bundle vs `ab420b3`. Most of the Elo is speed (1.56× startpos NPS).
+Persist-corrhist and global-win order are real search changes, not just a
+faster rewrite of the same tree.
+
+Shipped: `codingame_nnue.cpp` and `cg_input.cpp` carry this Dev.

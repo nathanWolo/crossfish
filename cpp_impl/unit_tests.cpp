@@ -771,6 +771,21 @@ static void test_ttentry_layout_matches_store(TestCtx &ctx) {
     CHECK_EQ(e.zobrist_hash, 0xabcull);
     CHECK_EQ(e.best_move.mini_board, 3);
     CHECK_EQ(e.best_move.square, 5);
+
+    CHECK_EQ(sizeof(CrossfishDev::CompactTTEntry), 16u);
+    for (int mb = 0; mb < 9; mb++) {
+        for (int sq = 0; sq < 9; sq++) {
+            Move move{mb, sq};
+            Move roundtrip =
+                CrossfishDev::unpack_tt_move(CrossfishDev::pack_tt_move(move));
+            CHECK_EQ(roundtrip.mini_board, mb);
+            CHECK_EQ(roundtrip.square, sq);
+        }
+    }
+    Move invalid = CrossfishDev::unpack_tt_move(
+        CrossfishDev::pack_tt_move(Move{99, 99}));
+    CHECK_EQ(invalid.mini_board, 99);
+    CHECK_EQ(invalid.square, 99);
 }
 
 static void test_mini_avx_matches_scalar(TestCtx &ctx) {
@@ -824,8 +839,17 @@ static void test_lut_capture_block_tiar(TestCtx &ctx) {
         GlobalBoard board;
         for (int ply = 0; ply < 40; ply++) {
             if (board.checkWinner() != -1) break;
+            dev.init_hce_acc(board);
+            CHECK_EQ(dev.evaluate_hce_incremental(board), dev.evaluate_hce(board));
             Move legal[81];
             int n = board.fillLegalMoves(legal);
+            Move fast_legal[81];
+            int fast_n = dev.fill_legal_moves_fast(board, fast_legal);
+            CHECK_EQ(fast_n, n);
+            for (int i = 0; i < n; i++) {
+                CHECK(same_move(fast_legal[i], legal[i]));
+            }
+            CHECK_EQ(dev.check_winner_fast(board), board.checkWinner());
             if (n == 0) break;
             for (int i = 0; i < n; i++) {
                 CHECK_EQ(dev.is_capture_avx(board, legal[i]), board.is_capture_avx(legal[i]));
@@ -854,7 +878,20 @@ static void test_lut_capture_block_tiar(TestCtx &ctx) {
             for (int i = 0; i < na; i++) {
                 CHECK(same_move(caps_a[i], caps_b[i]));
             }
-            board.makeMove(legal[rng() % n]);
+            Move chosen = legal[rng() % n];
+            GlobalBoard fast_board = board;
+            GlobalBoard slow_board = board;
+            dev.make_move_fast(fast_board, chosen);
+            slow_board.makeMove(chosen);
+            CHECK(snap_eq(take_snap(fast_board), take_snap(slow_board)));
+            CHECK_EQ(dev.check_winner_fast(fast_board), slow_board.checkWinner());
+            CHECK_EQ(dev.evaluate_hce_incremental(fast_board),
+                     dev.evaluate_hce(fast_board));
+            dev.unmake_move_fast(fast_board);
+            CHECK(snap_eq(take_snap(fast_board), take_snap(board)));
+            CHECK_EQ(dev.evaluate_hce_incremental(fast_board),
+                     dev.evaluate_hce(fast_board));
+            board.makeMove(chosen);
         }
     }
 }
