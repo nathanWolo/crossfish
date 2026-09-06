@@ -132,6 +132,9 @@ class CrossfishPrev {
         static inline MiniLut mini_lut[MINI_LUT_SIZE];
         static inline int16_t mini_score[MINI_LUT_SIZE];
         static inline int16_t fast_local_score[1 << 18];
+        // Sum of powers of three for each occupied square in a 9-bit mask.
+        // For disjoint masks, ternary(p0, p1) = table[p0] + 2*table[p1].
+        static inline uint16_t fast_mini_index[1 << 9];
         // Bit 0: player 0 has a live local two-in-a-row; bit 1: player 1.
         static inline uint8_t fast_tiar_flags[1 << 18];
         // Local wins depend only on one player's 9-bit occupancy. These tiny
@@ -168,17 +171,7 @@ class CrossfishPrev {
         static constexpr int W_FREE_MOVE = FREE_MOVE_PAWNS * PAWN;
 
         static int mini_index(int p0, int p1) {
-            int idx = 0;
-            idx += (p0 & 1) ? 1 : ((p1 & 1) ? 2 : 0);
-            idx += (p0 & 2) ? 3 : ((p1 & 2) ? 6 : 0);
-            idx += (p0 & 4) ? 9 : ((p1 & 4) ? 18 : 0);
-            idx += (p0 & 8) ? 27 : ((p1 & 8) ? 54 : 0);
-            idx += (p0 & 16) ? 81 : ((p1 & 16) ? 162 : 0);
-            idx += (p0 & 32) ? 243 : ((p1 & 32) ? 486 : 0);
-            idx += (p0 & 64) ? 729 : ((p1 & 64) ? 1458 : 0);
-            idx += (p0 & 128) ? 2187 : ((p1 & 128) ? 4374 : 0);
-            idx += (p0 & 256) ? 6561 : ((p1 & 256) ? 13122 : 0);
-            return idx;
+            return fast_mini_index[p0] + 2 * fast_mini_index[p1];
         }
 
         static void init_mini_lut() {
@@ -226,6 +219,13 @@ class CrossfishPrev {
                     return false;
                 };
                 for (int markers = 0; markers < 512; markers++) {
+                    int ternary = 0;
+                    int pow3 = 1;
+                    for (int s = 0; s < 9; s++) {
+                        if (markers & (1 << s)) ternary += pow3;
+                        pow3 *= 3;
+                    }
+                    fast_mini_index[markers] = (uint16_t)ternary;
                     fast_has_win[markers] = (uint8_t)has_win(markers);
                     int wins = 0;
                     for (int s = 0; s < 9; s++) {
