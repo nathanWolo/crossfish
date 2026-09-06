@@ -118,7 +118,6 @@ class CrossfishDev {
         static constexpr int RFP_PAWNS = 50;
         static constexpr int FP_PAWNS = 80;
         static constexpr int QDELTA_PAWNS = 400;
-        static constexpr int PROBCUT_PAWNS = 100;
         static constexpr int FREE_MOVE_PAWNS = 30;
         static constexpr int LUT_W_TIAR = 534;
         static constexpr int LUT_W_CENTER_SQ = 33;
@@ -640,27 +639,6 @@ class CrossfishDev {
 
                 int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
                 can_futility_prune = (static_eval + futility_margin * depth <= alpha);
-
-                if (depth >= 4
-                    && static_eval >= beta - PROBCUT_PAWNS * eval_weights[PAWN_IDX]) {
-                    int prob_beta = beta + PROBCUT_PAWNS * eval_weights[PAWN_IDX];
-                    Move prob_moves[81];
-                    int prob_scores[81];
-                    int n_prob = fill_captures_lut(board, prob_moves);
-                    get_move_scores(
-                        prob_moves, n_prob, tt_hit ? entry.best_move : Move{99, 99},
-                        board, ply, prob_scores, true);
-                    sort_moves(prob_moves, prob_scores, n_prob);
-                    for (int i = 0; i < n_prob; i++) {
-                        make_move_fast(board, prob_moves[i]);
-                        int prob_score = -search(
-                            board, depth - 3, ply + 1,
-                            -prob_beta, -prob_beta + 1);
-                        unmake_move_fast(board);
-                        if (stopped) return min_val;
-                        if (prob_score >= prob_beta) return prob_score;
-                    }
-                }
             }
             if (pv_node && !tt_hit && depth > 2) {
                 search(board, 1, ply, alpha, beta);
