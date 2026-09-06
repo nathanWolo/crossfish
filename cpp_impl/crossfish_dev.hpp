@@ -492,7 +492,6 @@ class CrossfishDev {
             fill_legal_moves_fast(board, root_moves);
             root_best_move = root_moves[0];
             killer_moves = std::array<std::array<int, 9>, 128>();
-            corr_hist = {};
             if (!counters_ready) {
                 for (int i = 0; i < 9; i++) {
                     for (int j = 0; j < 9; j++) {
