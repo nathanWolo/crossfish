@@ -839,6 +839,8 @@ static void test_lut_capture_block_tiar(TestCtx &ctx) {
         GlobalBoard board;
         for (int ply = 0; ply < 40; ply++) {
             if (board.checkWinner() != -1) break;
+            dev.init_hce_acc(board);
+            CHECK_EQ(dev.evaluate_hce_incremental(board), dev.evaluate_hce(board));
             Move legal[81];
             int n = board.fillLegalMoves(legal);
             Move fast_legal[81];
@@ -883,8 +885,12 @@ static void test_lut_capture_block_tiar(TestCtx &ctx) {
             slow_board.makeMove(chosen);
             CHECK(snap_eq(take_snap(fast_board), take_snap(slow_board)));
             CHECK_EQ(dev.check_winner_fast(fast_board), slow_board.checkWinner());
+            CHECK_EQ(dev.evaluate_hce_incremental(fast_board),
+                     dev.evaluate_hce(fast_board));
             dev.unmake_move_fast(fast_board);
             CHECK(snap_eq(take_snap(fast_board), take_snap(board)));
+            CHECK_EQ(dev.evaluate_hce_incremental(fast_board),
+                     dev.evaluate_hce(fast_board));
             board.makeMove(chosen);
         }
     }
