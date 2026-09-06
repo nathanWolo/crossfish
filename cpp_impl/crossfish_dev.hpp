@@ -595,6 +595,7 @@ class CrossfishDev {
                     beta += aspiration_window;
                 }
                 else {
+                    aspiration_window = ASP_PAWNS * eval_weights[PAWN_IDX];
                     alpha = eval - aspiration_window;
                     beta = eval + aspiration_window;
                     depth++;
