@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -13,6 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
+// Frozen from origin/main ab420b3 on 2026-09-06.
 class CrossfishPrev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -28,6 +30,24 @@ class CrossfishPrev {
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
         Move counter_move[9][9];
         bool counters_ready = false;
+        // Correction history: [stm][constrained miniboard, 9 = free choice][decided-miniboard mask].
+        // A small exact index beats hashing the zobrist here: no collisions, no mixing
+        // in the hot path, and it separates the two structural facts the fixed eval
+        // misprices most - game phase and being locked into one miniboard.
+        static constexpr int CORR_MB = 10;
+        static constexpr int CORR_MASKS = 512;
+        // Stored units are CORR_GRAIN x eval units. The gravity term bounds |entry| at
+        // CORR_SCALE, so the applied shift never exceeds CORR_SCALE / CORR_GRAIN = 512.
+        static constexpr int CORR_SCALE = 16384;
+        static constexpr int CORR_GRAIN = 32;
+        static constexpr int CORR_MAX = 16384;
+        // CORR_DIFF_MAX * CORR_MAX_WEIGHT <= CORR_SCALE keeps the update a contraction.
+        static constexpr int CORR_DIFF_MAX = 1024;
+        static constexpr int CORR_MAX_WEIGHT = 8;
+        // Mate scores are ±(max_val - ply), i.e. distances to mate rather than
+        // quantities the static eval can be measured against.
+        static constexpr int CORR_MATE_BOUND = 90000;
+        std::array<std::array<std::array<int, CORR_MASKS>, CORR_MB>, 2> corr_hist{};
         static const int tt_size = 1 << 18;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
@@ -256,6 +276,29 @@ class CrossfishPrev {
             });
         }
 
+        // LMR amounts in hundredths, so they can be retuned as integers.
+        static constexpr int LMR_BASE = 55;
+        static constexpr int LMR_DIV = 100;
+        static constexpr int LMR_MAX_DEPTH = 64;
+        static constexpr int LMR_MAX_MOVES = 81;
+        static inline int lmr_table[LMR_MAX_DEPTH][LMR_MAX_MOVES];
+        static inline std::once_flag lmr_table_once;
+
+        // Precomputed so no logs run in the move loop. Row 0 stays zero (log(0)).
+        static void init_lmr_table() {
+            std::call_once(lmr_table_once, []() {
+                for (int d = 1; d < LMR_MAX_DEPTH; d++) {
+                    for (int i = 0; i < LMR_MAX_MOVES; i++) {
+                        // Both terms are in hundredths of a ply: LMR_BASE directly, and
+                        // 10000*ln(d)*ln(i+1)/LMR_DIV for the growth term.
+                        int r = (int)((LMR_BASE + 10000.0 * std::log((double)d)
+                                       * std::log((double)(i + 1)) / LMR_DIV) / 100.0);
+                        lmr_table[d][i] = std::max(0, r);
+                    }
+                }
+            });
+        }
+
         bool time_up() {
             if (stopped) return true;
             if ((nodes & 255) == 0) {
@@ -267,8 +310,40 @@ class CrossfishPrev {
             return stopped;
         }
 
+        // Live entry for this position; the constraint test mirrors fillLegalMoves.
+        int &corr_entry(GlobalBoard &board) {
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int mb = 9;
+            if (board.n_moves > 0 && !board.prev_move_was_pass) {
+                int active = board.move_history.top().square;
+                if ((out_of_play & (1 << active)) == 0) mb = active;
+            }
+            return corr_hist[board.n_moves % 2][mb][out_of_play];
+        }
+
+        // Clamped clear of the decided-game band, leaving room for the MiniNet
+        // residual that qsearch adds on top of this value.
+        static constexpr int CORR_EVAL_LIMIT = CORR_MATE_BOUND - MINI_MAX - 1;
+        int corrected_eval(GlobalBoard &board, int static_eval) {
+            int v = static_eval + corr_entry(board) / CORR_GRAIN;
+            if (v > CORR_EVAL_LIMIT) v = CORR_EVAL_LIMIT;
+            if (v < -CORR_EVAL_LIMIT) v = -CORR_EVAL_LIMIT;
+            return v;
+        }
+
+        void update_corr_hist(GlobalBoard &board, int diff, int d) {
+            if (diff > CORR_DIFF_MAX) diff = CORR_DIFF_MAX;
+            if (diff < -CORR_DIFF_MAX) diff = -CORR_DIFF_MAX;
+            int w = std::min(d, CORR_MAX_WEIGHT);
+            int &e = corr_entry(board);
+            e += diff * w - e * abs(diff) * w / CORR_SCALE;
+            if (e > CORR_MAX) e = CORR_MAX;
+            if (e < -CORR_MAX) e = -CORR_MAX;
+        }
+
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
             init_mini_lut();
+            init_lmr_table();
             thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
@@ -277,6 +352,7 @@ class CrossfishPrev {
             board.fillLegalMoves(root_moves);
             root_best_move = root_moves[0];
             killer_moves = std::array<std::array<int, 9>, 128>();
+            corr_hist = {};
             if (!counters_ready) {
                 for (int i = 0; i < 9; i++) {
                     for (int j = 0; j < 9; j++) {
@@ -321,12 +397,14 @@ class CrossfishPrev {
         static constexpr int SEARCH_SCORE_CLAMP = 20000;
         bool search_fixed_depth(GlobalBoard &board, int d, int &out_score) {
             init_mini_lut();
+            init_lmr_table();
             thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
             nodes = 0;
             stopped = false;
             root_score = 0;
             depth = d;
             killer_moves = std::array<std::array<int, 9>, 128>();
+            corr_hist = {};
             start_time = std::chrono::high_resolution_clock::now();
             int eval = search(board, d, 0, min_val, max_val);
             if (stopped || eval == min_val) return false;
@@ -355,7 +433,7 @@ class CrossfishPrev {
                 }
             }
 
-            int hce = evaluate_hce(board);
+            int hce = corrected_eval(board, evaluate_hce(board));
             if (hce >= beta) {
                 return beta;
             }
@@ -432,16 +510,19 @@ class CrossfishPrev {
                 return qsearch(board, alpha, beta, ply);
             }
             bool can_futility_prune = false;
+            int static_eval = 0;
+            bool have_static = false;
             if (!pv_node && !g_disable_eval_prune) {
-                int stand_pat = evaluate_hce(board);
+                static_eval = corrected_eval(board, evaluate_hce(board));
+                have_static = true;
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
-                if (stand_pat - reverse_futility_margin * depth >= beta) {
+                if (static_eval - reverse_futility_margin * depth >= beta) {
                     return beta;
                 }
 
                 int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
-                can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
+                can_futility_prune = (static_eval + futility_margin * depth <= alpha);
             }
             if (pv_node && !tt_hit && depth > 2) {
                 search(board, 1, ply, alpha, beta);
@@ -480,7 +561,8 @@ class CrossfishPrev {
                     int reduction = 0;
                     bool do_lmr = (scores[i] < 0 || (i >= 3 && !capture));
                     if (do_lmr) {
-                        reduction = i / 3;
+                        reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
+                        if (pv_node && reduction > 0) reduction--;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha);
@@ -532,6 +614,13 @@ class CrossfishPrev {
                 }
                 TTEntry new_entry = {depth, best_val, flag, board.zobrist_hash, best_move};
                 transposition_table[board.zobrist_hash & (tt_size - 1)] = new_entry;
+                // Only a bound that actually contradicts the static eval carries information.
+                if (have_static && abs(best_val) < CORR_MATE_BOUND
+                    && (flag == TT_EXACT
+                        || (flag == TT_LOWER && best_val > static_eval)
+                        || (flag == TT_UPPER && best_val < static_eval))) {
+                    update_corr_hist(board, best_val - static_eval, depth);
+                }
             }
 
             return best_val;
