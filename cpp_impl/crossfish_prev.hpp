@@ -6,8 +6,8 @@
 #include <mutex>
 #include <vector>
 
-// Frozen 2026-09-05 pre-optimization baseline for local SPRT.
-// HCE at RFP/futility; HCE + packed MiniNet residual at qsearch leaves.
+// Landed engine: HCE at RFP/futility, HCE + packed MiniNet residual at qsearch
+// leaves. Free-move +300. Failed SEARCH/EVAL/NNUE experiment stubs removed.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -76,6 +76,12 @@ class CrossfishPrev {
         static constexpr int MINI_LUT_SIZE = 19683;
         static inline MiniLut mini_lut[MINI_LUT_SIZE];
         static inline int16_t mini_score[MINI_LUT_SIZE];
+        static inline int16_t fast_local_score[1 << 18];
+        // Bit 0: player 0 has a live local two-in-a-row; bit 1: player 1.
+        static inline uint8_t fast_tiar_flags[1 << 18];
+        // Number of global two-in-a-row masks in `ours` whose third square
+        // is not occupied by `theirs`, indexed as (ours << 9) | theirs.
+        static inline uint8_t fast_threat_count[1 << 18];
         // Separate from MiniLut so HCE's hot LUT stays compact. Bit s set iff
         // playing square s wins / makes a 2-in-a-row for that player.
         static inline uint16_t mini_win_sq[MINI_LUT_SIZE][2];
@@ -228,6 +234,25 @@ class CrossfishPrev {
                     if (s < -32768) s = -32768;
                     mini_score[idx] = (int16_t)s;
                 }
+                for (int p0 = 0; p0 < 512; p0++) {
+                    for (int p1 = 0; p1 < 512; p1++) {
+                        int packed = (p0 << 9) | p1;
+                        if ((p0 & p1) == 0) {
+                            int idx = mini_index(p0, p1);
+                            fast_local_score[packed] = mini_score[idx];
+                            fast_tiar_flags[packed] =
+                                (mini_lut[idx].p0_tiar != 0)
+                                | ((mini_lut[idx].p1_tiar != 0) << 1);
+                        }
+                        int threats = 0;
+                        for (int i = 0; i < N_TIAR_MASKS / 2; i++) {
+                            int pair = two_in_a_row_masks[i * 2];
+                            int third = two_in_a_row_masks[i * 2 + 1];
+                            threats += ((p0 & pair) == pair) && ((p1 & third) == 0);
+                        }
+                        fast_threat_count[packed] = (uint8_t)threats;
+                    }
+                }
             });
         }
 
@@ -339,7 +364,7 @@ class CrossfishPrev {
                 // MiniNet is clamped near ±2000; it cannot raise alpha or fail high.
                 stand_pat = hce + MINI_MAX;
             } else {
-                stand_pat = hce + evaluate_mini_avx(board);
+                stand_pat = hce + evaluate_mini_fast(board);
             }
             if (stand_pat >= beta) {
                 return beta;
@@ -749,16 +774,41 @@ class CrossfishPrev {
         }
 
         int evaluate_hce(GlobalBoard &board) {
-            int16_t idx[9];
-            int n = 0;
-            int base = 0;
-            eval_parts(board, idx, n, base);
             int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+            int p0_miniboards = board.mini_board_states[0];
+            int p1_miniboards = board.mini_board_states[1];
+            int out_of_play = p0_miniboards | p1_miniboards | board.mini_board_states[2];
+            int live = (~out_of_play) & 511;
             int local = 0;
-            for (int i = 0; i < n; i++) {
-                local += mini_score[idx[i]];
+            int p0_two_in_a_row_map = 0;
+            int p1_two_in_a_row_map = 0;
+            while (live) {
+                int miniboard = __builtin_ctz(live);
+                live &= live - 1;
+                int packed = (board.mini_boards[miniboard].markers[0] << 9)
+                           | board.mini_boards[miniboard].markers[1];
+                local += fast_local_score[packed];
+                int flags = fast_tiar_flags[packed];
+                p0_two_in_a_row_map |= (flags & 1) << miniboard;
+                p1_two_in_a_row_map |= ((flags >> 1) & 1) << miniboard;
             }
-            return base + stm_sign * local + eval_extra(board);
+            const int corners = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 8);
+            int global = eval_weights[0]
+                * (__builtin_popcount(p0_miniboards) - __builtin_popcount(p1_miniboards));
+            global += eval_weights[1]
+                * (((p0_miniboards >> 4) & 1) - ((p1_miniboards >> 4) & 1));
+            global += eval_weights[2]
+                * (__builtin_popcount(p0_miniboards & corners)
+                   - __builtin_popcount(p1_miniboards & corners));
+            global += eval_weights[3]
+                * ((int)fast_threat_count[(p0_miniboards << 9) | p1_miniboards]
+                   - (int)fast_threat_count[(p1_miniboards << 9) | p0_miniboards]);
+            global += eval_weights[5]
+                * ((int)fast_threat_count[
+                       ((p0_miniboards | p0_two_in_a_row_map) << 9) | p1_miniboards]
+                   - (int)fast_threat_count[
+                       ((p1_miniboards | p1_two_in_a_row_map) << 9) | p0_miniboards]);
+            return stm_sign * (global + local) + eval_weights[9] + eval_extra(board);
         }
 
         int evaluate(GlobalBoard &board) {

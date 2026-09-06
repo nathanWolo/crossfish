@@ -334,6 +334,12 @@ This section is the other half of the history. Retrying these without a new hypo
 - Exact killers, IID depth 2, scaled free-move, futility 600
 - Send-to-threat ordering: −45
 - Parallel SPRTs on one machine: do not; they steal NPS and lie
+- Ply-relative TT mate scores (`value_to_tt`/`value_from_tt`): **+1.9 ± 10.6** at N=3000 on
+  the #10 baseline, i.e. below a null control run the same day. The pairing is correct
+  Stockfish; at 95 ms this engine almost never resolves a true mate, so the re-anchoring
+  does not fire. Do not retry without a deeper time control.
+- qsearch TT, second attempt on the #10 baseline: **−0.9 ± 10.6** at N=3000. Independently
+  reproduces the earlier verdict above. Two baselines, same answer.
 
 **Nets**
 
@@ -376,8 +382,8 @@ CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet m
 
 | Piece | Role |
 | --- | --- |
-| `crossfish_prev.hpp` | Frozen last accepted engine (pre-#8 MiniNet+HCE, for the next experiment) |
-| `crossfish_dev.hpp` | Current landed Dev (includes #8 speed) |
+| `crossfish_prev.hpp` | Frozen last accepted engine (the #10 speed engine, `c2aae17`) |
+| `crossfish_dev.hpp` | Current landed Dev (adds #14 correction history + log LMR) |
 | `mini_eval.hpp` | Packed D=8 H=4 residual |
 | `codingame_nnue.cpp` | Readable CG bot |
 | `cg_input.cpp` | Minified paste file |
@@ -388,3 +394,41 @@ CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet m
 The next cheap experiment is whatever you can falsify in one SPRT: a constant, a skip, a LUT that must match `eval_consistency`. The next expensive experiment is a net that is better at equal depth *and* not slower at 20 ms. We already know H=128 and "more D on old labels" are not that net.
 
 When you land something, freeze Prev, port the CG file, minify, and add a short section here. When you fail, add a line to section 11. The log is only useful if the graves stay marked.
+
+---
+
+## 14. Correction history and logarithmic LMR (5 September 2026)
+
+Two search patches on top of #10 (`c2aae17`), landed together: **+30.6 ± 6.5 Elo at
+N=8016**, LLR 11.98 against H0=0 / H1=+5. Four times the ±3 decision bound.
+
+**Correction history** (the bulk of it, +22.5 ± 10.7 measured alone at N=3000). A small
+exact-indexed table `[stm][constrained miniboard, 9 = free][decided-miniboard mask]`
+accumulates the signed gap between what search returned and what the static eval said,
+then shifts the static eval by that running average at RFP, futility, and qsearch
+stand-pat. No hashing and no collisions: the index is the two structural facts the fixed
+eval misprices most — game phase, and being locked into one miniboard. Only a bound that
+*contradicts* the static eval updates the entry, and the gravity term
+`e += diff*w - e*|diff|*w/CORR_SCALE` makes the update a contraction, so entries cannot
+run away. Table is per-instance but small (2·10·512 ints), reset per `getMove`.
+
+**Logarithmic LMR** (+16.1 ± 10.6 alone at N=3000, so real but the weaker half).
+`reduction = i / 3` becomes a precomputed `ln(depth)·ln(i+1)` table in hundredths of a
+ply, one reduction shaved in PV nodes. Table is `static inline` — see the Windows note in
+section 11; it is 20 KB, not `1<<18`, but the rule stands.
+
+**Method notes, because two of them changed the answer.**
+
+- A **null control** (Dev compiled identically to Prev) ran in both batches. At N=3000 it
+  read **+7.07 ± 10.66** and I nearly subtracted that as a harness floor; at N=8016 it
+  resolved to **−1.43 ± 6.53**. The floor was noise. Re-measure the null at the same N as
+  the candidate before correcting anything by it.
+- Runs were **fixed-sample** (`SPRT_LLR_BOUND=1e9`, `SPRT_MAX_GAMES=N`). Early-stopped Elo
+  is not comparable between candidates, which is the whole reason the screen used one N.
+- The full 4-patch stack measured **+27.5 ± 6.5** versus this 2-patch build's **+30.6 ±
+  6.5** — statistically the same (difference error ≈ ±9.2), so the two extra patches were
+  dropped on parsimony, not because they measured negative. 98 changed lines, not 161.
+  Their individual graves are in section 11.
+
+Not done: the CG paste file (`cg_input.cpp`) has **not** been re-minified from this Dev, so
+the ladder bot is still the #10 engine. Port and minify before claiming a rank change.
