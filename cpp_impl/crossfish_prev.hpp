@@ -14,7 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen board-hot-path SPRT winner on 2026-09-06.
+// Frozen compact-TT SPRT winner on 2026-09-06.
 class CrossfishPrev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -48,8 +48,32 @@ class CrossfishPrev {
         // quantities the static eval can be measured against.
         static constexpr int CORR_MATE_BOUND = 90000;
         std::array<std::array<std::array<int, CORR_MASKS>, CORR_MB>, 2> corr_hist{};
+
+        struct CompactTTEntry {
+            uint64_t zobrist_hash = 0;
+            int score = 0;
+            int16_t depth = 0;
+            int8_t flag = TT_EXACT;
+            uint8_t best_move = 255;
+        };
+        static_assert(sizeof(CompactTTEntry) == 16);
+
+        static uint8_t pack_tt_move(Move move) {
+            if (move.mini_board < 0 || move.mini_board >= 9
+                || move.square < 0 || move.square >= 9) {
+                return 255;
+            }
+            return (uint8_t)(move.mini_board * 9 + move.square);
+        }
+
+        static Move unpack_tt_move(uint8_t packed) {
+            if (packed >= 81) return Move{99, 99};
+            return Move{packed / 9, packed % 9};
+        }
+
         static const int tt_size = 1 << 18;
-        std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
+        std::vector<CompactTTEntry> transposition_table =
+            std::vector<CompactTTEntry>(tt_size);
 
         static constexpr int N_TIAR_MASKS = 48;
         static constexpr int two_in_a_row_masks[N_TIAR_MASKS] = {
@@ -608,8 +632,9 @@ class CrossfishPrev {
                 }
             }
             bool pv_node = (beta - alpha > 1);
-            TTEntry entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
+            CompactTTEntry entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
             bool tt_hit = (entry.zobrist_hash == board.zobrist_hash) && (board.zobrist_hash != 0);
+            Move tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
             if (tt_hit && (entry.depth >= depth) && !pv_node) {
                 // Flags match the original store: 0 exact, 1 upper (fail low), 2 lower (fail high).
                 if (entry.flag == TT_EXACT) {
@@ -646,6 +671,7 @@ class CrossfishPrev {
                 if (stopped) return min_val;
                 entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
                 tt_hit = (entry.zobrist_hash == board.zobrist_hash) && (board.zobrist_hash != 0);
+                tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
             }
 
             bool singular = (tt_hit && entry.depth >= depth - 3 && (entry.flag == TT_LOWER || entry.flag == TT_EXACT));
@@ -653,7 +679,7 @@ class CrossfishPrev {
             Move legal_moves[81];
             int scores[81];
             int nmoves = fill_legal_moves_fast(board, legal_moves);
-            get_move_scores(legal_moves, nmoves, tt_hit ? entry.best_move : Move{99, 99}, board, ply, scores, false);
+            get_move_scores(legal_moves, nmoves, tt_move, board, ply, scores, false);
             sort_moves(legal_moves, scores, nmoves);
 
             Move best_move = legal_moves[0];
@@ -666,7 +692,7 @@ class CrossfishPrev {
                     continue;
                 }
                 int extension = 0;
-                if (nmoves==1 || (singular && legal_moves[i].mini_board == entry.best_move.mini_board && legal_moves[i].square == entry.best_move.square)) {
+                if (nmoves==1 || (singular && legal_moves[i].mini_board == tt_move.mini_board && legal_moves[i].square == tt_move.square)) {
                     extension = 1;
                 }
 
@@ -729,7 +755,13 @@ class CrossfishPrev {
                 else if (best_val >= beta) {
                     flag = TT_LOWER;
                 }
-                TTEntry new_entry = {depth, best_val, flag, board.zobrist_hash, best_move};
+                CompactTTEntry new_entry = {
+                    board.zobrist_hash,
+                    best_val,
+                    (int16_t)depth,
+                    (int8_t)flag,
+                    pack_tt_move(best_move)
+                };
                 transposition_table[board.zobrist_hash & (tt_size - 1)] = new_entry;
                 // Only a bound that actually contradicts the static eval carries information.
                 if (have_static && abs(best_val) < CORR_MATE_BOUND
