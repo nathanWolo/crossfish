@@ -42,8 +42,18 @@ static unsigned int g_sprt_threads = 0;
 
 #include "global_board.hpp"
 #include "nnue.hpp"
-#include "crossfish_prev.hpp"
-#include "crossfish_dev.hpp"
+// Both engines can be swapped at compile time so a candidate can be measured
+// without editing the tracked headers:
+//   -DCROSSFISH_DEV_HEADER='"/path/candidate.hpp"'
+//   -DCROSSFISH_PREV_HEADER='"/path/accepted.hpp"'
+#ifndef CROSSFISH_PREV_HEADER
+#define CROSSFISH_PREV_HEADER "crossfish_prev.hpp"
+#endif
+#ifndef CROSSFISH_DEV_HEADER
+#define CROSSFISH_DEV_HEADER "crossfish_dev.hpp"
+#endif
+#include CROSSFISH_PREV_HEADER
+#include CROSSFISH_DEV_HEADER
 
 struct EloResult {
     double elo_diff;
@@ -212,9 +222,16 @@ double sprt(int wins, int draws, int losses) {
         + (double)losses * log(probabilities1[2] / probabilities0[2]); 
 }
 
-void play_game(){
+// Deterministic openings. Each game index derives its own generator, so a run
+// replays the same book of start positions every time and two candidates are
+// compared over identical openings rather than independent random ones. Set
+// SPRT_BOOK=0 to fall back to the unseeded rand() openings.
+static bool g_sprt_book = true;
+
+void play_game(int idx){
     //play two games from the same start position, alternating who goes first
     RandomMover random_mover;
+    std::mt19937 book(0x9E3779B9u * (unsigned int)(idx + 1));
 
     //update these bots to test new changes
     CrossfishDev bot2;
@@ -223,17 +240,24 @@ void play_game(){
     GlobalBoard board;
     //game loop
     //first 4-8 moves are random
-    int num_random_moves = 4 + rand() % 5;
+    int num_random_moves = 4 + (int)(g_sprt_book ? book() % 5 : (unsigned int)rand() % 5);
     for (int i = 0; i < num_random_moves; i++) {
         if (i == 0) {
             //30% chance of first move being very center
-            if (rand() % 10 < 3) {
+            unsigned int roll = g_sprt_book ? book() % 10 : (unsigned int)rand() % 10;
+            if (roll < 3) {
                 Move m = {4, 4};
                 board.makeMove(m);
                 continue;
             }
         }
-        Move m = random_mover.getMove(board);
+        Move m;
+        if (g_sprt_book) {
+            std::vector<Move> legal_moves = board.getLegalMoves();
+            m = legal_moves[book() % legal_moves.size()];
+        } else {
+            m = random_mover.getMove(board);
+        }
         board.makeMove(m);
     }
     GlobalBoard startpos = GlobalBoard(board);
@@ -2271,6 +2295,9 @@ int main(int argc, char** argv) {
     if (const char *s = std::getenv("SPRT_MAX_GAMES")) {
         g_sprt_max_games = std::max(0, std::atoi(s));
     }
+    if (const char *s = std::getenv("SPRT_BOOK")) {
+        g_sprt_book = std::atoi(s) != 0;
+    }
     if (const char *s = std::getenv("SPRT_THREADS")) {
         g_sprt_threads = (unsigned int)std::max(1, std::atoi(s));
     }
@@ -2317,11 +2344,12 @@ int main(int argc, char** argv) {
     int dev_nps = dev.nodes;
     std::cout << "Prev NPS: " << prev_nps << " Dev NPS: " << dev_nps << std::endl;
     int total_games = 0;
+    int game_idx = 0;
     while (std::abs(llr) < g_sprt_llr_bound
            && (g_sprt_max_games == 0 || total_games < g_sprt_max_games)) {
         std::vector<std::future<void>> futures;
         for (unsigned int i = 0; i < n_threads; ++i) {
-            futures.push_back(std::async(std::launch::async, play_game));
+            futures.push_back(std::async(std::launch::async, play_game, game_idx++));
         }
         for (auto& f : futures) {
             f.get();
