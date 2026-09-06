@@ -14,7 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen persistent-correction-history SPRT winner on 2026-09-06.
+// Frozen immediate-global-win-ordering SPRT winner on 2026-09-06.
 class CrossfishPrev {
        private:
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
@@ -868,7 +868,14 @@ class CrossfishPrev {
                 if (cm.mini_board == mb && cm.square == sq) {
                     move_score += 40;
                 }
-                if (!qs && (fast_win_moves[board.mini_boards[mb].markers[stm]] & (1 << sq))) {
+                bool capture =
+                    (fast_win_moves[board.mini_boards[mb].markers[stm]]
+                     & (1 << sq)) != 0;
+                if (capture
+                    && fast_has_win[board.mini_board_states[stm] | (1 << mb)]) {
+                    move_score += 800;
+                }
+                if (!qs && capture) {
                     move_score += 100;
                 }
                 if (fast_win_moves[board.mini_boards[mb].markers[stm ^ 1]] & (1 << sq)) {
