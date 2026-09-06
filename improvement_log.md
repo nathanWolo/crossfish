@@ -430,5 +430,5 @@ section 11; it is 20 KB, not `1<<18`, but the rule stands.
   dropped on parsimony, not because they measured negative. 98 changed lines, not 161.
   Their individual graves are in section 11.
 
-Not done: the CG paste file (`cg_input.cpp`) has **not** been re-minified from this Dev, so
-the ladder bot is still the #10 engine. Port and minify before claiming a rank change.
+Shipped: `codingame_nnue.cpp` and `cg_input.cpp` carry this Dev. Independent 20 ms
+SPRT on the merge host: N 1920 W 784 D 533 L 603, **+32.85 ± 13.25**, LLR +3.10.

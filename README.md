@@ -218,16 +218,18 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
 
 ## Latest strength result
 
-On 2026-09-05, projected MiniNet first-layer lookups plus precomputed HCE local
-scores/global threats passed the strict 20ms SPRT against the frozen pre-change
-engine:
+On 2026-09-05, correction history plus logarithmic LMR passed the official 20ms
+SPRT against the frozen #8 speed engine (`c2aae17`):
 
 ```text
-N: 1184 W: 611 D: 293 L: 280
-Elo diff: +99.7854 +/- 17.6482
-LLR: +3.06318 (H0=+50, H1=+55) — PASS
-Prev NPS: 4,320,256  Dev NPS: 8,737,280
+N: 1920 W: 784 D: 533 L: 603
+Elo diff: +32.85 +/- 13.25
+LLR: +3.10 (H0=0, H1=+5) — PASS
+Prev NPS: 17,931,776  Dev NPS: 16,829,440
 ```
+
+Author 95ms fixed-sample on the same pair: N 8016, +30.64 +/- 6.49, LLR 11.98.
+Paste `cpp_impl/cg_input.cpp` (rebuilt from this Dev).
 
 Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
 

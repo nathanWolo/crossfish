@@ -36,6 +36,9 @@
 // reach alpha even at +8000, LUT capture/block/tiar. SPRT vs MiniNet-skip
 // baseline: 20ms N 2152 W 887 D 558 L 707, +29.1 +/- 12.7 Elo, LLR +3.01;
 // 95ms N 2416 W 939 D 715 L 762, +25.5 +/- 11.6 Elo, LLR +3.01.
+// Correction history + logarithmic LMR vs the frozen #8 speed engine.
+// Independent 20ms SPRT: N 1920 W 784 D 533 L 603, +32.85 +/- 13.25, LLR +3.10.
+// Author 95ms fixed-sample: N 8016, +30.64 +/- 6.49, LLR 11.98.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
@@ -963,6 +966,15 @@ class CrossfishDev {
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
         Move counter_move[9][9];
         bool counters_ready = false;
+        static constexpr int CORR_MB = 10;
+        static constexpr int CORR_MASKS = 512;
+        static constexpr int CORR_SCALE = 16384;
+        static constexpr int CORR_GRAIN = 32;
+        static constexpr int CORR_MAX = 16384;
+        static constexpr int CORR_DIFF_MAX = 1024;
+        static constexpr int CORR_MAX_WEIGHT = 8;
+        static constexpr int CORR_MATE_BOUND = 90000;
+        std::array<std::array<std::array<int, CORR_MASKS>, CORR_MB>, 2> corr_hist{};
         static const int tt_size = 1 << 18;
         std::vector<TTEntry, std::allocator<TTEntry>> transposition_table = std::vector<TTEntry>(tt_size);
 
@@ -1153,6 +1165,53 @@ class CrossfishDev {
             mini_lut_ready = true;
         }
 
+        static constexpr int LMR_BASE = 55;
+        static constexpr int LMR_DIV = 100;
+        static constexpr int LMR_MAX_DEPTH = 64;
+        static constexpr int LMR_MAX_MOVES = 81;
+        static inline int lmr_table[LMR_MAX_DEPTH][LMR_MAX_MOVES];
+        static inline bool lmr_table_ready = false;
+
+        static void init_lmr_table() {
+            if (lmr_table_ready) return;
+            for (int d = 1; d < LMR_MAX_DEPTH; d++) {
+                for (int i = 0; i < LMR_MAX_MOVES; i++) {
+                    int r = (int)((LMR_BASE + 10000.0 * std::log((double)d)
+                                   * std::log((double)(i + 1)) / LMR_DIV) / 100.0);
+                    lmr_table[d][i] = std::max(0, r);
+                }
+            }
+            lmr_table_ready = true;
+        }
+
+        int &corr_entry(GlobalBoard &board) {
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int mb = 9;
+            if (board.n_moves > 0 && !board.prev_move_was_pass) {
+                int active = board.move_history.top().square;
+                if ((out_of_play & (1 << active)) == 0) mb = active;
+            }
+            return corr_hist[board.n_moves % 2][mb][out_of_play];
+        }
+
+        static constexpr int CORR_EVAL_LIMIT = CORR_MATE_BOUND - MINI_MAX - 1;
+        int corrected_eval(GlobalBoard &board, int static_eval) {
+            int v = static_eval + corr_entry(board) / CORR_GRAIN;
+            if (v > CORR_EVAL_LIMIT) v = CORR_EVAL_LIMIT;
+            if (v < -CORR_EVAL_LIMIT) v = -CORR_EVAL_LIMIT;
+            return v;
+        }
+
+        void update_corr_hist(GlobalBoard &board, int diff, int d) {
+            if (diff > CORR_DIFF_MAX) diff = CORR_DIFF_MAX;
+            if (diff < -CORR_DIFF_MAX) diff = -CORR_DIFF_MAX;
+            int w = std::min(d, CORR_MAX_WEIGHT);
+            int &e = corr_entry(board);
+            e += diff * w - e * abs(diff) * w / CORR_SCALE;
+            if (e > CORR_MAX) e = CORR_MAX;
+            if (e < -CORR_MAX) e = -CORR_MAX;
+        }
+
         bool time_up() {
             if (stopped) return true;
             if ((nodes & 255) == 0) {
@@ -1165,6 +1224,7 @@ class CrossfishDev {
         }
         Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
             init_mini_lut();
+            init_lmr_table();
             mini_load_packed();
             thinking_time = thinking_time_passed;
             nodes = 0;
@@ -1176,6 +1236,7 @@ class CrossfishDev {
 
             //clear killers
             killer_moves = std::array<std::array<int, 9>, 128>();
+            corr_hist = {};
             if (!counters_ready) {
                 for (int i = 0; i < 9; i++) {
                     for (int j = 0; j < 9; j++) {
@@ -1245,7 +1306,7 @@ class CrossfishDev {
                 }
             }
 
-            int hce = evaluate_hce(board);
+            int hce = corrected_eval(board, evaluate_hce(board));
             if (hce >= beta) {
                 return beta;
             }
@@ -1325,16 +1386,19 @@ class CrossfishDev {
                 return qsearch(board, alpha, beta, ply);
             }
             bool can_futility_prune = false;
+            int static_eval = 0;
+            bool have_static = false;
             if (!pv_node) {
-                int stand_pat = evaluate_hce(board);
+                static_eval = corrected_eval(board, evaluate_hce(board));
+                have_static = true;
 
                 int reverse_futility_margin = RFP_PAWNS * PAWN;
-                if (stand_pat - reverse_futility_margin * depth >= beta) {
+                if (static_eval - reverse_futility_margin * depth >= beta) {
                     return beta;
                 }
 
                 int futility_margin = FP_PAWNS * PAWN;
-                can_futility_prune = (stand_pat + futility_margin * depth <= alpha);
+                can_futility_prune = (static_eval + futility_margin * depth <= alpha);
             }
             if (pv_node && !tt_hit && depth > 2) {
                 search(board, 1, ply, alpha, beta, false);
@@ -1373,7 +1437,8 @@ class CrossfishDev {
                 else {
                     int reduction = 0;
                     if (scores[i] < 0 || (i >= 3 && !capture)) {
-                        reduction = i / 3; //late move reduction
+                        reduction = lmr_table[std::min((int)depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
+                        if (pv_node && reduction > 0) reduction--;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
                     val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
@@ -1424,6 +1489,12 @@ class CrossfishDev {
                 }
                 TTEntry new_entry = {depth, flag, best_val, board.zobrist_hash, best_move};
                 transposition_table[board.zobrist_hash & (tt_size - 1)] = new_entry;
+                if (have_static && abs(best_val) < CORR_MATE_BOUND
+                    && (flag == 0
+                        || (flag == 2 && best_val > static_eval)
+                        || (flag == 1 && best_val < static_eval))) {
+                    update_corr_hist(board, best_val - static_eval, depth);
+                }
             }
 
             return best_val;
