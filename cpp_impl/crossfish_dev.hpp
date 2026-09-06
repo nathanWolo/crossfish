@@ -867,7 +867,14 @@ class CrossfishDev {
                 if (cm.mini_board == mb && cm.square == sq) {
                     move_score += 40;
                 }
-                if (!qs && (fast_win_moves[board.mini_boards[mb].markers[stm]] & (1 << sq))) {
+                bool capture =
+                    (fast_win_moves[board.mini_boards[mb].markers[stm]]
+                     & (1 << sq)) != 0;
+                if (capture
+                    && fast_has_win[board.mini_board_states[stm] | (1 << mb)]) {
+                    move_score += 800;
+                }
+                if (!qs && capture) {
                     move_score += 100;
                 }
                 if (fast_win_moves[board.mini_boards[mb].markers[stm ^ 1]] & (1 << sq)) {
