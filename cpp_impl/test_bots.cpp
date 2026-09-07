@@ -30,7 +30,7 @@ namespace fs = std::experimental::filesystem;
 
 // CodinGame UTTT: 1000ms first execute per player, 100ms per later move
 // (engine searches 800ms / 95ms). SPRT uses the per-move budget.
-static int g_sprt_think_ms = 20;
+static int g_sprt_think_ms = 95;
 static double g_sprt_elo0 = 0;
 static double g_sprt_elo1 = 5;
 static double g_sprt_llr_bound = 3;
@@ -2259,6 +2259,9 @@ int main(int argc, char** argv) {
     int argi = 1;
     if (argc >= 2 && (std::strcmp(argv[1], "95") == 0 || std::strcmp(argv[1], "95ms") == 0)) {
         g_sprt_think_ms = 95;
+        argi = 2;
+    } else if (argc >= 2 && (std::strcmp(argv[1], "20") == 0 || std::strcmp(argv[1], "20ms") == 0)) {
+        g_sprt_think_ms = 20;
         argi = 2;
     }
     if (argi < argc && std::strcmp(argv[argi], "depth") == 0) {

@@ -29,7 +29,7 @@ That builds and runs the C++ unit tests, the Python rules oracle, and compiles t
 | `make test-cpp` | C++ unit tests only (`cpp_impl/unit_tests.cpp`) |
 | `make test-python` | Independent Python board perft / make-undo / winners (`python_impl/test_rules.py`), plus `tools/test_*.py` |
 | `make verify` | The older smoke checks inside `test_bots.cpp`, then exit (no SPRT) |
-| `make sprt` | Strength: Dev vs Prev self-play with SPRT (slow, noisy) |
+| `make sprt` | Strength: Dev vs Prev self-play with SPRT at **95 ms** (slow, noisy) |
 | `make roundrobin` | 10k-game pairs of current C++ vs Legend vs Python at 20ms/move |
 | `make cg` | Compile the CodinGame submission |
 | `make cg-input` | Rebuild `cpp_impl/cg_input.cpp` from `codingame_nnue.cpp` with the minifier |
@@ -50,7 +50,7 @@ Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`, and
 
 This section is the process. The goal is Elo on CodinGame Ultimate Tic-Tac-Toe, not a prettier loss, a higher training correlation, or a faster NPS number that plays worse. Other agents will hill-climb from here. Follow the loop; do not invent a parallel scoring system.
 
-CodinGame gives 1000 ms on the first execute per player and 100 ms on later moves. The engine searches about 800 ms / 95 ms. The local default SPRT time control is **20 ms/move** (the same budget used for eval tuning). A change is not shipped until it is stronger at a timed control, preferably 20 ms and then 95 ms. The submission cap is **100,000 characters**.
+CodinGame gives 1000 ms on the first execute per player and 100 ms on later moves. The engine searches about 800 ms / 95 ms. The official SPRT bar is **95 ms/move** (the CodinGame later-move budget). A change is not shipped until it passes that gate. 20 ms is an optional cheap screen, not a ship. The submission cap is **100,000 characters**.
 
 ### The three copies of the engine
 
@@ -97,30 +97,30 @@ Harness: `cpp_impl/test_bots.cpp`, built as `cpp_impl/bin/test_bots`. Rebuild af
 
 ```bash
 make -C cpp_impl test          # correctness first
-make -C cpp_impl sprt          # default: 20ms, H0=0, H1=+5, all cores
+make -C cpp_impl sprt          # official: 95ms, H0=0, H1=+5, all cores
 # or, from cpp_impl/bin:
-./test_bots                    # 20ms
-./test_bots 95                 # 95ms (CG later-move budget)
+./test_bots                    # 95ms (official bar)
+./test_bots 20                 # optional cheap 20ms screen
 ./test_bots depth 4            # equal depth 4, eval pruning off
 ```
 
 Default hypotheses: **H0 = 0 Elo**, **H1 = +5 Elo**. The run stops at `|LLR| >= 3` (override with `SPRT_LLR_BOUND`).
 
 - `SPRT PASS: H1 … favored over H0` — accept the change (for that time control).
-- `SPRT FAIL: H0 … favored over H1` — reject. This means "not a +5 Elo gain", not "Dev is worse". A true +2 Elo at 20 ms will often fail H0-vs-+5. That is still not a ship.
+- `SPRT FAIL: H0 … favored over H1` — reject. This means "not a +5 Elo gain", not "Dev is worse". A true +2 Elo at 95 ms will often fail H0-vs-+5. That is still not a ship.
 - `SPRT INCONCLUSIVE` — hit `SPRT_MAX_GAMES` without a decision.
 
 Environment overrides:
 
 | Variable | Meaning |
 | --- | --- |
-| `SPRT_THINK_MS` | Move time (default 20). Ignored for play when `depth` is set. |
+| `SPRT_THINK_MS` | Move time (default 95). Ignored for play when `depth` is set. |
 | `SPRT_ELO0` / `SPRT_ELO1` | Hypotheses. `ELO1` must be greater than `ELO0`. |
 | `SPRT_LLR_BOUND` | Stop when `|LLR|` reaches this (default 3). |
 | `SPRT_MAX_GAMES` | Optional cap. 0 = run until LLR decides. |
 | `SPRT_THREADS` | Worker count. Default is `hardware_concurrency`. |
 
-Example: prove a huge speed win is more than +50 Elo at 20 ms:
+Example: prove a huge speed win is more than +50 Elo at 95 ms:
 
 ```bash
 SPRT_ELO0=50 SPRT_ELO1=55 make -C cpp_impl sprt
@@ -136,9 +136,9 @@ Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS
 
 | Kind of change | First gate | Then | Ship only after |
 | --- | --- | --- | --- |
-| Different leaf / different net / different HCE weights | `depth 4` | 20 ms, then 95 ms | Timed pass. Depth-only is not enough. |
-| Same eval, faster implementation (LUTs, MiniNet projection, AVX) | 20 ms | 95 ms | 20 ms pass. Depth 4 should be ~0 Elo if the rewrite is equivalent. If depth 4 fails, the "speedup" changed the eval. |
-| Search (LMR, TT, move order, pruning) | 20 ms | 95 ms | 20 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
+| Different leaf / different net / different HCE weights | `depth 4` | optional 20 ms, then **95 ms** | Official 95 ms pass. Depth-only is not enough. |
+| Same eval, faster implementation (LUTs, MiniNet projection, AVX) | optional 20 ms | **95 ms** | Official 95 ms pass. Depth 4 should be ~0 Elo if the rewrite is equivalent. If depth 4 fails, the "speedup" changed the eval. |
+| Search (LMR, TT, move order, pruning) | optional 20 ms | **95 ms** | Official 95 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
 
 Do not skip `make test` because a gate passed.
 
@@ -199,14 +199,14 @@ CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags 
 - Revert Dev to Prev after every failed or killed gate. Do not stack unproven diffs.
 - Freeze Prev on every pass before the next idea. Hill-climbing without a freeze is measuring against a moving leftover.
 - Prefer the next experiment that is *cheap to falsify*: a LUT that must match `eval_consistency`, a search constant, a qsearch skip. Do not start with a new architecture and a week of training.
-- If depth 4 is ~0 and 20 ms is a big win, you shipped speed. If depth 4 wins and 20 ms dies, you shipped a slow eval; make it cheaper or drop it.
-- If 20 ms Elo is +1 to +3 after ~8k games, kill it. It will not clear H1 = +5 in a useful amount of time.
+- If depth 4 is ~0 and 95 ms is a big win, you shipped speed. If depth 4 wins and 95 ms dies, you shipped a slow eval; make it cheaper or drop it.
+- If 95 ms Elo is +1 to +3 after ~8k games, kill it. It will not clear H1 = +5 in a useful amount of time. A 20 ms screen that is already stuck near 0 can save the machine.
 - Never run two SPRTs at once. Never edit Prev "just for the test". Never ship `codingame_nnue.cpp` from an unfrozen Dev.
-- Sequential gates: depth 4 (if eval) → 20 ms → 95 ms. Stop at the first fail.
+- Sequential gates: depth 4 (if eval) → optional 20 ms screen → official 95 ms. Stop at the first fail. Do not ship on 20 ms alone.
 
 ## CodinGame file and minifier
 
-CodinGame's source cap is **100,000 characters**. The readable source is `cpp_impl/codingame_nnue.cpp` (~126k, over the cap). Paste **`cpp_impl/cg_input.cpp`** into the IDE (~66k, about 34k of headroom).
+CodinGame's source cap is **100,000 characters**. The readable source is `cpp_impl/codingame_nnue.cpp` (~134k, over the cap). Paste **`cpp_impl/cg_input.cpp`** into the IDE (~68k, about 32k of headroom).
 
 `tools/cg_minify.py` is an ice4-style minifier: it strips comments and indentation, renames identifiers, and packs tokens. It does not change search or eval. Rebuild the paste file after editing the readable source:
 
@@ -218,20 +218,26 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
 
 ## Latest strength result
 
-On 2026-09-06, the round-3 bundle (aspiration reset, ternary-index LUT,
-compact search board, canonical decided-miniboard TT keys, and root history
-aging) passed the official 20ms SPRT against the #15 hot-path engine
-(`f453086`):
+On 2026-09-07, the round-4 bundle (earlier quiet LMR, exact PV TT below root,
+stronger corrhist, deferred move scoring, branchless tactics, decided-hash
+LUT, packed search moves, TT prefetch) passed both timed gates against the
+#16 compact-state engine (`1c5b3f7`):
 
 ```text
-N: 1056 W: 486 D: 262 L: 308
-Elo diff: +59.13 +/- 18.36
-LLR: +3.09 (H0=0, H1=+5) — PASS
-Prev NPS: 22,007,808  Dev NPS: 20,476,928
+95 ms (official): N 1568 W 630 D 480 L 458
+Elo diff: +38.27 +/- 14.38
+LLR: +3.05 (H0=0, H1=+5) — PASS
+Prev NPS: 19,946,496  Dev NPS: 20,539,392
+
+20 ms (screen):   N 2272 W 936 D 585 L 751
+Elo diff: +28.35 +/- 12.34
+LLR: +3.08 (H0=0, H1=+5) — PASS
 ```
 
-Author longer run on the same pair: N 3328, H0=+50 / H1=+55, +67.12 +/- 10.38,
-LLR +3.05. Paste `cpp_impl/cg_input.cpp` (rebuilt from this Dev).
+Author longer 20 ms run on the same pair: N 5920, H0=+50 / H1=+55,
++57.99 +/- 7.60, LLR +3.00. That +58 was not independently reproduced;
+the ship numbers are the merge-host gates above. Paste
+`cpp_impl/cg_input.cpp` (rebuilt from this Dev).
 
 Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
 

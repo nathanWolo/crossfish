@@ -377,11 +377,12 @@ A honest running story, not a sum:
 6. MiniNet is a *small* timed gain (**+7 to +11** vs HCE) and a *large* equal-depth gain (**+54**), then skip/AVX buy back the tax (**+20 to +31**, then **+26 to +29**).
 7. Precomputed HCE + MiniNet projection: **~2× NPS**, **+50 to +100** timed depending on the hypothesis, same leaf.
 8. Correction history + log LMR: **+33** at 20 ms. Then the #15 hot-path bundle: another **+40** at 20 ms, mostly speed (1.56× NPS) plus persist-corrhist and global-win ordering.
-9. The #16 compact-state / canonical-TT bundle clears a direct **+50 Elo**
-   hypothesis against #15: **+67.1 +/- 10.4**, LLR +3.05.
+9. The #16 compact-state / canonical-TT bundle: **+59** at 20 ms vs #15.
+10. The #17–#25 search/speed bundle vs #16: independent **+28** at 20 ms and
+    **+38** at 95 ms. Official ship bar is now 95 ms.
 
 CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet
-moved 82 → 68. The round-3 bundle is the current ship. Absolute ladder Elo is
+moved 82 → 68. The round-4 bundle is the current ship. Absolute ladder Elo is
 noisy and not what SPRT measures.
 
 ---
@@ -390,7 +391,7 @@ noisy and not what SPRT measures.
 
 | Piece | Role |
 | --- | --- |
-| `crossfish_prev.hpp` | Frozen last accepted engine (#16 round-3 bundle) |
+| `crossfish_prev.hpp` | Frozen last accepted engine (#25 round-4 bundle) |
 | `crossfish_dev.hpp` | Same program as Prev until the next experiment |
 | `mini_eval.hpp` | Packed D=8 H=4 residual |
 | `codingame_nnue.cpp` | Readable CG bot |
@@ -545,3 +546,197 @@ Startpos NPS was slightly *lower* on Dev, so this is a search win, not a
 faster rewrite of the same tree. MiniNet still encodes stones on decided
 minis; the canonical TT key is therefore an eval approximation (legal play
 is identical). `codingame_nnue.cpp` and `cg_input.cpp` carry this Dev.
+
+---
+
+## 17. Earlier late-quiet reduction (7 September 2026)
+
+The first sequential winner after #16 starts logarithmic LMR on the third
+ordered quiet move (`i >= 2`) instead of the fourth. Negative-score moves keep
+their existing reduction rule; no reduction amount, extension, or move score
+changed.
+
+```text
+N: 4992 W: 1945 D: 1304 L: 1743
+Elo diff: +14.07 +/- 8.29
+LLR: +3.06 (H0=0, H1=+5) — PASS
+```
+
+Rejected on the same baseline: requiring depth 3 for LMR was about 0 Elo at
+N=2976; resetting counter moves each turn screened -17 Elo; quarter-retaining
+move history screened -20 Elo; halving correction history each turn screened
+-7 Elo; removing the pseudo-singular extension screened -13 Elo despite higher
+NPS; clearing killers between completed iterations screened +3 Elo; delaying
+late-quiet LMR to `i >= 4` was -14.7 Elo at N=1344 in its formal run.
+
+---
+
+## 18. Reuse exact TT scores below the root (7 September 2026)
+
+Sufficient-depth exact transposition entries now return immediately at PV
+nodes below the root. Upper and lower bounds remain restricted to non-PV
+nodes. Root exact hits are deliberately excluded: returning before the root
+loop would leave `root_best_move` at the first generated legal move.
+
+```text
+N: 6560 W: 2487 D: 1795 L: 2278
+Elo diff: +11.07 +/- 7.17
+LLR: +3.03 (H0=0, H1=+5) — PASS
+```
+
+The unrestricted first prototype demonstrated the root hazard clearly,
+falling about 303 Elo before it was stopped at N=256. The accepted version
+changes neither evaluation nor TT replacement; it only reuses already exact
+work where the caller needs a score rather than a root move.
+
+---
+
+## 19. Apply correction history more strongly (7 September 2026)
+
+Correction history keeps the same exact structural key, update rule, and
+bounded storage, but converts stored units back to evaluation units with a
+grain of 24 instead of 32. This raises the maximum applied correction from
+512 to about 683 evaluation units without changing how evidence is learned.
+
+```text
+N: 9344 W: 3490 D: 2591 L: 3263
+Elo diff: +8.44 +/- 5.99
+LLR: +3.03 (H0=0, H1=+5) — PASS
+```
+
+A weaker grain of 48 previously resolved near parity. Replacing the exact
+decided-miniboard mask with an owner/material-count key looked better on
+held-out score residuals but lost about 9 Elo in online self-play, confirming
+that the layout-specific history remains important.
+
+---
+
+## 20. Search the hash move before scoring the rest (7 September 2026)
+
+When a legal TT move is available, search now moves it to the front without
+first scoring and sorting every legal move. If the hash move does not cut,
+the remaining moves are scored and stably sorted before the second move.
+
+Besides avoiding wasted ordering work on immediate cutoffs, the delay lets
+recursive cutoffs from the hash-move search refresh history, counter, and
+killer data before the remaining moves are scored. A fixed-depth screen was
+positive as a result; this is not merely a timed NPS change.
+
+```text
+N: 6560 W: 2466 D: 1840 L: 2254
+Elo diff: +11.23 +/- 7.13
+LLR: +3.11 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 21. Score tactical move masks without per-move branches (7 September 2026)
+
+The scorer now loads each miniboard's capture, block, two-in-a-row, and
+global-win masks once, then applies their exact existing bonuses with bit
+arithmetic. The hash-move comparison was also removed from this function:
+section 20 now handles a legal hash move before calling the scorer, so every
+remaining call passes no hash candidate and that comparison was dead work.
+
+The ordering values and stable sort are unchanged. The gain is small enough
+that the formal run needed a large sample, but it eventually crossed the
+repository's normal acceptance boundary:
+
+```text
+N: 37696 W: 13651 D: 10810 L: 13235
+Elo diff: +3.83 +/- 2.96
+LLR: +3.09 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 22. Precompute decided-miniboard TT hash subsets (7 September 2026)
+
+Canonical TT keys omit stones inside decided miniboards. Previously, every
+make and unmake that changed a miniboard's decided state scanned each stone
+and XORed its individual Zobrist value. A thread-safe 72 KiB lookup now stores
+the XOR for every 9-bit marker subset, reducing that work to one lookup per
+player while preserving every search key and move choice exactly.
+
+The fixed-depth gate was tree-identical to the frozen engine. The timed
+screen also showed higher NPS, and the repository's formal SPRT passed:
+
+```text
+N: 6432 W: 2394 D: 1849 L: 2189
+Elo diff: +11.08 +/- 7.17
+LLR: +3.01 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 23. Pack internal search moves into one byte (7 September 2026)
+
+Search and qsearch now represent generated moves as a single byte, with the
+miniboard in the high nibble and square in the low nibble. Public board
+history and root interfaces still use `Move`, and TT entries retain their
+existing 0–80 encoding. The compact form reduces move-generation writes,
+hash-move comparisons, and stable-sort copies without changing move order.
+
+The fixed-depth gate produced the exact same tree and game sequence as the
+frozen engine. The timed screen showed a small NPS gain, and formal SPRT
+confirmed the improvement:
+
+```text
+N: 13216 W: 4858 D: 3750 L: 4608
+Elo diff: +6.57 +/- 5.01
+LLR: +3.00 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 24. Prefetch child transposition entries (7 September 2026)
+
+After making each full-search move, the engine now prefetches the child
+position's transposition-table slot before entering the recursive search.
+The TT is a random-access 4 MiB table; winner detection and search setup
+between the prefetch and probe provide useful memory-latency overlap without
+changing the searched tree, replacement policy, or stored entries.
+
+The fixed-depth gate remained neutral, while the timed screen showed a large
+start-position NPS increase. Formal 20 ms SPRT confirmed the gain:
+
+```text
+N: 8032 W: 2990 D: 2268 L: 2774
+Elo diff: +9.35 +/- 6.44
+LLR: +3.01 (H0=0, H1=+5) — PASS
+Prev NPS: 12.99M  Dev NPS: 14.97M
+```
+
+---
+
+## 25. Round-four direct +50 proof (7 September 2026)
+
+The complete sections 17–24 branch was tested at 20 ms against the exact
+current `origin/main` engine (`1c5b3f7cab8deee036a12799ea36029680ce8d0d`),
+not against the sequentially advanced Prev snapshot. The raised-hypothesis
+SPRT verified that the bundle clears another 50 Elo:
+
+```text
+N: 5920 W: 2632 D: 1635 L: 1653
+Elo diff: +57.99 +/- 7.60
+LLR: +3.00 (H0=+50, H1=+55) — PASS
+Prev NPS: 14.35M  Dev NPS: 15.87M
+```
+
+Independent merge-host gates vs the same `1c5b3f7` baseline, H0=0 / H1=+5.
+The official bar is now **95 ms**. The author's +58 at H0=+50 was not
+reproduced; these are the ship numbers:
+
+```text
+95 ms: N 1568 W 630 D 480 L 458
+Elo diff: +38.27 +/- 14.38
+LLR: +3.05 — PASS
+Prev NPS: 19,946,496  Dev NPS: 20,539,392
+
+20 ms: N 2272 W 936 D 585 L 751
+Elo diff: +28.35 +/- 12.34
+LLR: +3.08 — PASS
+Prev NPS: 19,265,280  Dev NPS: 20,314,880
+```
+
+`codingame_nnue.cpp` and `cg_input.cpp` carry this Dev.
