@@ -15,6 +15,7 @@
 #include <thread>
 #include <bitset>
 #include <limits>
+#include <mutex>
 #include <immintrin.h>
 #pragma GCC optimize("O3")
 #pragma GCC option("arch=native", "tune=native", "no-zero-upper")
@@ -42,14 +43,18 @@
 // Hot-path LUTs + compact TT + persist corrhist + global-win order + incremental HCE
 // vs that engine. Independent 20ms SPRT: N 1536 W 642 D 427 L 467,
 // +39.76 +/- 14.83, LLR +3.04. Prev NPS 15.9M, Dev NPS 24.7M.
+// Round-3 bundle: aspiration reset, ternary-index LUT, compact search board,
+// canonical decided-miniboard TT keys, and root history aging. Direct 20ms
+// SPRT vs PR #10: N 3328 W 1573 D 817 L 938, +67.12 +/- 10.38 Elo;
+// LLR +3.05 for H0=+50 / H1=+55.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
 };
 
 struct Move {
-    int8_t mini_board = 99;
-    int8_t square = 99;
+    int mini_board = 99;
+    int square = 99;
 };
 
 struct TTEntry {
@@ -810,7 +815,8 @@ wO/zgECuVVxAPCAVQAVVNkB/gEHAGmsxwEeVMcBKTC3AVA0WQCiLXEDt6WxAqQJmQA8ebMCUlXvAWu90
 BsCsIPq/pbAGQNsgA8DnJwXA1Y39P2D4/D9BgQNACKPLPhzR0D63nb8+cfTUPl3fckC4R3NAnh92QPdQdEAAAAAA
 )MNUE";
 
-static int mini_board_constraint(const GlobalBoard &b) {
+template <typename Board>
+static int mini_board_constraint(const Board &b) {
     if (b.n_moves == 0 || b.prev_move_was_pass) return 9;
     int sent = b.move_history.top().square;
     int oop = b.mini_board_states[0] | b.mini_board_states[1] | b.mini_board_states[2];
@@ -928,7 +934,8 @@ static bool mini_load_packed() {
     return true;
 }
 
-static int evaluate_mini(const GlobalBoard &b) {
+template <typename Board>
+static int evaluate_mini(const Board &b) {
     if (!MN_READY && !mini_load_packed()) return 0;
     const int stm = b.n_moves & 1;
     const int c = mini_board_constraint(b);
@@ -954,8 +961,81 @@ static int evaluate_mini(const GlobalBoard &b) {
     return (int)std::lround(out);
 }
 
+enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
+static int g_fixed_search_depth = 0;
+static bool g_disable_eval_prune = false;
+static bool g_force_hce_eval = false;
+
 class CrossfishDev {
        private:
+        struct FastMoveStack {
+            std::array<Move, 128> moves{};
+            int count = 0;
+
+            Move &top() { return moves[count - 1]; }
+            const Move &top() const { return moves[count - 1]; }
+            void push(const Move &move) { moves[count++] = move; }
+            void pop() { count--; }
+            bool empty() const { return count == 0; }
+        };
+
+        struct FastBoard {
+            std::array<MiniBoard, 9> mini_boards;
+            std::array<int, 3> mini_board_states;
+            FastMoveStack move_history;
+            uint64_t zobrist_hash;
+            uint64_t tt_hash;
+            const decltype(GlobalBoard::move_hashes) &move_hashes;
+            const decltype(GlobalBoard::mini_board_hashes) &mini_board_hashes;
+            const decltype(GlobalBoard::legal_mini_board_hashes) &legal_mini_board_hashes;
+            const uint64_t &player_to_move_hash;
+            int n_moves;
+            bool prev_move_was_pass;
+
+            explicit FastBoard(const GlobalBoard &board)
+                : mini_boards(board.mini_boards),
+                  mini_board_states(board.mini_board_states),
+                  zobrist_hash(board.zobrist_hash),
+                  tt_hash(board.zobrist_hash),
+                  move_hashes(board.move_hashes),
+                  mini_board_hashes(board.mini_board_hashes),
+                  legal_mini_board_hashes(board.legal_mini_board_hashes),
+                  player_to_move_hash(board.player_to_move_hash),
+                  n_moves(board.n_moves),
+                  prev_move_was_pass(board.prev_move_was_pass) {
+                auto history = board.move_history;
+                move_history.count = (int)history.size();
+                for (int i = move_history.count - 1; i >= 0; i--) {
+                    move_history.moves[i] = history.top();
+                    history.pop();
+                }
+                // Stones inside a decided miniboard can never affect play again.
+                // Remove them from the search key so transpositions that reached
+                // the same won/drawn miniboard through different move orders merge.
+                int decided = mini_board_states[0]
+                            | mini_board_states[1]
+                            | mini_board_states[2];
+                while (decided) {
+                    int mb = __builtin_ctz(decided);
+                    decided &= decided - 1;
+                    for (int p = 0; p < 2; p++) {
+                        int markers = mini_boards[mb].markers[p];
+                        while (markers) {
+                            int sq = __builtin_ctz(markers);
+                            markers &= markers - 1;
+                            tt_hash ^= move_hashes[p][mb][sq];
+                        }
+                    }
+                }
+            }
+        };
+
+        static void xor_tt_hash(FastBoard &board, uint64_t value) {
+            board.tt_hash ^= value;
+        }
+
+        static void xor_tt_hash(GlobalBoard &, uint64_t) {}
+
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
         std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
@@ -969,13 +1049,22 @@ class CrossfishDev {
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
         Move counter_move[9][9];
         bool counters_ready = false;
+        // Correction history: [stm][constrained miniboard, 9 = free choice][decided-miniboard mask].
+        // A small exact index beats hashing the zobrist here: no collisions, no mixing
+        // in the hot path, and it separates the two structural facts the fixed eval
+        // misprices most - game phase and being locked into one miniboard.
         static constexpr int CORR_MB = 10;
         static constexpr int CORR_MASKS = 512;
+        // Stored units are CORR_GRAIN x eval units. The gravity term bounds |entry| at
+        // CORR_SCALE, so the applied shift never exceeds CORR_SCALE / CORR_GRAIN = 512.
         static constexpr int CORR_SCALE = 16384;
         static constexpr int CORR_GRAIN = 32;
         static constexpr int CORR_MAX = 16384;
+        // CORR_DIFF_MAX * CORR_MAX_WEIGHT <= CORR_SCALE keeps the update a contraction.
         static constexpr int CORR_DIFF_MAX = 1024;
         static constexpr int CORR_MAX_WEIGHT = 8;
+        // Mate scores are ±(max_val - ply), i.e. distances to mate rather than
+        // quantities the static eval can be measured against.
         static constexpr int CORR_MATE_BOUND = 90000;
         std::array<std::array<std::array<int, CORR_MASKS>, CORR_MB>, 2> corr_hist{};
 
@@ -994,7 +1083,7 @@ class CrossfishDev {
             uint64_t zobrist_hash = 0;
             int score = 0;
             int16_t depth = 0;
-            int8_t flag = 0;
+            int8_t flag = TT_EXACT;
             uint8_t best_move = 255;
         };
         static_assert(sizeof(CompactTTEntry) == 16);
@@ -1009,7 +1098,7 @@ class CrossfishDev {
 
         static Move unpack_tt_move(uint8_t packed) {
             if (packed >= 81) return Move{99, 99};
-            return Move{(int8_t)(packed / 9), (int8_t)(packed % 9)};
+            return Move{packed / 9, packed % 9};
         }
 
         static const int tt_size = 1 << 18;
@@ -1044,18 +1133,13 @@ class CrossfishDev {
             (1 << 2) + (1 << 6), (1 << 4)
         };
         int depth = 1;
-        static constexpr int PAWN_IDX = 7;
-        static constexpr int PAWN = 10;
-        static constexpr int ASP_PAWNS = 50;
-        static constexpr int RFP_PAWNS = 50;
-        static constexpr int FP_PAWNS = 80;
-        static constexpr int QDELTA_PAWNS = 400;
-        static constexpr int FREE_MOVE_PAWNS = 30;
-        static constexpr int MINI_MAX = 8000;
 
         struct MiniLut {
+            int8_t dead;
             int8_t p0_tiar;
             int8_t p1_tiar;
+            int8_t p0_win1;
+            int8_t p1_win1;
             int8_t p0_center;
             int8_t p1_center;
             int8_t p0_corner;
@@ -1065,177 +1149,238 @@ class CrossfishDev {
         };
         static constexpr int MINI_LUT_SIZE = 19683;
         static inline MiniLut mini_lut[MINI_LUT_SIZE];
-        static inline uint16_t mini_win_sq[MINI_LUT_SIZE][2];
-        static inline uint16_t mini_tiar_sq[MINI_LUT_SIZE][2];
+        static inline int16_t mini_score[MINI_LUT_SIZE];
         static inline int16_t fast_local_score[1 << 18];
+        // Sum of powers of three for each occupied square in a 9-bit mask.
+        // For disjoint masks, ternary(p0, p1) = table[p0] + 2*table[p1].
+        static inline uint16_t fast_mini_index[1 << 9];
+        // Bit 0: player 0 has a live local two-in-a-row; bit 1: player 1.
         static inline uint8_t fast_tiar_flags[1 << 18];
-        static inline uint8_t fast_threat_count[1 << 18];
+        // Local wins depend only on one player's 9-bit occupancy. These tiny
+        // tables replace repeated AVX line tests in make/unmake and ordering.
         static inline uint16_t fast_win_moves[1 << 9];
         static inline uint8_t fast_has_win[1 << 9];
-        static inline bool mini_lut_ready = false;
+        // Number of global two-in-a-row masks in `ours` whose third square
+        // is not occupied by `theirs`, indexed as (ours << 9) | theirs.
+        static inline uint8_t fast_threat_count[1 << 18];
+        // Separate from MiniLut so HCE's hot LUT stays compact. Bit s set iff
+        // playing square s wins / makes a 2-in-a-row for that player.
+        static inline uint16_t mini_win_sq[MINI_LUT_SIZE][2];
+        static inline uint16_t mini_tiar_sq[MINI_LUT_SIZE][2];
+        static inline std::once_flag mini_lut_once;
+        // One pawn = one extra corner square on a live miniboard (smallest HCE feature).
+        // Kept at 10, not 1, so other terms can be tenths of a pawn. Texel freezes PAWN_IDX.
+        static constexpr int PAWN_IDX = 7;
+        static constexpr int PAWN = 10;
+        static constexpr int ASP_PAWNS = 50;
+        static constexpr int RFP_PAWNS = 50;
+        static constexpr int FP_PAWNS = 80;
+        static constexpr int QDELTA_PAWNS = 400;
+        static constexpr int FREE_MOVE_PAWNS = 30;
+        static constexpr int LUT_W_TIAR = 534;
+        static constexpr int LUT_W_CENTER_SQ = 33;
+        static constexpr int LUT_W_CORNER_SQ = PAWN;
+        static constexpr int LUT_W_SQUARES = 33;
+        // Random-play MiniNet residuals reached ~4500; slack for search positions.
+        static constexpr int MINI_MAX = 8000;
+        CrossfishDev() {
+            mini_load_packed();
+        }
+
+        static constexpr int W_FREE_MOVE = FREE_MOVE_PAWNS * PAWN;
 
         static int mini_index(int p0, int p1) {
-            int idx = 0;
-            idx += (p0 & 1) ? 1 : ((p1 & 1) ? 2 : 0);
-            idx += (p0 & 2) ? 3 : ((p1 & 2) ? 6 : 0);
-            idx += (p0 & 4) ? 9 : ((p1 & 4) ? 18 : 0);
-            idx += (p0 & 8) ? 27 : ((p1 & 8) ? 54 : 0);
-            idx += (p0 & 16) ? 81 : ((p1 & 16) ? 162 : 0);
-            idx += (p0 & 32) ? 243 : ((p1 & 32) ? 486 : 0);
-            idx += (p0 & 64) ? 729 : ((p1 & 64) ? 1458 : 0);
-            idx += (p0 & 128) ? 2187 : ((p1 & 128) ? 4374 : 0);
-            idx += (p0 & 256) ? 6561 : ((p1 & 256) ? 13122 : 0);
-            return idx;
+            return fast_mini_index[p0] + 2 * fast_mini_index[p1];
         }
 
-        void init_mini_lut() {
-            if (mini_lut_ready) return;
-            const int win[8] = {
-                (1 << 0) + (1 << 1) + (1 << 2),
-                (1 << 3) + (1 << 4) + (1 << 5),
-                (1 << 6) + (1 << 7) + (1 << 8),
-                (1 << 0) + (1 << 3) + (1 << 6),
-                (1 << 1) + (1 << 4) + (1 << 7),
-                (1 << 2) + (1 << 5) + (1 << 8),
-                (1 << 0) + (1 << 4) + (1 << 8),
-                (1 << 2) + (1 << 4) + (1 << 6)
-            };
-            const int tiar[] = {
-                (1 << 0) + (1 << 1),  (1 << 2),
-                (1 << 1) + (1 << 2), (1 << 0),
-                (1 << 3) + (1 << 4), (1 << 5),
-                (1 << 4) + (1 << 5), (1 << 3),
-                (1 << 6) + (1 << 7), (1 << 8),
-                (1 << 7) + (1 << 8), (1 << 6),
-                (1 << 0) + (1 << 3), (1 << 6),
-                (1 << 3) + (1 << 6), (1 << 0),
-                (1 << 1) + (1 << 4), (1 << 7),
-                (1 << 4) + (1 << 7), (1 << 1),
-                (1 << 2) + (1 << 5), (1 << 8),
-                (1 << 5) + (1 << 8), (1 << 2),
-                (1 << 0) + (1 << 4), (1 << 8),
-                (1 << 4) + (1 << 8), (1 << 0),
-                (1 << 2) + (1 << 4), (1 << 6),
-                (1 << 4) + (1 << 6), (1 << 2),
-                (1 << 0) + (1 << 2), (1 << 1),
-                (1 << 3) + (1 << 5), (1 << 4),
-                (1 << 6) + (1 << 8), (1 << 7),
-                (1 << 0) + (1 << 6), (1 << 3),
-                (1 << 1) + (1 << 7), (1 << 4),
-                (1 << 2) + (1 << 8), (1 << 5),
-                (1 << 0) + (1 << 8), (1 << 4),
-                (1 << 2) + (1 << 6), (1 << 4)
-            };
-            const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
-            const int n_pairs = (int)(sizeof(tiar) / sizeof(tiar[0]) / 2);
-            auto has_win = [&](int markers) {
-                for (int i = 0; i < 8; i++) {
-                    if ((markers & win[i]) == win[i]) return true;
-                }
-                return false;
-            };
-            for (int markers = 0; markers < 512; markers++) {
-                fast_has_win[markers] = (uint8_t)has_win(markers);
-                int wins = 0;
-                for (int s = 0; s < 9; s++) {
-                    int bit = 1 << s;
-                    if ((markers & bit) == 0 && has_win(markers | bit)) {
-                        wins |= bit;
+        static void init_mini_lut() {
+            std::call_once(mini_lut_once, []() {
+                const int win[8] = {
+                    (1 << 0) + (1 << 1) + (1 << 2),
+                    (1 << 3) + (1 << 4) + (1 << 5),
+                    (1 << 6) + (1 << 7) + (1 << 8),
+                    (1 << 0) + (1 << 3) + (1 << 6),
+                    (1 << 1) + (1 << 4) + (1 << 7),
+                    (1 << 2) + (1 << 5) + (1 << 8),
+                    (1 << 0) + (1 << 4) + (1 << 8),
+                    (1 << 2) + (1 << 4) + (1 << 6)
+                };
+                const int tiar[] = {
+                    (1 << 0) + (1 << 1),  (1 << 2),
+                    (1 << 1) + (1 << 2), (1 << 0),
+                    (1 << 3) + (1 << 4), (1 << 5),
+                    (1 << 4) + (1 << 5), (1 << 3),
+                    (1 << 6) + (1 << 7), (1 << 8),
+                    (1 << 7) + (1 << 8), (1 << 6),
+                    (1 << 0) + (1 << 3), (1 << 6),
+                    (1 << 3) + (1 << 6), (1 << 0),
+                    (1 << 1) + (1 << 4), (1 << 7),
+                    (1 << 4) + (1 << 7), (1 << 1),
+                    (1 << 2) + (1 << 5), (1 << 8),
+                    (1 << 5) + (1 << 8), (1 << 2),
+                    (1 << 0) + (1 << 4), (1 << 8),
+                    (1 << 4) + (1 << 8), (1 << 0),
+                    (1 << 2) + (1 << 4), (1 << 6),
+                    (1 << 4) + (1 << 6), (1 << 2),
+                    (1 << 0) + (1 << 2), (1 << 1),
+                    (1 << 3) + (1 << 5), (1 << 4),
+                    (1 << 6) + (1 << 8), (1 << 7),
+                    (1 << 0) + (1 << 6), (1 << 3),
+                    (1 << 1) + (1 << 7), (1 << 4),
+                    (1 << 2) + (1 << 8), (1 << 5),
+                    (1 << 0) + (1 << 8), (1 << 4),
+                    (1 << 2) + (1 << 6), (1 << 4)
+                };
+                auto has_win = [&](int markers) {
+                    for (int i = 0; i < 8; i++) {
+                        if ((markers & win[i]) == win[i]) return true;
                     }
+                    return false;
+                };
+                for (int markers = 0; markers < 512; markers++) {
+                    int ternary = 0;
+                    int pow3 = 1;
+                    for (int s = 0; s < 9; s++) {
+                        if (markers & (1 << s)) ternary += pow3;
+                        pow3 *= 3;
+                    }
+                    fast_mini_index[markers] = (uint16_t)ternary;
+                    fast_has_win[markers] = (uint8_t)has_win(markers);
+                    int wins = 0;
+                    for (int s = 0; s < 9; s++) {
+                        int bit = 1 << s;
+                        if ((markers & bit) == 0 && has_win(markers | bit)) {
+                            wins |= bit;
+                        }
+                    }
+                    fast_win_moves[markers] = (uint16_t)wins;
                 }
-                fast_win_moves[markers] = (uint16_t)wins;
-            }
-            for (int idx = 0; idx < MINI_LUT_SIZE; idx++) {
-                int p0 = 0;
-                int p1 = 0;
-                int t = idx;
-                for (int s = 0; s < 9; s++) {
-                    int cell = t % 3;
-                    t /= 3;
-                    if (cell == 1) p0 |= (1 << s);
-                    else if (cell == 2) p1 |= (1 << s);
-                }
-                MiniLut e{};
-                for (int i = 0; i < n_pairs; i++) {
-                    e.p0_tiar = (int8_t)(e.p0_tiar + ((__builtin_popcount(p0 & tiar[i * 2]) - __builtin_popcount(p1 & tiar[i * 2 + 1])) / 2));
-                    e.p1_tiar = (int8_t)(e.p1_tiar + ((__builtin_popcount(p1 & tiar[i * 2]) - __builtin_popcount(p0 & tiar[i * 2 + 1])) / 2));
-                }
-                e.p0_center = (p0 >> 4) & 1;
-                e.p1_center = (p1 >> 4) & 1;
-                e.p0_corner = (int8_t)__builtin_popcount(p0 & corners);
-                e.p1_corner = (int8_t)__builtin_popcount(p1 & corners);
-                e.p0_sq = (int8_t)__builtin_popcount(p0);
-                e.p1_sq = (int8_t)__builtin_popcount(p1);
-                int occ = p0 | p1;
-                uint16_t p0w = 0, p1w = 0, p0t = 0, p1t = 0;
-                for (int s = 0; s < 9; s++) {
-                    if (occ & (1 << s)) continue;
-                    if (has_win(p0 | (1 << s))) p0w = (uint16_t)(p0w | (1 << s));
-                    if (has_win(p1 | (1 << s))) p1w = (uint16_t)(p1w | (1 << s));
-                    int ours0 = p0 | (1 << s);
-                    int ours1 = p1 | (1 << s);
+                const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+                const int n_pairs = (int)(sizeof(tiar) / sizeof(tiar[0]) / 2);
+                for (int idx = 0; idx < MINI_LUT_SIZE; idx++) {
+                    int p0 = 0;
+                    int p1 = 0;
+                    int t = idx;
+                    for (int s = 0; s < 9; s++) {
+                        int cell = t % 3;
+                        t /= 3;
+                        if (cell == 1) p0 |= (1 << s);
+                        else if (cell == 2) p1 |= (1 << s);
+                    }
+                    MiniLut e{};
+                    bool p0_can = false;
+                    bool p1_can = false;
+                    for (int i = 0; i < 8; i++) {
+                        if ((p1 & win[i]) == 0) p0_can = true;
+                        if ((p0 & win[i]) == 0) p1_can = true;
+                    }
+                    e.dead = (!p0_can && !p1_can) ? 1 : 0;
+                    int occ = p0 | p1;
+                    uint16_t p0w = 0, p1w = 0, p0t = 0, p1t = 0;
+                    for (int s = 0; s < 9; s++) {
+                        if (occ & (1 << s)) continue;
+                        if (has_win(p0 | (1 << s))) {
+                            e.p0_win1 = 1;
+                            p0w = (uint16_t)(p0w | (1 << s));
+                        }
+                        if (has_win(p1 | (1 << s))) {
+                            e.p1_win1 = 1;
+                            p1w = (uint16_t)(p1w | (1 << s));
+                        }
+                        int ours0 = p0 | (1 << s);
+                        int ours1 = p1 | (1 << s);
+                        for (int i = 0; i < n_pairs; i++) {
+                            int pair = tiar[i * 2];
+                            int third = tiar[i * 2 + 1];
+                            if (((ours0 & pair) == pair) && ((occ & third) == 0)) {
+                                p0t = (uint16_t)(p0t | (1 << s));
+                            }
+                            if (((ours1 & pair) == pair) && ((occ & third) == 0)) {
+                                p1t = (uint16_t)(p1t | (1 << s));
+                            }
+                        }
+                    }
+                    mini_win_sq[idx][0] = p0w;
+                    mini_win_sq[idx][1] = p1w;
+                    mini_tiar_sq[idx][0] = p0t;
+                    mini_tiar_sq[idx][1] = p1t;
                     for (int i = 0; i < n_pairs; i++) {
-                        int pair = tiar[i * 2];
-                        int third = tiar[i * 2 + 1];
-                        if (((ours0 & pair) == pair) && ((occ & third) == 0)) {
-                            p0t = (uint16_t)(p0t | (1 << s));
+                        e.p0_tiar = (int8_t)(e.p0_tiar + ((__builtin_popcount(p0 & tiar[i * 2]) - __builtin_popcount(p1 & tiar[i * 2 + 1])) / 2));
+                        e.p1_tiar = (int8_t)(e.p1_tiar + ((__builtin_popcount(p1 & tiar[i * 2]) - __builtin_popcount(p0 & tiar[i * 2 + 1])) / 2));
+                    }
+                    e.p0_center = (p0 >> 4) & 1;
+                    e.p1_center = (p1 >> 4) & 1;
+                    e.p0_corner = (int8_t)__builtin_popcount(p0 & corners);
+                    e.p1_corner = (int8_t)__builtin_popcount(p1 & corners);
+                    e.p0_sq = (int8_t)__builtin_popcount(p0);
+                    e.p1_sq = (int8_t)__builtin_popcount(p1);
+                    mini_lut[idx] = e;
+                    int s = LUT_W_TIAR * (e.p0_tiar - e.p1_tiar)
+                          + LUT_W_CENTER_SQ * (e.p0_center - e.p1_center)
+                          + LUT_W_CORNER_SQ * (e.p0_corner - e.p1_corner)
+                          + LUT_W_SQUARES * (e.p0_sq - e.p1_sq);
+                    if (s > 32767) s = 32767;
+                    if (s < -32768) s = -32768;
+                    mini_score[idx] = (int16_t)s;
+                }
+                for (int p0 = 0; p0 < 512; p0++) {
+                    for (int p1 = 0; p1 < 512; p1++) {
+                        int packed = (p0 << 9) | p1;
+                        if ((p0 & p1) == 0) {
+                            int idx = mini_index(p0, p1);
+                            fast_local_score[packed] = mini_score[idx];
+                            fast_tiar_flags[packed] =
+                                (mini_lut[idx].p0_tiar != 0)
+                                | ((mini_lut[idx].p1_tiar != 0) << 1);
                         }
-                        if (((ours1 & pair) == pair) && ((occ & third) == 0)) {
-                            p1t = (uint16_t)(p1t | (1 << s));
+                        int threats = 0;
+                        for (int i = 0; i < N_TIAR_MASKS / 2; i++) {
+                            int pair = two_in_a_row_masks[i * 2];
+                            int third = two_in_a_row_masks[i * 2 + 1];
+                            threats += ((p0 & pair) == pair) && ((p1 & third) == 0);
                         }
+                        fast_threat_count[packed] = (uint8_t)threats;
                     }
                 }
-                mini_win_sq[idx][0] = p0w;
-                mini_win_sq[idx][1] = p1w;
-                mini_tiar_sq[idx][0] = p0t;
-                mini_tiar_sq[idx][1] = p1t;
-                mini_lut[idx] = e;
-            }
-            for (int p0 = 0; p0 < 512; p0++) {
-                for (int p1 = 0; p1 < 512; p1++) {
-                    int packed = (p0 << 9) | p1;
-                    if ((p0 & p1) == 0) {
-                        const MiniLut &e = mini_lut[mini_index(p0, p1)];
-                        fast_local_score[packed] =
-                            534 * (e.p0_tiar - e.p1_tiar)
-                            + 33 * (e.p0_center - e.p1_center)
-                            + PAWN * (e.p0_corner - e.p1_corner)
-                            + 33 * (e.p0_sq - e.p1_sq);
-                        fast_tiar_flags[packed] =
-                            (e.p0_tiar != 0) | ((e.p1_tiar != 0) << 1);
-                    }
-                    int threats = 0;
-                    for (int i = 0; i < N_TIAR_MASKS / 2; i++) {
-                        int pair = two_in_a_row_masks[i * 2];
-                        int third = two_in_a_row_masks[i * 2 + 1];
-                        threats += ((p0 & pair) == pair) && ((p1 & third) == 0);
-                    }
-                    fast_threat_count[packed] = (uint8_t)threats;
-                }
-            }
-            mini_lut_ready = true;
+            });
         }
 
+        // LMR amounts in hundredths, so they can be retuned as integers.
         static constexpr int LMR_BASE = 55;
         static constexpr int LMR_DIV = 100;
         static constexpr int LMR_MAX_DEPTH = 64;
         static constexpr int LMR_MAX_MOVES = 81;
         static inline int lmr_table[LMR_MAX_DEPTH][LMR_MAX_MOVES];
-        static inline bool lmr_table_ready = false;
+        static inline std::once_flag lmr_table_once;
 
+        // Precomputed so no logs run in the move loop. Row 0 stays zero (log(0)).
         static void init_lmr_table() {
-            if (lmr_table_ready) return;
-            for (int d = 1; d < LMR_MAX_DEPTH; d++) {
-                for (int i = 0; i < LMR_MAX_MOVES; i++) {
-                    int r = (int)((LMR_BASE + 10000.0 * std::log((double)d)
-                                   * std::log((double)(i + 1)) / LMR_DIV) / 100.0);
-                    lmr_table[d][i] = std::max(0, r);
+            std::call_once(lmr_table_once, []() {
+                for (int d = 1; d < LMR_MAX_DEPTH; d++) {
+                    for (int i = 0; i < LMR_MAX_MOVES; i++) {
+                        // Both terms are in hundredths of a ply: LMR_BASE directly, and
+                        // 10000*ln(d)*ln(i+1)/LMR_DIV for the growth term.
+                        int r = (int)((LMR_BASE + 10000.0 * std::log((double)d)
+                                       * std::log((double)(i + 1)) / LMR_DIV) / 100.0);
+                        lmr_table[d][i] = std::max(0, r);
+                    }
                 }
-            }
-            lmr_table_ready = true;
+            });
         }
 
-        int &corr_entry(GlobalBoard &board) {
+        bool time_up() {
+            if (stopped) return true;
+            if ((nodes & 255) == 0) {
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
+                    stopped = true;
+                }
+            }
+            return stopped;
+        }
+
+        // Live entry for this position; the constraint test mirrors fillLegalMoves.
+        int &corr_entry(FastBoard &board) {
             int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
             int mb = 9;
             if (board.n_moves > 0 && !board.prev_move_was_pass) {
@@ -1245,15 +1390,17 @@ class CrossfishDev {
             return corr_hist[board.n_moves % 2][mb][out_of_play];
         }
 
+        // Clamped clear of the decided-game band, leaving room for the MiniNet
+        // residual that qsearch adds on top of this value.
         static constexpr int CORR_EVAL_LIMIT = CORR_MATE_BOUND - MINI_MAX - 1;
-        int corrected_eval(GlobalBoard &board, int static_eval) {
+        int corrected_eval(FastBoard &board, int static_eval) {
             int v = static_eval + corr_entry(board) / CORR_GRAIN;
             if (v > CORR_EVAL_LIMIT) v = CORR_EVAL_LIMIT;
             if (v < -CORR_EVAL_LIMIT) v = -CORR_EVAL_LIMIT;
             return v;
         }
 
-        void update_corr_hist(GlobalBoard &board, int diff, int d) {
+        void update_corr_hist(FastBoard &board, int diff, int d) {
             if (diff > CORR_DIFF_MAX) diff = CORR_DIFF_MAX;
             if (diff < -CORR_DIFF_MAX) diff = -CORR_DIFF_MAX;
             int w = std::min(d, CORR_MAX_WEIGHT);
@@ -1263,7 +1410,8 @@ class CrossfishDev {
             if (e < -CORR_MAX) e = -CORR_MAX;
         }
 
-        int check_winner_fast(GlobalBoard &board) {
+        template <typename Board>
+        int check_winner_fast(Board &board) {
             int p0 = board.mini_board_states[0];
             int p1 = board.mini_board_states[1];
             if (fast_has_win[p0]) return 0;
@@ -1276,12 +1424,13 @@ class CrossfishDev {
             return -1;
         }
 
-        int fill_legal_moves_fast(GlobalBoard &board, Move *dst) {
+        template <typename Board>
+        int fill_legal_moves_fast(Board &board, Move *dst) {
             int n = 0;
             if (board.n_moves == 0) {
                 for (int mb = 0; mb < 9; mb++) {
                     for (int sq = 0; sq < 9; sq++) {
-                        dst[n++] = Move{(int8_t)mb, (int8_t)sq};
+                        dst[n++] = Move{mb, sq};
                     }
                 }
                 return n;
@@ -1297,7 +1446,7 @@ class CrossfishDev {
                 while (empty) {
                     int sq = __builtin_ctz(empty);
                     empty &= empty - 1;
-                    dst[n++] = Move{(int8_t)mb, (int8_t)sq};
+                    dst[n++] = Move{mb, sq};
                 }
             };
             if (!board.prev_move_was_pass && (out_of_play & (1 << active)) == 0) {
@@ -1313,7 +1462,8 @@ class CrossfishDev {
             return n;
         }
 
-        void set_hce_mb(GlobalBoard &board, int mb) {
+        template <typename Board>
+        void set_hce_mb(Board &board, int mb) {
             int bit = 1 << mb;
             hce_local_score -= hce_mb_scores[mb];
             hce_tiar_maps[0] &= ~bit;
@@ -1337,7 +1487,8 @@ class CrossfishDev {
             hce_tiar_maps[1] |= ((flags >> 1) & 1) << mb;
         }
 
-        void init_hce_acc(GlobalBoard &board) {
+        template <typename Board>
+        void init_hce_acc(Board &board) {
             hce_local_score = 0;
             hce_tiar_maps = {};
             hce_mb_scores = {};
@@ -1361,7 +1512,8 @@ class CrossfishDev {
             hce_tiar_maps[1] |= ((old.flags >> 1) & 1) << mb;
         }
 
-        void make_move_fast(GlobalBoard &board, const Move &move) {
+        template <typename Board>
+        void make_move_fast(Board &board, const Move &move) {
             int stm = board.n_moves & 1;
             int bit = 1 << move.square;
             int mb_bit = 1 << move.mini_board;
@@ -1374,71 +1526,102 @@ class CrossfishDev {
             }
             if (board.n_moves > 0) {
                 board.zobrist_hash ^= board.legal_mini_board_hashes[board.move_history.top().square];
+                xor_tt_hash(board, board.legal_mini_board_hashes[board.move_history.top().square]);
             }
             board.move_history.push(move);
             board.mini_boards[move.mini_board].markers[stm] = before | bit;
             board.zobrist_hash ^= board.move_hashes[stm][move.mini_board][move.square];
+            xor_tt_hash(board, board.move_hashes[stm][move.mini_board][move.square]);
             board.zobrist_hash ^= board.legal_mini_board_hashes[move.square];
+            xor_tt_hash(board, board.legal_mini_board_hashes[move.square]);
+            bool decided = false;
             if (fast_win_moves[before] & bit) {
                 board.mini_board_states[stm] |= mb_bit;
                 board.zobrist_hash ^= board.mini_board_hashes[stm][move.mini_board];
+                xor_tt_hash(board, board.mini_board_hashes[stm][move.mini_board]);
+                decided = true;
             } else {
                 int occupied = board.mini_boards[move.mini_board].markers[0]
                              | board.mini_boards[move.mini_board].markers[1];
                 if (occupied == 511) {
                     board.mini_board_states[2] |= mb_bit;
                     board.zobrist_hash ^= board.mini_board_hashes[2][move.mini_board];
+                    xor_tt_hash(board, board.mini_board_hashes[2][move.mini_board]);
+                    decided = true;
+                }
+            }
+            if (decided) {
+                for (int p = 0; p < 2; p++) {
+                    int markers = board.mini_boards[move.mini_board].markers[p];
+                    while (markers) {
+                        int sq = __builtin_ctz(markers);
+                        markers &= markers - 1;
+                        xor_tt_hash(board, board.move_hashes[p][move.mini_board][sq]);
+                    }
                 }
             }
             board.zobrist_hash ^= board.player_to_move_hash;
+            xor_tt_hash(board, board.player_to_move_hash);
             board.n_moves++;
             if (hce_acc_ready) {
                 set_hce_mb(board, move.mini_board);
             }
         }
 
-        void unmake_move_fast(GlobalBoard &board) {
+        template <typename Board>
+        void unmake_move_fast(Board &board) {
             board.n_moves--;
             board.zobrist_hash ^= board.player_to_move_hash;
+            xor_tt_hash(board, board.player_to_move_hash);
             Move move = board.move_history.top();
             board.move_history.pop();
             int mb_bit = 1 << move.mini_board;
+            bool was_decided = false;
             if (board.mini_board_states[0] & mb_bit) {
                 board.mini_board_states[0] &= ~mb_bit;
                 board.zobrist_hash ^= board.mini_board_hashes[0][move.mini_board];
+                xor_tt_hash(board, board.mini_board_hashes[0][move.mini_board]);
+                was_decided = true;
             } else if (board.mini_board_states[1] & mb_bit) {
                 board.mini_board_states[1] &= ~mb_bit;
                 board.zobrist_hash ^= board.mini_board_hashes[1][move.mini_board];
+                xor_tt_hash(board, board.mini_board_hashes[1][move.mini_board]);
+                was_decided = true;
             } else if (board.mini_board_states[2] & mb_bit) {
                 board.mini_board_states[2] &= ~mb_bit;
                 board.zobrist_hash ^= board.mini_board_hashes[2][move.mini_board];
+                xor_tt_hash(board, board.mini_board_hashes[2][move.mini_board]);
+                was_decided = true;
+            }
+            if (was_decided) {
+                for (int p = 0; p < 2; p++) {
+                    int markers = board.mini_boards[move.mini_board].markers[p];
+                    while (markers) {
+                        int sq = __builtin_ctz(markers);
+                        markers &= markers - 1;
+                        xor_tt_hash(board, board.move_hashes[p][move.mini_board][sq]);
+                    }
+                }
             }
             int stm = board.n_moves & 1;
             board.mini_boards[move.mini_board].markers[stm] &= ~(1 << move.square);
             board.zobrist_hash ^= board.move_hashes[stm][move.mini_board][move.square];
+            xor_tt_hash(board, board.move_hashes[stm][move.mini_board][move.square]);
             board.zobrist_hash ^= board.legal_mini_board_hashes[move.square];
+            xor_tt_hash(board, board.legal_mini_board_hashes[move.square]);
             if (board.n_moves > 0) {
                 board.zobrist_hash ^= board.legal_mini_board_hashes[board.move_history.top().square];
+                xor_tt_hash(board, board.legal_mini_board_hashes[board.move_history.top().square]);
             }
             if (hce_acc_ready) {
                 restore_hce_mb(board.n_moves, move.mini_board);
             }
         }
 
-        bool time_up() {
-            if (stopped) return true;
-            if ((nodes & 255) == 0) {
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
-                    stopped = true;
-                }
-            }
-            return stopped;
-        }
-        Move getMove(GlobalBoard board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
+        Move getMove(GlobalBoard input_board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
+            FastBoard board(input_board);
             init_mini_lut();
             init_lmr_table();
-            mini_load_packed();
             thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
@@ -1447,9 +1630,14 @@ class CrossfishDev {
             fill_legal_moves_fast(board, root_moves);
             root_best_move = root_moves[0];
             init_hce_acc(board);
-
-            //clear killers
             killer_moves = std::array<std::array<int, 9>, 128>();
+            for (auto &by_player : history_table) {
+                for (auto &by_miniboard : by_player) {
+                    for (int &h : by_miniboard) {
+                        h /= 2;
+                    }
+                }
+            }
             if (!counters_ready) {
                 for (int i = 0; i < 9; i++) {
                     for (int j = 0; j < 9; j++) {
@@ -1458,51 +1646,65 @@ class CrossfishDev {
                 }
                 counters_ready = true;
             }
-            // history_table = std::array<std::array<std::array<int, 9>, 9>, 2>();
             start_time = std::chrono::high_resolution_clock::now();
+            if (g_fixed_search_depth > 0) {
+                thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
+                depth = g_fixed_search_depth;
+                search(board, g_fixed_search_depth, 0, min_val, max_val);
+                return root_best_move;
+            }
             depth = 1;
             int alpha = min_val;
             int beta = max_val;
-            int aspiration_window = ASP_PAWNS * PAWN;
-            int searches = 0;
-            int researches = 0;
-            while (!time_up()
-            && (depth < 50)) {
+            int aspiration_window = ASP_PAWNS * eval_weights[PAWN_IDX];
+            while (!time_up() && (depth < 50)) {
                 int eval = search(board, depth, 0, alpha, beta);
                 if (stopped) break;
                 if (eval <= alpha ) {
-                    //fail low
-                    researches++;
                     aspiration_window *= 3;
                     alpha -= aspiration_window;
-
                 }
                 else if (eval >= beta) {
-                    //fail high
-                    researches++;
                     aspiration_window *= 3;
                     beta += aspiration_window;
                 }
                 else {
+                    aspiration_window = ASP_PAWNS * eval_weights[PAWN_IDX];
                     alpha = eval - aspiration_window;
                     beta = eval + aspiration_window;
                     depth++;
                 }
-                // depth++;
-                searches++;
             }
-            // std::cerr << "Depth: " << depth << " Best Move: " << root_best_move.mini_board << " " << root_best_move.square << 
-            // " Score: " << root_score << " Nodes: " << nodes << std::endl;
-            // std::cerr << "Searches: " << searches << " Researches: " << researches << std::endl;
             return root_best_move;
         }
 
-        int qsearch(GlobalBoard &board, int alpha, int beta, int ply) {
-            if (time_up()) {
-                return min_val;
-            }
+        // One full-window search at `d`. No aspiration, no time cutoff.
+        // Returns false on timeout/unfinished sentinel. Mates clamp to ±20000.
+        static constexpr int SEARCH_SCORE_CLAMP = 20000;
+        bool search_fixed_depth(GlobalBoard &input_board, int d, int &out_score) {
+            FastBoard board(input_board);
+            init_mini_lut();
+            init_lmr_table();
+            thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
+            nodes = 0;
+            stopped = false;
+            root_score = 0;
+            depth = d;
+            init_hce_acc(board);
+            killer_moves = std::array<std::array<int, 9>, 128>();
+            corr_hist = {};
+            start_time = std::chrono::high_resolution_clock::now();
+            int eval = search(board, d, 0, min_val, max_val);
+            if (stopped || eval == min_val) return false;
+            if (eval > SEARCH_SCORE_CLAMP) eval = SEARCH_SCORE_CLAMP;
+            if (eval < -SEARCH_SCORE_CLAMP) eval = -SEARCH_SCORE_CLAMP;
+            out_score = eval;
+            return true;
+        }
+
+        int qsearch(FastBoard &board, int alpha, int beta, int ply) {
+            if (time_up()) return min_val;
             nodes++;
-            //should we stop searching?
 
             int winner = check_winner_fast(board);
             if (winner != -1){
@@ -1511,10 +1713,10 @@ class CrossfishDev {
                 }
                 else {
                     if (winner == board.n_moves % 2) {
-                        return max_val - ply; //current player won
+                        return max_val - ply;
                     }
                     else {
-                        return min_val + ply; //previous player won
+                        return min_val + ply;
                     }
                 }
             }
@@ -1525,6 +1727,7 @@ class CrossfishDev {
             }
             int stand_pat;
             if (hce + MINI_MAX < alpha) {
+                // MiniNet is clamped near ±2000; it cannot raise alpha or fail high.
                 stand_pat = hce + MINI_MAX;
             } else {
                 stand_pat = hce + evaluate_mini(board);
@@ -1535,11 +1738,10 @@ class CrossfishDev {
             if (alpha < stand_pat) {
                 alpha = stand_pat;
             }
-            if (stand_pat + QDELTA_PAWNS * PAWN < alpha) {
+            if (!g_disable_eval_prune && stand_pat + QDELTA_PAWNS * eval_weights[PAWN_IDX] < alpha) {
                 return alpha;
             }
 
-            //get and sort moves
             Move caps[81];
             int scores[81];
             int n_caps = fill_captures_lut(board, caps);
@@ -1550,21 +1752,17 @@ class CrossfishDev {
                 make_move_fast(board, caps[i]);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
                 unmake_move_fast(board);
+                if (stopped) return min_val;
                 alpha = std::max(alpha, val);
                 if (alpha >= beta) {
                     break;
                 }
             }
             return alpha;
-
-
-
         }
 
-        int search(GlobalBoard &board, int8_t depth, int ply, int alpha, int beta,  bool can_null = true) {
-            if (time_up()) {
-                return min_val;
-            }
+        int search(FastBoard &board, int depth, int ply, int alpha, int beta) {
+            if (time_up()) return min_val;
             nodes++;
             int winner = check_winner_fast(board);
             if (winner != -1){
@@ -1579,19 +1777,20 @@ class CrossfishDev {
                         return min_val + ply;
                     }
                 }
-                
             }
             bool pv_node = (beta - alpha > 1);
-            CompactTTEntry entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
-            bool tt_hit = (entry.zobrist_hash == board.zobrist_hash) && (board.zobrist_hash != 0);
+            CompactTTEntry entry = transposition_table[board.tt_hash & (tt_size - 1)];
+            bool tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
             Move tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
             if (tt_hit && (entry.depth >= depth) && !pv_node) {
-                // 0 exact, 1 upper (fail low), 2 lower (fail high)
-                if (entry.flag == 0) {
+                // Flags match the original store: 0 exact, 1 upper (fail low), 2 lower (fail high).
+                if (entry.flag == TT_EXACT) {
                     return entry.score;
-                } else if (entry.flag == 2) {
+                }
+                else if (entry.flag == TT_LOWER) {
                     if (entry.score >= beta) return entry.score;
-                } else if (entry.flag == 1) {
+                }
+                else if (entry.flag == TT_UPPER) {
                     if (entry.score <= alpha) return entry.score;
                 }
             }
@@ -1602,28 +1801,28 @@ class CrossfishDev {
             bool can_futility_prune = false;
             int static_eval = 0;
             bool have_static = false;
-            if (!pv_node) {
+            if (!pv_node && !g_disable_eval_prune) {
                 static_eval = corrected_eval(board, evaluate_hce_incremental(board));
                 have_static = true;
 
-                int reverse_futility_margin = RFP_PAWNS * PAWN;
+                int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (static_eval - reverse_futility_margin * depth >= beta) {
                     return beta;
                 }
 
-                int futility_margin = FP_PAWNS * PAWN;
+                int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
                 can_futility_prune = (static_eval + futility_margin * depth <= alpha);
             }
             if (pv_node && !tt_hit && depth > 2) {
-                search(board, 1, ply, alpha, beta, false);
+                search(board, 1, ply, alpha, beta);
                 if (stopped) return min_val;
-                entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
-                tt_hit = (entry.zobrist_hash == board.zobrist_hash) && (board.zobrist_hash != 0);
+                entry = transposition_table[board.tt_hash & (tt_size - 1)];
+                tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
                 tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
             }
 
-            bool singular = (tt_hit && entry.depth >= depth - 3 && (entry.flag == 2 || entry.flag == 0));
-        
+            bool singular = (tt_hit && entry.depth >= depth - 3 && (entry.flag == TT_LOWER || entry.flag == TT_EXACT));
+
             Move legal_moves[81];
             int scores[81];
             int nmoves = fill_legal_moves_fast(board, legal_moves);
@@ -1636,31 +1835,32 @@ class CrossfishDev {
             int val;
             for (int i = 0; i < nmoves; i++) {
                 bool capture = is_capture_avx(board, legal_moves[i]);
-                if (can_futility_prune && i > 0 && !capture) { //dont search quiet moves in already losing positions
+                if (can_futility_prune && i > 0 && !capture) {
                     continue;
                 }
                 int extension = 0;
-                //one reply extension or singular extension
                 if (nmoves==1 || (singular && legal_moves[i].mini_board == tt_move.mini_board && legal_moves[i].square == tt_move.square)) {
                     extension = 1;
                 }
 
                 make_move_fast(board, legal_moves[i]);
                 if (i == 0) {
-                    val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha, can_null);
+                    val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                 }
                 else {
                     int reduction = 0;
-                    if (scores[i] < 0 || (i >= 3 && !capture)) {
-                        reduction = lmr_table[std::min((int)depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
+                    bool do_lmr = (scores[i] < 0 || (i >= 3 && !capture));
+                    if (do_lmr) {
+                        reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
                         if (pv_node && reduction > 0) reduction--;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
-                    val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha, can_null);
+                    val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha);
+                    // Reduced searches are not allowed to fail high unchallenged.
                     if (val > alpha) {
-                        val = -search(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha, can_null);
+                        val = -search(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha);
                         if (val > alpha && val < beta) {
-                            val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha, can_null);
+                            val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                         }
                     }
                 }
@@ -1695,31 +1895,31 @@ class CrossfishDev {
                 }
             }
             if (!stopped) {
-                int8_t flag = 0;
+                int flag = TT_EXACT;
                 if (best_val <= alpha_orig) {
-                    flag = 1;
+                    flag = TT_UPPER;
                 }
                 else if (best_val >= beta) {
-                    flag = 2;
+                    flag = TT_LOWER;
                 }
                 CompactTTEntry new_entry = {
-                    board.zobrist_hash,
+                    board.tt_hash,
                     best_val,
                     (int16_t)depth,
-                    flag,
+                    (int8_t)flag,
                     pack_tt_move(best_move)
                 };
-                transposition_table[board.zobrist_hash & (tt_size - 1)] = new_entry;
+                transposition_table[board.tt_hash & (tt_size - 1)] = new_entry;
+                // Only a bound that actually contradicts the static eval carries information.
                 if (have_static && abs(best_val) < CORR_MATE_BOUND
-                    && (flag == 0
-                        || (flag == 2 && best_val > static_eval)
-                        || (flag == 1 && best_val < static_eval))) {
+                    && (flag == TT_EXACT
+                        || (flag == TT_LOWER && best_val > static_eval)
+                        || (flag == TT_UPPER && best_val < static_eval))) {
                     update_corr_hist(board, best_val - static_eval, depth);
                 }
             }
 
             return best_val;
-
         }
 
         void sort_moves(Move* moves, int* scores, int n) {
@@ -1734,23 +1934,11 @@ class CrossfishDev {
                 }
                 scores[j + 1] = key;
                 moves[j + 1] = key_move;
-            } 
+            }
         }
 
-        // bool miniboard_is_winnable(GlobalBoard &board, int mb, int player) {
-            
-        //     //check if any of the win masks satisfy
-        //     // (other player's markers) & (win mask) == 0
-        //     bool result = false;
-        //     int opp_markers = board.mini_boards[mb].markers[(player + 1) % 2];
-        //     for (int i = 0; i < board.win_masks.size(); i++) {
-        //         result = result || ((opp_markers & board.win_masks[i]) == 0);
-        //     }
-        //     return result;
-
-        // }
-
-        int fill_captures_lut(GlobalBoard &board, Move* dst) {
+        template <typename Board>
+        int fill_captures_lut(Board &board, Move* dst) {
             int n = 0;
             if (board.n_moves == 0) return 0;
             int active_square = board.move_history.top().square;
@@ -1764,7 +1952,7 @@ class CrossfishDev {
                 while (wins) {
                     int s = __builtin_ctz(wins);
                     wins &= wins - 1;
-                    dst[n++] = Move{(int8_t)mb, (int8_t)s};
+                    dst[n++] = Move{mb, s};
                 }
             };
             if ((out_of_play & (1 << active_square)) == 0) {
@@ -1777,19 +1965,22 @@ class CrossfishDev {
             return n;
         }
 
-        bool is_capture_avx(GlobalBoard &board, Move &move) {
+        template <typename Board>
+        bool is_capture_avx(Board &board, Move &move) {
             int stm = board.n_moves % 2;
             int mine = board.mini_boards[move.mini_board].markers[stm];
             return (fast_win_moves[mine] & (1 << move.square)) != 0;
         }
 
-        bool is_block_avx(GlobalBoard &board, Move &move) {
+        template <typename Board>
+        bool is_block_avx(Board &board, Move &move) {
             int opp = (board.n_moves + 1) % 2;
             int theirs = board.mini_boards[move.mini_board].markers[opp];
             return (fast_win_moves[theirs] & (1 << move.square)) != 0;
         }
 
-        bool creates_two_in_a_row(GlobalBoard &board, Move &move) {
+        template <typename Board>
+        bool creates_two_in_a_row(Board &board, Move &move) {
             int idx = mini_index(
                 board.mini_boards[move.mini_board].markers[0],
                 board.mini_boards[move.mini_board].markers[1]);
@@ -1797,7 +1988,8 @@ class CrossfishDev {
             return (mini_tiar_sq[idx][stm] & (1 << move.square)) != 0;
         }
 
-        void get_move_scores(Move* moves, int n, Move tt_move, GlobalBoard &board, int &ply, int* scores, bool qs = false) {
+        template <typename Board>
+        void get_move_scores(Move* moves, int n, Move tt_move, Board &board, int &ply, int* scores, bool qs = false) {
             if (n <= 1) {
                 if (n == 1) scores[0] = 0;
                 return;
@@ -1848,42 +2040,163 @@ class CrossfishDev {
                 if ((out_of_play & (1 << sq)) != 0) {
                     move_score -= 250;
                 }
-                move_score += history_table[stm][mb][sq] / 20;
+                int hs = history_table[stm][mb][sq] / 20;
+                move_score += hs;
                 scores[i] = move_score;
             }
         }
 
-        int finish_hce(GlobalBoard &board, int local,
-                       int p0_two_in_a_row_map,
-                       int p1_two_in_a_row_map) {
+        static constexpr int N_EVAL_WEIGHTS = 10;
+        int eval_weights[N_EVAL_WEIGHTS] = {2410, 836, 464, 1316, 534, 424, 33, PAWN, 33, 112};
+
+        void eval_diffs(GlobalBoard &board, int *d) {
+            init_mini_lut();
+            int p0_miniboards_held = __builtin_popcount(board.mini_board_states[0]);
+            int p1_miniboards_held = __builtin_popcount(board.mini_board_states[1]);
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int p0_two_in_a_row = 0;
+            int p1_two_in_a_row = 0;
+            int p0_center_squares_held = 0;
+            int p1_center_squares_held = 0;
+            int p0_corner_squares_held = 0;
+            int p1_corner_squares_held = 0;
+            int p0_squares_held = 0;
+            int p1_squares_held = 0;
+            int p0_two_in_a_row_map = 0;
+            int p1_two_in_a_row_map = 0;
+            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+
+            for (int miniboard = 0; miniboard < 9; miniboard++) {
+                if ((out_of_play & (1 << miniboard)) != 0) {
+                    continue;
+                }
+                const MiniLut &e = mini_lut[mini_index(
+                    board.mini_boards[miniboard].markers[0],
+                    board.mini_boards[miniboard].markers[1])];
+                p0_two_in_a_row += e.p0_tiar;
+                p1_two_in_a_row += e.p1_tiar;
+                p0_two_in_a_row_map |= ((1 << miniboard) * (e.p0_tiar != 0));
+                p1_two_in_a_row_map |= ((1 << miniboard) * (e.p1_tiar != 0));
+                p0_center_squares_held += e.p0_center;
+                p1_center_squares_held += e.p1_center;
+                p0_corner_squares_held += e.p0_corner;
+                p1_corner_squares_held += e.p1_corner;
+                p0_squares_held += e.p0_sq;
+                p1_squares_held += e.p1_sq;
+            }
+
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
-            int out_of_play = p0_miniboards | p1_miniboards | board.mini_board_states[2];
-            const int corners = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 8);
-            int val = 2410 * (__builtin_popcount(p0_miniboards)
-                            - __builtin_popcount(p1_miniboards));
-            val += 836 * (((p0_miniboards >> 4) & 1) - ((p1_miniboards >> 4) & 1));
-            val += 464 * (__builtin_popcount(p0_miniboards & corners)
-                          - __builtin_popcount(p1_miniboards & corners));
-            val += 1316 * ((int)fast_threat_count[(p0_miniboards << 9) | p1_miniboards]
-                           - (int)fast_threat_count[(p1_miniboards << 9) | p0_miniboards]);
-            val += 424 * ((int)fast_threat_count[
-                              ((p0_miniboards | p0_two_in_a_row_map) << 9) | p1_miniboards]
-                          - (int)fast_threat_count[
-                              ((p1_miniboards | p1_two_in_a_row_map) << 9) | p0_miniboards]);
-            val += local;
-            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
-            int score = stm_sign * val + 112;
-            if (board.n_moves > 0) {
-                if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
-                    score += FREE_MOVE_PAWNS * PAWN;
-                }
+            int p0_center_miniboard_held = __builtin_popcount(p0_miniboards & (1 << 4));
+            int p1_center_miniboard_held = __builtin_popcount(p1_miniboards & (1 << 4));
+            int p0_corner_miniboards_held = __builtin_popcount(p0_miniboards & corners);
+            int p1_corner_miniboards_held = __builtin_popcount(p1_miniboards & corners);
+            int p0_global_two_in_a_row = 0;
+            int p1_global_two_in_a_row = 0;
+            int p0_two_in_a_rows_lined_up = 0;
+            int p1_two_in_a_rows_lined_up = 0;
+            for(int i = 0; i < N_TIAR_MASKS / 2; i++) {
+                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
+                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
+                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1]))  / 2);
+                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1]))   / 2);
             }
-            return score;
+            d[0] = p0_miniboards_held - p1_miniboards_held;
+            d[1] = p0_center_miniboard_held - p1_center_miniboard_held;
+            d[2] = p0_corner_miniboards_held - p1_corner_miniboards_held;
+            d[3] = p0_global_two_in_a_row - p1_global_two_in_a_row;
+            d[4] = p0_two_in_a_row - p1_two_in_a_row;
+            d[5] = p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up;
+            d[6] = p0_center_squares_held - p1_center_squares_held;
+            d[7] = p0_corner_squares_held - p1_corner_squares_held;
+            d[8] = p0_squares_held - p1_squares_held;
+            d[9] = 0;
         }
 
-        int evaluate_hce(GlobalBoard &board) {
+        // Frozen global terms + tempo, in evaluate() units: stm*global + tempo.
+        // Live miniboard LUT indices are written to idx_out.
+        void eval_parts(GlobalBoard &board, int16_t *idx_out, int &n_out, int &base_out) {
             init_mini_lut();
+            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+            int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+            int p0_two_in_a_row_map = 0;
+            int p1_two_in_a_row_map = 0;
+            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
+            n_out = 0;
+            for (int miniboard = 0; miniboard < 9; miniboard++) {
+                if ((out_of_play & (1 << miniboard)) != 0) {
+                    continue;
+                }
+                int idx = mini_index(
+                    board.mini_boards[miniboard].markers[0],
+                    board.mini_boards[miniboard].markers[1]);
+                idx_out[n_out++] = (int16_t)idx;
+                const MiniLut &e = mini_lut[idx];
+                p0_two_in_a_row_map |= ((1 << miniboard) * (e.p0_tiar != 0));
+                p1_two_in_a_row_map |= ((1 << miniboard) * (e.p1_tiar != 0));
+            }
+
+            int p0_miniboards = board.mini_board_states[0];
+            int p1_miniboards = board.mini_board_states[1];
+            int p0_global_two_in_a_row = 0;
+            int p1_global_two_in_a_row = 0;
+            int p0_two_in_a_rows_lined_up = 0;
+            int p1_two_in_a_rows_lined_up = 0;
+            for(int i = 0; i < N_TIAR_MASKS / 2; i++) {
+                int third = two_in_a_row_masks[i * 2 + 1];
+                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & third)) /2);
+                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & third)) /2);
+                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & third))  / 2);
+                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & third))   / 2);
+            }
+            int g = eval_weights[0] * (__builtin_popcount(p0_miniboards) - __builtin_popcount(p1_miniboards));
+            g += eval_weights[1] * (__builtin_popcount(p0_miniboards & (1 << 4)) - __builtin_popcount(p1_miniboards & (1 << 4)));
+            g += eval_weights[2] * (__builtin_popcount(p0_miniboards & corners) - __builtin_popcount(p1_miniboards & corners));
+            g += eval_weights[3] * (p0_global_two_in_a_row - p1_global_two_in_a_row);
+            g += eval_weights[5] * (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up);
+            base_out = stm_sign * g + eval_weights[9];
+        }
+
+        // STM-centric bonus on top of the linear/LUT eval.
+        template <typename Board>
+        int eval_extra(Board &board) {
+            if (board.n_moves > 0) {
+                int out_of_play = board.mini_board_states[0] | board.mini_board_states[1] | board.mini_board_states[2];
+                if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
+                    return FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
+                }
+            }
+            return 0;
+        }
+
+        template <typename Board>
+        int finish_hce(Board &board, int local,
+                       int p0_two_in_a_row_map,
+                       int p1_two_in_a_row_map) {
+            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+            int p0_miniboards = board.mini_board_states[0];
+            int p1_miniboards = board.mini_board_states[1];
+            const int corners = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 8);
+            int global = eval_weights[0]
+                * (__builtin_popcount(p0_miniboards) - __builtin_popcount(p1_miniboards));
+            global += eval_weights[1]
+                * (((p0_miniboards >> 4) & 1) - ((p1_miniboards >> 4) & 1));
+            global += eval_weights[2]
+                * (__builtin_popcount(p0_miniboards & corners)
+                   - __builtin_popcount(p1_miniboards & corners));
+            global += eval_weights[3]
+                * ((int)fast_threat_count[(p0_miniboards << 9) | p1_miniboards]
+                   - (int)fast_threat_count[(p1_miniboards << 9) | p0_miniboards]);
+            global += eval_weights[5]
+                * ((int)fast_threat_count[
+                       ((p0_miniboards | p0_two_in_a_row_map) << 9) | p1_miniboards]
+                   - (int)fast_threat_count[
+                       ((p1_miniboards | p1_two_in_a_row_map) << 9) | p0_miniboards]);
+            return stm_sign * (global + local) + eval_weights[9] + eval_extra(board);
+        }
+
+        template <typename Board>
+        int evaluate_hce(Board &board) {
             int out_of_play = board.mini_board_states[0]
                             | board.mini_board_states[1]
                             | board.mini_board_states[2];
@@ -1892,20 +2205,21 @@ class CrossfishDev {
             int p0_two_in_a_row_map = 0;
             int p1_two_in_a_row_map = 0;
             while (live) {
-                int mb = __builtin_ctz(live);
+                int miniboard = __builtin_ctz(live);
                 live &= live - 1;
-                int packed = (board.mini_boards[mb].markers[0] << 9)
-                           | board.mini_boards[mb].markers[1];
+                int packed = (board.mini_boards[miniboard].markers[0] << 9)
+                           | board.mini_boards[miniboard].markers[1];
                 local += fast_local_score[packed];
                 int flags = fast_tiar_flags[packed];
-                p0_two_in_a_row_map |= (flags & 1) << mb;
-                p1_two_in_a_row_map |= ((flags >> 1) & 1) << mb;
+                p0_two_in_a_row_map |= (flags & 1) << miniboard;
+                p1_two_in_a_row_map |= ((flags >> 1) & 1) << miniboard;
             }
             return finish_hce(board, local, p0_two_in_a_row_map,
                               p1_two_in_a_row_map);
         }
 
-        int evaluate_hce_incremental(GlobalBoard &board) {
+        template <typename Board>
+        int evaluate_hce_incremental(Board &board) {
             if (!hce_acc_ready) {
                 return evaluate_hce(board);
             }
@@ -1914,17 +2228,13 @@ class CrossfishDev {
         }
 
         int evaluate(GlobalBoard &board) {
+            if (g_force_hce_eval) {
+                return evaluate_hce(board);
+            }
             return evaluate_hce(board) + evaluate_mini(board);
         }
 
 };
-
-
-
-
-
-
-
 
 Move grid_coord_to_move(int row, int col) {
     int8_t mini_board = (row / 3) * 3 + (col / 3);

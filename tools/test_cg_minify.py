@@ -202,6 +202,8 @@ class TestKeepAndScope(unittest.TestCase):
         self.assertTrue(m._keep_ident("__m256i"))
         self.assertTrue(m._keep_ident("_mm256_add_epi32"))
         self.assertTrue(m._keep_ident("_MM_SHUFFLE"))
+        self.assertTrue(m._keep_ident("top"))
+        self.assertTrue(m._keep_ident("count"))
         self.assertFalse(m._keep_ident("mini_board"))
         self.assertFalse(m._keep_ident("evaluate"))
 
@@ -297,6 +299,18 @@ class TestRenameIdentifiers(unittest.TestCase):
         out = m.minify_cpp(src)
         self.assertNotIn("mini_board", out)
         self.assertIn(".data()", out)
+
+    def test_keeps_user_defined_std_method_spelling(self):
+        src = (
+            "struct Stack { int count; int top(){return count;} "
+            "void push(){count++;} void pop(){count--;} }; "
+            "Stack s; s.push(); s.pop(); return s.top();"
+        )
+        out = m.minify_cpp(src)
+        self.assertIn("count", out)
+        self.assertIn("top()", out)
+        self.assertIn("push()", out)
+        self.assertIn("pop()", out)
 
     def test_arrow_std_method_kept(self):
         out = m.minify_cpp("p->size(); p->mini_board;")
