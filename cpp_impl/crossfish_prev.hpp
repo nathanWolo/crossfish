@@ -105,9 +105,9 @@ class CrossfishPrev {
         static constexpr int CORR_MB = 10;
         static constexpr int CORR_MASKS = 512;
         // Stored units are CORR_GRAIN x eval units. The gravity term bounds |entry| at
-        // CORR_SCALE, so the applied shift never exceeds CORR_SCALE / CORR_GRAIN = 512.
+        // CORR_SCALE, so the applied shift never exceeds CORR_SCALE / CORR_GRAIN.
         static constexpr int CORR_SCALE = 16384;
-        static constexpr int CORR_GRAIN = 32;
+        static constexpr int CORR_GRAIN = 24;
         static constexpr int CORR_MAX = 16384;
         // CORR_DIFF_MAX * CORR_MAX_WEIGHT <= CORR_SCALE keeps the update a contraction.
         static constexpr int CORR_DIFF_MAX = 1024;

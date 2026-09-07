@@ -587,3 +587,23 @@ The unrestricted first prototype demonstrated the root hazard clearly,
 falling about 303 Elo before it was stopped at N=256. The accepted version
 changes neither evaluation nor TT replacement; it only reuses already exact
 work where the caller needs a score rather than a root move.
+
+---
+
+## 19. Apply correction history more strongly (7 September 2026)
+
+Correction history keeps the same exact structural key, update rule, and
+bounded storage, but converts stored units back to evaluation units with a
+grain of 24 instead of 32. This raises the maximum applied correction from
+512 to about 683 evaluation units without changing how evidence is learned.
+
+```text
+N: 9344 W: 3490 D: 2591 L: 3263
+Elo diff: +8.44 +/- 5.99
+LLR: +3.03 (H0=0, H1=+5) — PASS
+```
+
+A weaker grain of 48 previously resolved near parity. Replacing the exact
+decided-miniboard mask with an owner/material-count key looked better on
+held-out score residuals but lost about 9 Elo in online self-play, confirming
+that the layout-specific history remains important.
