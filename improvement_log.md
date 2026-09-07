@@ -705,3 +705,19 @@ Elo diff: +9.35 +/- 6.44
 LLR: +3.01 (H0=0, H1=+5) — PASS
 Prev NPS: 12.99M  Dev NPS: 14.97M
 ```
+
+---
+
+## 25. Round-four direct +50 proof (7 September 2026)
+
+The complete sections 17–24 branch was tested at 20 ms against the exact
+current `origin/main` engine (`1c5b3f7cab8deee036a12799ea36029680ce8d0d`),
+not against the sequentially advanced Prev snapshot. The raised-hypothesis
+SPRT verified that the bundle clears another 50 Elo:
+
+```text
+N: 5920 W: 2632 D: 1635 L: 1653
+Elo diff: +57.99 +/- 7.60
+LLR: +3.00 (H0=+50, H1=+55) — PASS
+Prev NPS: 14.35M  Dev NPS: 15.87M
+```
