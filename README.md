@@ -206,7 +206,7 @@ CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags 
 
 ## CodinGame file and minifier
 
-CodinGame's source cap is **100,000 characters**. The readable source is `cpp_impl/codingame_nnue.cpp` (~108k, over the cap). Paste **`cpp_impl/cg_input.cpp`** into the IDE (~61k, about 39k of headroom).
+CodinGame's source cap is **100,000 characters**. The readable source is `cpp_impl/codingame_nnue.cpp` (~126k, over the cap). Paste **`cpp_impl/cg_input.cpp`** into the IDE (~66k, about 34k of headroom).
 
 `tools/cg_minify.py` is an ice4-style minifier: it strips comments and indentation, renames identifiers, and packs tokens. It does not change search or eval. Rebuild the paste file after editing the readable source:
 
@@ -218,19 +218,20 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
 
 ## Latest strength result
 
-On 2026-09-06, the hot-path bundle (exact win LUTs, compact 16-byte TT, persist
-corrhist, global-win ordering, incremental HCE) passed the official 20ms SPRT
-against correction history + log LMR (`ab420b3`):
+On 2026-09-07, the round-3 bundle (aspiration reset, ternary-index LUT,
+compact search board, canonical decided-miniboard TT keys, and root history
+aging) passed a direct 20ms SPRT against current `origin/main` (`f453086`):
 
 ```text
-N: 1536 W: 642 D: 427 L: 467
-Elo diff: +39.76 +/- 14.83
-LLR: +3.04 (H0=0, H1=+5) — PASS
-Prev NPS: 15,877,888  Dev NPS: 24,697,088
+N: 3328 W: 1573 D: 817 L: 938
+Elo diff: +67.12 +/- 10.38
+LLR: +3.05 (H0=+50, H1=+55) — PASS
+Prev NPS: 13,149,952  Dev NPS: 14,300,416
 ```
 
-Author longer run on the same pair: N 6624, H0=+50 / H1=+55, +57.91 +/- 7.31,
-LLR +3.02 (think-ms unstated). Paste `cpp_impl/cg_input.cpp` (rebuilt from this Dev).
+The final independent step, aging move history between turns, also passed its
+own H0=0 / H1=+5 gate at N=2016, **+30.93 +/- 13.10**, LLR +3.00. Paste
+`cpp_impl/cg_input.cpp` (rebuilt from this Dev).
 
 Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
 

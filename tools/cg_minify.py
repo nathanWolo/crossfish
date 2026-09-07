@@ -231,7 +231,11 @@ def tokenize(src: str) -> list[str]:
 
 
 def _keep_ident(name: str) -> bool:
-    if name in RESERVED:
+    # Keep standard method spellings everywhere, not only after `.` / `->`.
+    # A user-defined stack-like type may implement `top`, `push`, `pop`, or
+    # `count`; renaming its declaration while preserving member calls would
+    # produce an invalid program.
+    if name in RESERVED or name in STD_METHODS:
         return True
     if name.startswith("__") or name.startswith("_mm") or name.startswith("_MM"):
         return True

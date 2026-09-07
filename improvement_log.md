@@ -377,8 +377,12 @@ A honest running story, not a sum:
 6. MiniNet is a *small* timed gain (**+7 to +11** vs HCE) and a *large* equal-depth gain (**+54**), then skip/AVX buy back the tax (**+20 to +31**, then **+26 to +29**).
 7. Precomputed HCE + MiniNet projection: **~2× NPS**, **+50 to +100** timed depending on the hypothesis, same leaf.
 8. Correction history + log LMR: **+33** at 20 ms. Then the #15 hot-path bundle: another **+40** at 20 ms, mostly speed (1.56× NPS) plus persist-corrhist and global-win ordering.
+9. The #16 compact-state / canonical-TT bundle clears a direct **+50 Elo**
+   hypothesis against #15: **+67.1 +/- 10.4**, LLR +3.05.
 
-CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet moved 82 → 68. The September hot-path bundle is the current ship. Absolute ladder Elo is noisy and not what SPRT measures.
+CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet
+moved 82 → 68. The round-3 bundle is the current ship. Absolute ladder Elo is
+noisy and not what SPRT measures.
 
 ---
 
@@ -386,7 +390,7 @@ CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet m
 
 | Piece | Role |
 | --- | --- |
-| `crossfish_prev.hpp` | Frozen last accepted engine (#15 hot-path bundle) |
+| `crossfish_prev.hpp` | Frozen last accepted engine (#16 round-3 bundle) |
 | `crossfish_dev.hpp` | Same program as Prev until the next experiment |
 | `mini_eval.hpp` | Packed D=8 H=4 residual |
 | `codingame_nnue.cpp` | Readable CG bot |
@@ -494,3 +498,40 @@ Persist-corrhist and global-win order are real search changes, not just a
 faster rewrite of the same tree.
 
 Shipped: `codingame_nnue.cpp` and `cg_input.cpp` carry this Dev.
+
+---
+
+## 16. Compact search state and canonical TT (7 September 2026)
+
+Five sequentially frozen changes landed on top of PR #10 (`f453086`):
+
+- Reset the aspiration window to its base width after every successful
+  iteration instead of carrying a widened failure window forward:
+  **+12.26 +/- 7.58 Elo**, LLR +3.09.
+- Precompute the 9-bit-mask contribution to each local ternary index:
+  **+10.97 +/- 7.18 Elo**, LLR +3.00.
+- Search on a compact board with a fixed move stack rather than copying and
+  mutating the full `GlobalBoard`: **+8.03 +/- 5.78 Elo**, LLR +3.05.
+- Give the TT a canonical key that removes stones from already-decided
+  miniboards. Those stones can never affect legal play again, so positions
+  reached through different local move orders now merge:
+  N=3584 W=1439 D=900 L=1245, **+18.82 +/- 9.86 Elo**, LLR +3.06.
+- Halve move-history values at the start of each turn so tactical ordering
+  retains recent evidence without letting early-game cutoffs dominate the
+  whole match:
+  N=2016 W=837 D=521 L=658, **+30.93 +/- 13.10 Elo**, LLR +3.00.
+
+Those sequential results are selection gates, not additive Elo. The shipping
+proof was one direct 20 ms SPRT of the complete branch against the exact
+current `origin/main` engine, with H0=+50 and H1=+55:
+
+```text
+N: 3328 W: 1573 D: 817 L: 938
+Elo diff: +67.12 +/- 10.38
+LLR: +3.05 — PASS
+Prev NPS: 13,149,952  Dev NPS: 14,300,416
+```
+
+`codingame_nnue.cpp` carries the same tested engine class. `cg_input.cpp` was
+regenerated with the identifier-renaming minifier and remains below the
+100,000-character CodinGame cap.
