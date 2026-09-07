@@ -685,3 +685,23 @@ N: 13216 W: 4858 D: 3750 L: 4608
 Elo diff: +6.57 +/- 5.01
 LLR: +3.00 (H0=0, H1=+5) — PASS
 ```
+
+---
+
+## 24. Prefetch child transposition entries (7 September 2026)
+
+After making each full-search move, the engine now prefetches the child
+position's transposition-table slot before entering the recursive search.
+The TT is a random-access 4 MiB table; winner detection and search setup
+between the prefetch and probe provide useful memory-latency overlap without
+changing the searched tree, replacement policy, or stored entries.
+
+The fixed-depth gate remained neutral, while the timed screen showed a large
+start-position NPS increase. Formal 20 ms SPRT confirmed the gain:
+
+```text
+N: 8032 W: 2990 D: 2268 L: 2774
+Elo diff: +9.35 +/- 6.44
+LLR: +3.01 (H0=0, H1=+5) — PASS
+Prev NPS: 12.99M  Dev NPS: 14.97M
+```

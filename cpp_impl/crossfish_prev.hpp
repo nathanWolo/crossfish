@@ -14,7 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen compact-move SPRT winner on 2026-09-07.
+// Frozen TT-prefetch SPRT winner on 2026-09-07.
 class CrossfishPrev {
        private:
         struct FastMoveStack {
@@ -951,6 +951,8 @@ class CrossfishPrev {
                 }
 
                 make_move_fast(board, move);
+                __builtin_prefetch(
+                    &transposition_table[board.tt_hash & (tt_size - 1)], 0, 1);
                 if (i == 0) {
                     val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                 }

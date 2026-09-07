@@ -47,6 +47,8 @@
 // canonical decided-miniboard TT keys, and root history aging. Direct 20ms
 // SPRT vs PR #10: N 3328 W 1573 D 817 L 938, +67.12 +/- 10.38 Elo;
 // LLR +3.05 for H0=+50 / H1=+55.
+// Child TT prefetch: 20ms N 8032 W 2990 D 2268 L 2774,
+// +9.35 +/- 6.44 Elo, LLR +3.01.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
@@ -1902,6 +1904,8 @@ class CrossfishDev {
                 }
 
                 make_move_fast(board, move);
+                __builtin_prefetch(
+                    &transposition_table[board.tt_hash & (tt_size - 1)], 0, 1);
                 if (i == 0) {
                     val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                 }

@@ -950,6 +950,8 @@ class CrossfishDev {
                 }
 
                 make_move_fast(board, move);
+                __builtin_prefetch(
+                    &transposition_table[board.tt_hash & (tt_size - 1)], 0, 1);
                 if (i == 0) {
                     val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                 }
