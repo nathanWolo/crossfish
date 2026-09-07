@@ -607,3 +607,22 @@ A weaker grain of 48 previously resolved near parity. Replacing the exact
 decided-miniboard mask with an owner/material-count key looked better on
 held-out score residuals but lost about 9 Elo in online self-play, confirming
 that the layout-specific history remains important.
+
+---
+
+## 20. Search the hash move before scoring the rest (7 September 2026)
+
+When a legal TT move is available, search now moves it to the front without
+first scoring and sorting every legal move. If the hash move does not cut,
+the remaining moves are scored and stably sorted before the second move.
+
+Besides avoiding wasted ordering work on immediate cutoffs, the delay lets
+recursive cutoffs from the hash-move search refresh history, counter, and
+killer data before the remaining moves are scored. A fixed-depth screen was
+positive as a result; this is not merely a timed NPS change.
+
+```text
+N: 6560 W: 2466 D: 1840 L: 2254
+Elo diff: +11.23 +/- 7.13
+LLR: +3.11 (H0=0, H1=+5) — PASS
+```

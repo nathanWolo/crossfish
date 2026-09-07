@@ -875,14 +875,39 @@ class CrossfishPrev {
             Move legal_moves[81];
             int scores[81];
             int nmoves = fill_legal_moves_fast(board, legal_moves);
-            get_move_scores(legal_moves, nmoves, tt_move, board, ply, scores, false);
-            sort_moves(legal_moves, scores, nmoves);
+            bool defer_move_scores = false;
+            int tt_index = -1;
+            for (int i = 0; i < nmoves; i++) {
+                if (legal_moves[i].mini_board == tt_move.mini_board
+                    && legal_moves[i].square == tt_move.square) {
+                    tt_index = i;
+                    break;
+                }
+            }
+            if (tt_index >= 0) {
+                Move hash_move = legal_moves[tt_index];
+                for (int i = tt_index; i > 0; i--) {
+                    legal_moves[i] = legal_moves[i - 1];
+                }
+                legal_moves[0] = hash_move;
+                scores[0] = 1000;
+                defer_move_scores = true;
+            } else {
+                get_move_scores(legal_moves, nmoves, tt_move, board, ply, scores, false);
+                sort_moves(legal_moves, scores, nmoves);
+            }
 
             Move best_move = legal_moves[0];
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
             for (int i = 0; i < nmoves; i++) {
+                if (i == 1 && defer_move_scores) {
+                    Move no_tt{99, 99};
+                    get_move_scores(legal_moves + 1, nmoves - 1, no_tt,
+                                    board, ply, scores + 1, false);
+                    sort_moves(legal_moves + 1, scores + 1, nmoves - 1);
+                }
                 bool capture = is_capture_avx(board, legal_moves[i]);
                 if (can_futility_prune && i > 0 && !capture) {
                     continue;
