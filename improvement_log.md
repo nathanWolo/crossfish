@@ -626,3 +626,23 @@ N: 6560 W: 2466 D: 1840 L: 2254
 Elo diff: +11.23 +/- 7.13
 LLR: +3.11 (H0=0, H1=+5) — PASS
 ```
+
+---
+
+## 21. Score tactical move masks without per-move branches (7 September 2026)
+
+The scorer now loads each miniboard's capture, block, two-in-a-row, and
+global-win masks once, then applies their exact existing bonuses with bit
+arithmetic. The hash-move comparison was also removed from this function:
+section 20 now handles a legal hash move before calling the scorer, so every
+remaining call passes no hash candidate and that comparison was dead work.
+
+The ordering values and stable sort are unchanged. The gain is small enough
+that the formal run needed a large sample, but it eventually crossed the
+repository's normal acceptance boundary:
+
+```text
+N: 37696 W: 13651 D: 10810 L: 13235
+Elo diff: +3.83 +/- 2.96
+LLR: +3.09 (H0=0, H1=+5) — PASS
+```

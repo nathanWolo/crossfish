@@ -1745,7 +1745,7 @@ class CrossfishDev {
             Move caps[81];
             int scores[81];
             int n_caps = fill_captures_lut(board, caps);
-            get_move_scores(caps, n_caps, {99, 99}, board, ply, scores, true);
+            get_move_scores(caps, n_caps, board, ply, scores, true);
             sort_moves(caps, scores, n_caps);
             int val;
             for (int i = 0; i < n_caps; i++) {
@@ -1844,7 +1844,7 @@ class CrossfishDev {
                 scores[0] = 1000;
                 defer_move_scores = true;
             } else {
-                get_move_scores(legal_moves, nmoves, tt_move, board, ply, scores, false);
+                get_move_scores(legal_moves, nmoves, board, ply, scores, false);
                 sort_moves(legal_moves, scores, nmoves);
             }
 
@@ -1854,8 +1854,7 @@ class CrossfishDev {
             int val;
             for (int i = 0; i < nmoves; i++) {
                 if (i == 1 && defer_move_scores) {
-                    Move no_tt{99, 99};
-                    get_move_scores(legal_moves + 1, nmoves - 1, no_tt,
+                    get_move_scores(legal_moves + 1, nmoves - 1,
                                     board, ply, scores + 1, false);
                     sort_moves(legal_moves + 1, scores + 1, nmoves - 1);
                 }
@@ -2014,7 +2013,8 @@ class CrossfishDev {
         }
 
         template <typename Board>
-        void get_move_scores(Move* moves, int n, Move tt_move, Board &board, int &ply, int* scores, bool qs = false) {
+        void get_move_scores(Move* moves, int n, Board &board, int &ply,
+                             int* scores, bool qs = false) {
             if (n <= 1) {
                 if (n == 1) scores[0] = 0;
                 return;
@@ -2028,45 +2028,31 @@ class CrossfishDev {
             }
             int last_mb = -1;
             int last_idx = 0;
+            int capture_mask = 0;
+            int block_mask = 0;
+            int tiar_mask = 0;
+            int global_win_bonus = 0;
             for (int i = 0; i < n; i++) {
                 int mb = moves[i].mini_board;
                 int sq = moves[i].square;
-                if (mb == tt_move.mini_board && sq == tt_move.square) {
-                    scores[i] = 1000;
-                    continue;
-                }
                 if (mb != last_mb) {
                     last_mb = mb;
                     last_idx = mini_index(board.mini_boards[mb].markers[0], board.mini_boards[mb].markers[1]);
+                    capture_mask = fast_win_moves[board.mini_boards[mb].markers[stm]];
+                    block_mask = fast_win_moves[board.mini_boards[mb].markers[stm ^ 1]];
+                    tiar_mask = mini_tiar_sq[last_idx][stm];
+                    global_win_bonus =
+                        800 * fast_has_win[board.mini_board_states[stm] | (1 << mb)];
                 }
-                int move_score = 0;
-                if (killer_moves[ply][sq] == 1) {
-                    move_score += 25;
-                }
-                if (cm.mini_board == mb && cm.square == sq) {
-                    move_score += 40;
-                }
-                bool capture =
-                    (fast_win_moves[board.mini_boards[mb].markers[stm]]
-                     & (1 << sq)) != 0;
-                if (capture
-                    && fast_has_win[board.mini_board_states[stm] | (1 << mb)]) {
-                    move_score += 800;
-                }
-                if (!qs && capture) {
-                    move_score += 100;
-                }
-                if (fast_win_moves[board.mini_boards[mb].markers[stm ^ 1]] & (1 << sq)) {
-                    move_score += 75;
-                }
-                if (mini_tiar_sq[last_idx][stm] & (1 << sq)) {
-                    move_score += 50;
-                }
-                if ((out_of_play & (1 << sq)) != 0) {
-                    move_score -= 250;
-                }
-                int hs = history_table[stm][mb][sq] / 20;
-                move_score += hs;
+                int capture = (capture_mask >> sq) & 1;
+                int move_score =
+                    25 * killer_moves[ply][sq]
+                    + 40 * (cm.mini_board == mb && cm.square == sq)
+                    + capture * (global_win_bonus + 100 * !qs)
+                    + 75 * ((block_mask >> sq) & 1)
+                    + 50 * ((tiar_mask >> sq) & 1)
+                    - 250 * ((out_of_play >> sq) & 1)
+                    + history_table[stm][mb][sq] / 20;
                 scores[i] = move_score;
             }
         }
