@@ -665,3 +665,23 @@ N: 6432 W: 2394 D: 1849 L: 2189
 Elo diff: +11.08 +/- 7.17
 LLR: +3.01 (H0=0, H1=+5) — PASS
 ```
+
+---
+
+## 23. Pack internal search moves into one byte (7 September 2026)
+
+Search and qsearch now represent generated moves as a single byte, with the
+miniboard in the high nibble and square in the low nibble. Public board
+history and root interfaces still use `Move`, and TT entries retain their
+existing 0–80 encoding. The compact form reduces move-generation writes,
+hash-move comparisons, and stable-sort copies without changing move order.
+
+The fixed-depth gate produced the exact same tree and game sequence as the
+frozen engine. The timed screen showed a small NPS gain, and formal SPRT
+confirmed the improvement:
+
+```text
+N: 13216 W: 4858 D: 3750 L: 4608
+Elo diff: +6.57 +/- 5.01
+LLR: +3.00 (H0=0, H1=+5) — PASS
+```

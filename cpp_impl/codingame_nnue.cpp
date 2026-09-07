@@ -1126,6 +1126,27 @@ class CrossfishDev {
             return Move{packed / 9, packed % 9};
         }
 
+        using FastMove = uint8_t;
+        static constexpr FastMove NO_FAST_MOVE = 255;
+
+        static FastMove pack_fast_move(int mb, int sq) {
+            return (FastMove)((mb << 4) | sq);
+        }
+
+        static Move unpack_fast_move(FastMove move) {
+            return Move{move >> 4, move & 15};
+        }
+
+        static FastMove tt_to_fast_move(uint8_t packed) {
+            if (packed >= 81) return NO_FAST_MOVE;
+            return pack_fast_move(packed / 9, packed % 9);
+        }
+
+        static uint8_t pack_tt_move(FastMove move) {
+            if (move == NO_FAST_MOVE) return 255;
+            return (uint8_t)((move >> 4) * 9 + (move & 15));
+        }
+
         static const int tt_size = 1 << 18;
         std::vector<CompactTTEntry> transposition_table =
             std::vector<CompactTTEntry>(tt_size);
@@ -1753,14 +1774,15 @@ class CrossfishDev {
                 return alpha;
             }
 
-            Move caps[81];
+            FastMove caps[81];
             int scores[81];
-            int n_caps = fill_captures_lut(board, caps);
-            get_move_scores(caps, n_caps, board, ply, scores, true);
-            sort_moves(caps, scores, n_caps);
+            int n_caps = fill_fast_captures(board, caps);
+            get_fast_move_scores(caps, n_caps, board, ply, scores, true);
+            sort_fast_moves(caps, scores, n_caps);
             int val;
             for (int i = 0; i < n_caps; i++) {
-                make_move_fast(board, caps[i]);
+                Move move = unpack_fast_move(caps[i]);
+                make_move_fast(board, move);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
                 unmake_move_fast(board);
                 if (stopped) return min_val;
@@ -1792,7 +1814,7 @@ class CrossfishDev {
             bool pv_node = (beta - alpha > 1);
             CompactTTEntry entry = transposition_table[board.tt_hash & (tt_size - 1)];
             bool tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
-            Move tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
+            FastMove tt_move = tt_hit ? tt_to_fast_move(entry.best_move) : NO_FAST_MOVE;
             if (tt_hit && (entry.depth >= depth)) {
                 // Flags match the original store: 0 exact, 1 upper (fail low), 2 lower (fail high).
                 if (entry.flag == TT_EXACT && (!pv_node || ply > 0)) {
@@ -1829,25 +1851,24 @@ class CrossfishDev {
                 if (stopped) return min_val;
                 entry = transposition_table[board.tt_hash & (tt_size - 1)];
                 tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
-                tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
+                tt_move = tt_hit ? tt_to_fast_move(entry.best_move) : NO_FAST_MOVE;
             }
 
             bool singular = (tt_hit && entry.depth >= depth - 3 && (entry.flag == TT_LOWER || entry.flag == TT_EXACT));
 
-            Move legal_moves[81];
+            FastMove legal_moves[81];
             int scores[81];
-            int nmoves = fill_legal_moves_fast(board, legal_moves);
+            int nmoves = fill_fast_legal_moves(board, legal_moves);
             bool defer_move_scores = false;
             int tt_index = -1;
             for (int i = 0; i < nmoves; i++) {
-                if (legal_moves[i].mini_board == tt_move.mini_board
-                    && legal_moves[i].square == tt_move.square) {
+                if (legal_moves[i] == tt_move) {
                     tt_index = i;
                     break;
                 }
             }
             if (tt_index >= 0) {
-                Move hash_move = legal_moves[tt_index];
+                FastMove hash_move = legal_moves[tt_index];
                 for (int i = tt_index; i > 0; i--) {
                     legal_moves[i] = legal_moves[i - 1];
                 }
@@ -1855,30 +1876,32 @@ class CrossfishDev {
                 scores[0] = 1000;
                 defer_move_scores = true;
             } else {
-                get_move_scores(legal_moves, nmoves, board, ply, scores, false);
-                sort_moves(legal_moves, scores, nmoves);
+                get_fast_move_scores(legal_moves, nmoves, board, ply, scores, false);
+                sort_fast_moves(legal_moves, scores, nmoves);
             }
 
-            Move best_move = legal_moves[0];
+            FastMove best_move = legal_moves[0];
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
             for (int i = 0; i < nmoves; i++) {
                 if (i == 1 && defer_move_scores) {
-                    get_move_scores(legal_moves + 1, nmoves - 1,
-                                    board, ply, scores + 1, false);
-                    sort_moves(legal_moves + 1, scores + 1, nmoves - 1);
+                    get_fast_move_scores(legal_moves + 1, nmoves - 1,
+                                         board, ply, scores + 1, false);
+                    sort_fast_moves(legal_moves + 1, scores + 1, nmoves - 1);
                 }
-                bool capture = is_capture_avx(board, legal_moves[i]);
+                FastMove fast_move = legal_moves[i];
+                Move move = unpack_fast_move(fast_move);
+                bool capture = is_fast_capture(board, fast_move);
                 if (can_futility_prune && i > 0 && !capture) {
                     continue;
                 }
                 int extension = 0;
-                if (nmoves==1 || (singular && legal_moves[i].mini_board == tt_move.mini_board && legal_moves[i].square == tt_move.square)) {
+                if (nmoves == 1 || (singular && fast_move == tt_move)) {
                     extension = 1;
                 }
 
-                make_move_fast(board, legal_moves[i]);
+                make_move_fast(board, move);
                 if (i == 0) {
                     val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                 }
@@ -1903,28 +1926,31 @@ class CrossfishDev {
                 if (stopped) return min_val;
                 if (val > best_val) {
                     best_val = val;
-                    best_move = legal_moves[i];
+                    best_move = fast_move;
                     if (ply == 0 && abs(best_val) != abs(min_val)) {
-                        root_best_move = best_move;
+                        root_best_move = move;
                         root_score = best_val;
                     }
                 }
                 alpha = std::max(alpha, best_val);
                 if (alpha >= beta) {
-                    killer_moves[ply][legal_moves[i].square] = 1;
-                    int &h = history_table[board.n_moves % 2][legal_moves[i].mini_board][legal_moves[i].square];
+                    int mb = fast_move >> 4;
+                    int sq = fast_move & 15;
+                    killer_moves[ply][sq] = 1;
+                    int &h = history_table[board.n_moves % 2][mb][sq];
                     int bonus = depth * depth;
                     h += bonus - h * bonus / 10000;
                     int stm = board.n_moves % 2;
                     for (int j = 0; j < i; j++) {
-                        if (is_capture_avx(board, legal_moves[j])) continue;
-                        int &hj = history_table[stm][legal_moves[j].mini_board][legal_moves[j].square];
+                        FastMove prior = legal_moves[j];
+                        if (is_fast_capture(board, prior)) continue;
+                        int &hj = history_table[stm][prior >> 4][prior & 15];
                         hj -= bonus;
                         if (hj < 0) hj = 0;
                     }
                     if (board.n_moves > 0) {
                         Move prev = board.move_history.top();
-                        counter_move[prev.mini_board][prev.square] = legal_moves[i];
+                        counter_move[prev.mini_board][prev.square] = move;
                     }
                     break;
                 }
@@ -1957,10 +1983,10 @@ class CrossfishDev {
             return best_val;
         }
 
-        void sort_moves(Move* moves, int* scores, int n) {
+        void sort_fast_moves(FastMove* moves, int* scores, int n) {
             for (int i = 1; i < n; i++) {
                 int key = scores[i];
-                Move key_move = moves[i];
+                FastMove key_move = moves[i];
                 int j = i - 1;
                 while (j >= 0 && scores[j] < key) {
                     scores[j + 1] = scores[j];
@@ -1969,6 +1995,134 @@ class CrossfishDev {
                 }
                 scores[j + 1] = key;
                 moves[j + 1] = key_move;
+            }
+        }
+
+        template <typename Board>
+        int fill_fast_legal_moves(Board &board, FastMove *dst) {
+            int n = 0;
+            if (board.n_moves == 0) {
+                for (int mb = 0; mb < 9; mb++) {
+                    for (int sq = 0; sq < 9; sq++) {
+                        dst[n++] = pack_fast_move(mb, sq);
+                    }
+                }
+                return n;
+            }
+            int active = board.move_history.top().square;
+            int out_of_play = board.mini_board_states[0]
+                            | board.mini_board_states[1]
+                            | board.mini_board_states[2];
+            auto add_from_mb = [&](int mb) {
+                int occupied = board.mini_boards[mb].markers[0]
+                             | board.mini_boards[mb].markers[1];
+                int empty = (~occupied) & 511;
+                while (empty) {
+                    int sq = __builtin_ctz(empty);
+                    empty &= empty - 1;
+                    dst[n++] = pack_fast_move(mb, sq);
+                }
+            };
+            if (!board.prev_move_was_pass && (out_of_play & (1 << active)) == 0) {
+                add_from_mb(active);
+            } else {
+                int live = (~out_of_play) & 511;
+                while (live) {
+                    int mb = __builtin_ctz(live);
+                    live &= live - 1;
+                    add_from_mb(mb);
+                }
+            }
+            return n;
+        }
+
+        template <typename Board>
+        int fill_fast_captures(Board &board, FastMove *dst) {
+            int n = 0;
+            if (board.n_moves == 0) return 0;
+            int active_square = board.move_history.top().square;
+            int out_of_play = board.mini_board_states[0]
+                            | board.mini_board_states[1]
+                            | board.mini_board_states[2];
+            int stm = board.n_moves % 2;
+            auto add_from_mb = [&](int mb) {
+                int mine = board.mini_boards[mb].markers[stm];
+                int occupied = board.mini_boards[mb].markers[0]
+                             | board.mini_boards[mb].markers[1];
+                int wins = fast_win_moves[mine] & ~occupied & 511;
+                while (wins) {
+                    int sq = __builtin_ctz(wins);
+                    wins &= wins - 1;
+                    dst[n++] = pack_fast_move(mb, sq);
+                }
+            };
+            if ((out_of_play & (1 << active_square)) == 0) {
+                add_from_mb(active_square);
+            } else {
+                for (int mb = 0; mb < 9; mb++) {
+                    if ((out_of_play & (1 << mb)) == 0) add_from_mb(mb);
+                }
+            }
+            return n;
+        }
+
+        template <typename Board>
+        bool is_fast_capture(Board &board, FastMove move) {
+            int stm = board.n_moves % 2;
+            int mb = move >> 4;
+            int sq = move & 15;
+            int mine = board.mini_boards[mb].markers[stm];
+            return (fast_win_moves[mine] & (1 << sq)) != 0;
+        }
+
+        template <typename Board>
+        void get_fast_move_scores(FastMove* moves, int n, Board &board, int &ply,
+                                  int* scores, bool qs = false) {
+            if (n <= 1) {
+                if (n == 1) scores[0] = 0;
+                return;
+            }
+            int out_of_play = board.mini_board_states[0]
+                            | board.mini_board_states[1]
+                            | board.mini_board_states[2];
+            int stm = board.n_moves % 2;
+            FastMove cm = NO_FAST_MOVE;
+            if (board.n_moves > 0) {
+                Move prev = board.move_history.top();
+                Move counter = counter_move[prev.mini_board][prev.square];
+                if (counter.mini_board < 9 && counter.square < 9) {
+                    cm = pack_fast_move(counter.mini_board, counter.square);
+                }
+            }
+            int last_mb = -1;
+            int last_idx = 0;
+            int capture_mask = 0;
+            int block_mask = 0;
+            int tiar_mask = 0;
+            int global_win_bonus = 0;
+            for (int i = 0; i < n; i++) {
+                FastMove move = moves[i];
+                int mb = move >> 4;
+                int sq = move & 15;
+                if (mb != last_mb) {
+                    last_mb = mb;
+                    last_idx = mini_index(board.mini_boards[mb].markers[0],
+                                          board.mini_boards[mb].markers[1]);
+                    capture_mask = fast_win_moves[board.mini_boards[mb].markers[stm]];
+                    block_mask = fast_win_moves[board.mini_boards[mb].markers[stm ^ 1]];
+                    tiar_mask = mini_tiar_sq[last_idx][stm];
+                    global_win_bonus =
+                        800 * fast_has_win[board.mini_board_states[stm] | (1 << mb)];
+                }
+                int capture = (capture_mask >> sq) & 1;
+                scores[i] =
+                    25 * killer_moves[ply][sq]
+                    + 40 * (cm == move)
+                    + capture * (global_win_bonus + 100 * !qs)
+                    + 75 * ((block_mask >> sq) & 1)
+                    + 50 * ((tiar_mask >> sq) & 1)
+                    - 250 * ((out_of_play >> sq) & 1)
+                    + history_table[stm][mb][sq] / 20;
             }
         }
 
