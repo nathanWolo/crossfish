@@ -14,7 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen compact-search-board SPRT winner on 2026-09-06.
+// Frozen decided-miniboard canonical-TT SPRT winner on 2026-09-07.
 class CrossfishPrev {
        private:
         struct FastMoveStack {
@@ -33,6 +33,7 @@ class CrossfishPrev {
             std::array<int, 3> mini_board_states;
             FastMoveStack move_history;
             uint64_t zobrist_hash;
+            uint64_t tt_hash;
             const decltype(GlobalBoard::move_hashes) &move_hashes;
             const decltype(GlobalBoard::mini_board_hashes) &mini_board_hashes;
             const decltype(GlobalBoard::legal_mini_board_hashes) &legal_mini_board_hashes;
@@ -44,6 +45,7 @@ class CrossfishPrev {
                 : mini_boards(board.mini_boards),
                   mini_board_states(board.mini_board_states),
                   zobrist_hash(board.zobrist_hash),
+                  tt_hash(board.zobrist_hash),
                   move_hashes(board.move_hashes),
                   mini_board_hashes(board.mini_board_hashes),
                   legal_mini_board_hashes(board.legal_mini_board_hashes),
@@ -56,8 +58,32 @@ class CrossfishPrev {
                     move_history.moves[i] = history.top();
                     history.pop();
                 }
+                // Stones inside a decided miniboard can never affect play again.
+                // Remove them from the search key so transpositions that reached
+                // the same won/drawn miniboard through different move orders merge.
+                int decided = mini_board_states[0]
+                            | mini_board_states[1]
+                            | mini_board_states[2];
+                while (decided) {
+                    int mb = __builtin_ctz(decided);
+                    decided &= decided - 1;
+                    for (int p = 0; p < 2; p++) {
+                        int markers = mini_boards[mb].markers[p];
+                        while (markers) {
+                            int sq = __builtin_ctz(markers);
+                            markers &= markers - 1;
+                            tt_hash ^= move_hashes[p][mb][sq];
+                        }
+                    }
+                }
             }
         };
+
+        static void xor_tt_hash(FastBoard &board, uint64_t value) {
+            board.tt_hash ^= value;
+        }
+
+        static void xor_tt_hash(GlobalBoard &, uint64_t) {}
 
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
@@ -549,23 +575,42 @@ class CrossfishPrev {
             }
             if (board.n_moves > 0) {
                 board.zobrist_hash ^= board.legal_mini_board_hashes[board.move_history.top().square];
+                xor_tt_hash(board, board.legal_mini_board_hashes[board.move_history.top().square]);
             }
             board.move_history.push(move);
             board.mini_boards[move.mini_board].markers[stm] = before | bit;
             board.zobrist_hash ^= board.move_hashes[stm][move.mini_board][move.square];
+            xor_tt_hash(board, board.move_hashes[stm][move.mini_board][move.square]);
             board.zobrist_hash ^= board.legal_mini_board_hashes[move.square];
+            xor_tt_hash(board, board.legal_mini_board_hashes[move.square]);
+            bool decided = false;
             if (fast_win_moves[before] & bit) {
                 board.mini_board_states[stm] |= mb_bit;
                 board.zobrist_hash ^= board.mini_board_hashes[stm][move.mini_board];
+                xor_tt_hash(board, board.mini_board_hashes[stm][move.mini_board]);
+                decided = true;
             } else {
                 int occupied = board.mini_boards[move.mini_board].markers[0]
                              | board.mini_boards[move.mini_board].markers[1];
                 if (occupied == 511) {
                     board.mini_board_states[2] |= mb_bit;
                     board.zobrist_hash ^= board.mini_board_hashes[2][move.mini_board];
+                    xor_tt_hash(board, board.mini_board_hashes[2][move.mini_board]);
+                    decided = true;
+                }
+            }
+            if (decided) {
+                for (int p = 0; p < 2; p++) {
+                    int markers = board.mini_boards[move.mini_board].markers[p];
+                    while (markers) {
+                        int sq = __builtin_ctz(markers);
+                        markers &= markers - 1;
+                        xor_tt_hash(board, board.move_hashes[p][move.mini_board][sq]);
+                    }
                 }
             }
             board.zobrist_hash ^= board.player_to_move_hash;
+            xor_tt_hash(board, board.player_to_move_hash);
             board.n_moves++;
             if (hce_acc_ready) {
                 set_hce_mb(board, move.mini_board);
@@ -576,25 +621,46 @@ class CrossfishPrev {
         void unmake_move_fast(Board &board) {
             board.n_moves--;
             board.zobrist_hash ^= board.player_to_move_hash;
+            xor_tt_hash(board, board.player_to_move_hash);
             Move move = board.move_history.top();
             board.move_history.pop();
             int mb_bit = 1 << move.mini_board;
+            bool was_decided = false;
             if (board.mini_board_states[0] & mb_bit) {
                 board.mini_board_states[0] &= ~mb_bit;
                 board.zobrist_hash ^= board.mini_board_hashes[0][move.mini_board];
+                xor_tt_hash(board, board.mini_board_hashes[0][move.mini_board]);
+                was_decided = true;
             } else if (board.mini_board_states[1] & mb_bit) {
                 board.mini_board_states[1] &= ~mb_bit;
                 board.zobrist_hash ^= board.mini_board_hashes[1][move.mini_board];
+                xor_tt_hash(board, board.mini_board_hashes[1][move.mini_board]);
+                was_decided = true;
             } else if (board.mini_board_states[2] & mb_bit) {
                 board.mini_board_states[2] &= ~mb_bit;
                 board.zobrist_hash ^= board.mini_board_hashes[2][move.mini_board];
+                xor_tt_hash(board, board.mini_board_hashes[2][move.mini_board]);
+                was_decided = true;
+            }
+            if (was_decided) {
+                for (int p = 0; p < 2; p++) {
+                    int markers = board.mini_boards[move.mini_board].markers[p];
+                    while (markers) {
+                        int sq = __builtin_ctz(markers);
+                        markers &= markers - 1;
+                        xor_tt_hash(board, board.move_hashes[p][move.mini_board][sq]);
+                    }
+                }
             }
             int stm = board.n_moves & 1;
             board.mini_boards[move.mini_board].markers[stm] &= ~(1 << move.square);
             board.zobrist_hash ^= board.move_hashes[stm][move.mini_board][move.square];
+            xor_tt_hash(board, board.move_hashes[stm][move.mini_board][move.square]);
             board.zobrist_hash ^= board.legal_mini_board_hashes[move.square];
+            xor_tt_hash(board, board.legal_mini_board_hashes[move.square]);
             if (board.n_moves > 0) {
                 board.zobrist_hash ^= board.legal_mini_board_hashes[board.move_history.top().square];
+                xor_tt_hash(board, board.legal_mini_board_hashes[board.move_history.top().square]);
             }
             if (hce_acc_ready) {
                 restore_hce_mb(board.n_moves, move.mini_board);
@@ -755,8 +821,8 @@ class CrossfishPrev {
                 }
             }
             bool pv_node = (beta - alpha > 1);
-            CompactTTEntry entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
-            bool tt_hit = (entry.zobrist_hash == board.zobrist_hash) && (board.zobrist_hash != 0);
+            CompactTTEntry entry = transposition_table[board.tt_hash & (tt_size - 1)];
+            bool tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
             Move tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
             if (tt_hit && (entry.depth >= depth) && !pv_node) {
                 // Flags match the original store: 0 exact, 1 upper (fail low), 2 lower (fail high).
@@ -792,8 +858,8 @@ class CrossfishPrev {
             if (pv_node && !tt_hit && depth > 2) {
                 search(board, 1, ply, alpha, beta);
                 if (stopped) return min_val;
-                entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
-                tt_hit = (entry.zobrist_hash == board.zobrist_hash) && (board.zobrist_hash != 0);
+                entry = transposition_table[board.tt_hash & (tt_size - 1)];
+                tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
                 tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
             }
 
@@ -879,13 +945,13 @@ class CrossfishPrev {
                     flag = TT_LOWER;
                 }
                 CompactTTEntry new_entry = {
-                    board.zobrist_hash,
+                    board.tt_hash,
                     best_val,
                     (int16_t)depth,
                     (int8_t)flag,
                     pack_tt_move(best_move)
                 };
-                transposition_table[board.zobrist_hash & (tt_size - 1)] = new_entry;
+                transposition_table[board.tt_hash & (tt_size - 1)] = new_entry;
                 // Only a bound that actually contradicts the static eval carries information.
                 if (have_static && abs(best_val) < CORR_MATE_BOUND
                     && (flag == TT_EXACT
