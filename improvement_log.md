@@ -532,6 +532,16 @@ LLR: +3.05 — PASS
 Prev NPS: 13,149,952  Dev NPS: 14,300,416
 ```
 
-`codingame_nnue.cpp` carries the same tested engine class. `cg_input.cpp` was
-regenerated with the identifier-renaming minifier and remains below the
-100,000-character CodinGame cap.
+Independent 20 ms SPRT on the merge host vs `f453086` (H0=0, H1=+5, uncapped):
+
+```text
+N: 1056 W: 486 D: 262 L: 308
+Elo diff: +59.13 +/- 18.36
+LLR: +3.09 — PASS
+Prev NPS: 22,007,808  Dev NPS: 20,476,928
+```
+
+Startpos NPS was slightly *lower* on Dev, so this is a search win, not a
+faster rewrite of the same tree. MiniNet still encodes stones on decided
+minis; the canonical TT key is therefore an eval approximation (legal play
+is identical). `codingame_nnue.cpp` and `cg_input.cpp` carry this Dev.

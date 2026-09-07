@@ -218,20 +218,20 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
 
 ## Latest strength result
 
-On 2026-09-07, the round-3 bundle (aspiration reset, ternary-index LUT,
+On 2026-09-06, the round-3 bundle (aspiration reset, ternary-index LUT,
 compact search board, canonical decided-miniboard TT keys, and root history
-aging) passed a direct 20ms SPRT against current `origin/main` (`f453086`):
+aging) passed the official 20ms SPRT against the #15 hot-path engine
+(`f453086`):
 
 ```text
-N: 3328 W: 1573 D: 817 L: 938
-Elo diff: +67.12 +/- 10.38
-LLR: +3.05 (H0=+50, H1=+55) — PASS
-Prev NPS: 13,149,952  Dev NPS: 14,300,416
+N: 1056 W: 486 D: 262 L: 308
+Elo diff: +59.13 +/- 18.36
+LLR: +3.09 (H0=0, H1=+5) — PASS
+Prev NPS: 22,007,808  Dev NPS: 20,476,928
 ```
 
-The final independent step, aging move history between turns, also passed its
-own H0=0 / H1=+5 gate at N=2016, **+30.93 +/- 13.10**, LLR +3.00. Paste
-`cpp_impl/cg_input.cpp` (rebuilt from this Dev).
+Author longer run on the same pair: N 3328, H0=+50 / H1=+55, +67.12 +/- 10.38,
+LLR +3.05. Paste `cpp_impl/cg_input.cpp` (rebuilt from this Dev).
 
 Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
 
