@@ -377,11 +377,12 @@ A honest running story, not a sum:
 6. MiniNet is a *small* timed gain (**+7 to +11** vs HCE) and a *large* equal-depth gain (**+54**), then skip/AVX buy back the tax (**+20 to +31**, then **+26 to +29**).
 7. Precomputed HCE + MiniNet projection: **~2× NPS**, **+50 to +100** timed depending on the hypothesis, same leaf.
 8. Correction history + log LMR: **+33** at 20 ms. Then the #15 hot-path bundle: another **+40** at 20 ms, mostly speed (1.56× NPS) plus persist-corrhist and global-win ordering.
-9. The #16 compact-state / canonical-TT bundle clears a direct **+50 Elo**
-   hypothesis against #15: **+67.1 +/- 10.4**, LLR +3.05.
+9. The #16 compact-state / canonical-TT bundle: **+59** at 20 ms vs #15.
+10. The #17–#25 search/speed bundle vs #16: independent **+28** at 20 ms and
+    **+38** at 95 ms. Official ship bar is now 95 ms.
 
 CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet
-moved 82 → 68. The round-3 bundle is the current ship. Absolute ladder Elo is
+moved 82 → 68. The round-4 bundle is the current ship. Absolute ladder Elo is
 noisy and not what SPRT measures.
 
 ---
@@ -390,7 +391,7 @@ noisy and not what SPRT measures.
 
 | Piece | Role |
 | --- | --- |
-| `crossfish_prev.hpp` | Frozen last accepted engine (#16 round-3 bundle) |
+| `crossfish_prev.hpp` | Frozen last accepted engine (#25 round-4 bundle) |
 | `crossfish_dev.hpp` | Same program as Prev until the next experiment |
 | `mini_eval.hpp` | Packed D=8 H=4 residual |
 | `codingame_nnue.cpp` | Readable CG bot |
@@ -721,3 +722,21 @@ Elo diff: +57.99 +/- 7.60
 LLR: +3.00 (H0=+50, H1=+55) — PASS
 Prev NPS: 14.35M  Dev NPS: 15.87M
 ```
+
+Independent merge-host gates vs the same `1c5b3f7` baseline, H0=0 / H1=+5.
+The official bar is now **95 ms**. The author's +58 at H0=+50 was not
+reproduced; these are the ship numbers:
+
+```text
+95 ms: N 1568 W 630 D 480 L 458
+Elo diff: +38.27 +/- 14.38
+LLR: +3.05 — PASS
+Prev NPS: 19,946,496  Dev NPS: 20,539,392
+
+20 ms: N 2272 W 936 D 585 L 751
+Elo diff: +28.35 +/- 12.34
+LLR: +3.08 — PASS
+Prev NPS: 19,265,280  Dev NPS: 20,314,880
+```
+
+`codingame_nnue.cpp` and `cg_input.cpp` carry this Dev.
