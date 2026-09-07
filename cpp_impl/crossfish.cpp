@@ -767,7 +767,7 @@ class CrossfishDev {
                 }
                 else {
                     int reduction = 0;
-                    if (scores[i] < 0 || (i >= 3 && !capture)) {
+                    if (scores[i] < 0 || (i >= 2 && !capture)) {
                         reduction = i / 3; //late move reduction
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);

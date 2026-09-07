@@ -1849,7 +1849,7 @@ class CrossfishDev {
                 }
                 else {
                     int reduction = 0;
-                    bool do_lmr = (scores[i] < 0 || (i >= 3 && !capture));
+                    bool do_lmr = (scores[i] < 0 || (i >= 2 && !capture));
                     if (do_lmr) {
                         reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
                         if (pv_node && reduction > 0) reduction--;

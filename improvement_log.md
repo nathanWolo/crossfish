@@ -545,3 +545,25 @@ Startpos NPS was slightly *lower* on Dev, so this is a search win, not a
 faster rewrite of the same tree. MiniNet still encodes stones on decided
 minis; the canonical TT key is therefore an eval approximation (legal play
 is identical). `codingame_nnue.cpp` and `cg_input.cpp` carry this Dev.
+
+---
+
+## 17. Earlier late-quiet reduction (7 September 2026)
+
+The first sequential winner after #16 starts logarithmic LMR on the third
+ordered quiet move (`i >= 2`) instead of the fourth. Negative-score moves keep
+their existing reduction rule; no reduction amount, extension, or move score
+changed.
+
+```text
+N: 4992 W: 1945 D: 1304 L: 1743
+Elo diff: +14.07 +/- 8.29
+LLR: +3.06 (H0=0, H1=+5) — PASS
+```
+
+Rejected on the same baseline: requiring depth 3 for LMR was about 0 Elo at
+N=2976; resetting counter moves each turn screened -17 Elo; quarter-retaining
+move history screened -20 Elo; halving correction history each turn screened
+-7 Elo; removing the pseudo-singular extension screened -13 Elo despite higher
+NPS; clearing killers between completed iterations screened +3 Elo; delaying
+late-quiet LMR to `i >= 4` was -14.7 Elo at N=1344 in its formal run.

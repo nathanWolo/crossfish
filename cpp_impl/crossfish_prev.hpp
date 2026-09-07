@@ -14,7 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen root-history aging SPRT winner on 2026-09-07.
+// Frozen earlier late-quiet LMR SPRT winner on 2026-09-07.
 class CrossfishPrev {
        private:
         struct FastMoveStack {
@@ -898,7 +898,7 @@ class CrossfishPrev {
                 }
                 else {
                     int reduction = 0;
-                    bool do_lmr = (scores[i] < 0 || (i >= 3 && !capture));
+                    bool do_lmr = (scores[i] < 0 || (i >= 2 && !capture));
                     if (do_lmr) {
                         reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
                         if (pv_node && reduction > 0) reduction--;
