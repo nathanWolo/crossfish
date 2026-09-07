@@ -679,6 +679,13 @@ class CrossfishDev {
             root_best_move = root_moves[0];
             init_hce_acc(board);
             killer_moves = std::array<std::array<int, 9>, 128>();
+            for (auto &by_player : history_table) {
+                for (auto &by_miniboard : by_player) {
+                    for (int &h : by_miniboard) {
+                        h /= 2;
+                    }
+                }
+            }
             if (!counters_ready) {
                 for (int i = 0; i < 9; i++) {
                     for (int j = 0; j < 9; j++) {

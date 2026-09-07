@@ -14,7 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen decided-miniboard canonical-TT SPRT winner on 2026-09-07.
+// Frozen root-history aging SPRT winner on 2026-09-07.
 class CrossfishPrev {
        private:
         struct FastMoveStack {
@@ -680,6 +680,13 @@ class CrossfishPrev {
             root_best_move = root_moves[0];
             init_hce_acc(board);
             killer_moves = std::array<std::array<int, 9>, 128>();
+            for (auto &by_player : history_table) {
+                for (auto &by_miniboard : by_player) {
+                    for (int &h : by_miniboard) {
+                        h /= 2;
+                    }
+                }
+            }
             if (!counters_ready) {
                 for (int i = 0; i < 9; i++) {
                     for (int j = 0; j < 9; j++) {
