@@ -28,6 +28,9 @@ class CrossfishDev {
         };
 
         struct FastBoard {
+            using MarkerHashTable =
+                std::array<std::array<std::array<uint64_t, 512>, 9>, 2>;
+
             std::array<MiniBoard, 9> mini_boards;
             std::array<int, 3> mini_board_states;
             FastMoveStack move_history;
@@ -37,8 +40,27 @@ class CrossfishDev {
             const decltype(GlobalBoard::mini_board_hashes) &mini_board_hashes;
             const decltype(GlobalBoard::legal_mini_board_hashes) &legal_mini_board_hashes;
             const uint64_t &player_to_move_hash;
+            const MarkerHashTable &marker_hashes;
             int n_moves;
             bool prev_move_was_pass;
+
+            static const MarkerHashTable &get_marker_hashes(const GlobalBoard &board) {
+                static const MarkerHashTable hashes = [&board] {
+                    MarkerHashTable table{};
+                    for (int p = 0; p < 2; p++) {
+                        for (int mb = 0; mb < 9; mb++) {
+                            for (int mask = 1; mask < 512; mask++) {
+                                int prev = mask & (mask - 1);
+                                int sq = __builtin_ctz(mask);
+                                table[p][mb][mask] =
+                                    table[p][mb][prev] ^ board.move_hashes[p][mb][sq];
+                            }
+                        }
+                    }
+                    return table;
+                }();
+                return hashes;
+            }
 
             explicit FastBoard(const GlobalBoard &board)
                 : mini_boards(board.mini_boards),
@@ -49,6 +71,7 @@ class CrossfishDev {
                   mini_board_hashes(board.mini_board_hashes),
                   legal_mini_board_hashes(board.legal_mini_board_hashes),
                   player_to_move_hash(board.player_to_move_hash),
+                  marker_hashes(get_marker_hashes(board)),
                   n_moves(board.n_moves),
                   prev_move_was_pass(board.prev_move_was_pass) {
                 auto history = board.move_history;
@@ -67,12 +90,7 @@ class CrossfishDev {
                     int mb = __builtin_ctz(decided);
                     decided &= decided - 1;
                     for (int p = 0; p < 2; p++) {
-                        int markers = mini_boards[mb].markers[p];
-                        while (markers) {
-                            int sq = __builtin_ctz(markers);
-                            markers &= markers - 1;
-                            tt_hash ^= move_hashes[p][mb][sq];
-                        }
+                        tt_hash ^= marker_hashes[p][mb][mini_boards[mb].markers[p]];
                     }
                 }
             }
@@ -83,6 +101,13 @@ class CrossfishDev {
         }
 
         static void xor_tt_hash(GlobalBoard &, uint64_t) {}
+
+        static void xor_marker_hashes(FastBoard &board, int mb) {
+            board.tt_hash ^= board.marker_hashes[0][mb][board.mini_boards[mb].markers[0]]
+                          ^ board.marker_hashes[1][mb][board.mini_boards[mb].markers[1]];
+        }
+
+        static void xor_marker_hashes(GlobalBoard &, int) {}
 
         std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
         Move root_best_move;
@@ -599,14 +624,7 @@ class CrossfishDev {
                 }
             }
             if (decided) {
-                for (int p = 0; p < 2; p++) {
-                    int markers = board.mini_boards[move.mini_board].markers[p];
-                    while (markers) {
-                        int sq = __builtin_ctz(markers);
-                        markers &= markers - 1;
-                        xor_tt_hash(board, board.move_hashes[p][move.mini_board][sq]);
-                    }
-                }
+                xor_marker_hashes(board, move.mini_board);
             }
             board.zobrist_hash ^= board.player_to_move_hash;
             xor_tt_hash(board, board.player_to_move_hash);
@@ -642,14 +660,7 @@ class CrossfishDev {
                 was_decided = true;
             }
             if (was_decided) {
-                for (int p = 0; p < 2; p++) {
-                    int markers = board.mini_boards[move.mini_board].markers[p];
-                    while (markers) {
-                        int sq = __builtin_ctz(markers);
-                        markers &= markers - 1;
-                        xor_tt_hash(board, board.move_hashes[p][move.mini_board][sq]);
-                    }
-                }
+                xor_marker_hashes(board, move.mini_board);
             }
             int stm = board.n_moves & 1;
             board.mini_boards[move.mini_board].markers[stm] &= ~(1 << move.square);

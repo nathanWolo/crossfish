@@ -646,3 +646,22 @@ N: 37696 W: 13651 D: 10810 L: 13235
 Elo diff: +3.83 +/- 2.96
 LLR: +3.09 (H0=0, H1=+5) — PASS
 ```
+
+---
+
+## 22. Precompute decided-miniboard TT hash subsets (7 September 2026)
+
+Canonical TT keys omit stones inside decided miniboards. Previously, every
+make and unmake that changed a miniboard's decided state scanned each stone
+and XORed its individual Zobrist value. A thread-safe 72 KiB lookup now stores
+the XOR for every 9-bit marker subset, reducing that work to one lookup per
+player while preserving every search key and move choice exactly.
+
+The fixed-depth gate was tree-identical to the frozen engine. The timed
+screen also showed higher NPS, and the repository's formal SPRT passed:
+
+```text
+N: 6432 W: 2394 D: 1849 L: 2189
+Elo diff: +11.08 +/- 7.17
+LLR: +3.01 (H0=0, H1=+5) — PASS
+```
