@@ -705,13 +705,13 @@ class CrossfishDev {
             bool pv_node = (beta - alpha > 1);
             TTEntry entry = transposition_table[board.zobrist_hash & (tt_size - 1)];
             bool tt_hit = (entry.zobrist_hash == board.zobrist_hash) && (board.zobrist_hash != 0);
-            if (tt_hit && (entry.depth >= depth) && !pv_node) {
+            if (tt_hit && (entry.depth >= depth)) {
                 // 0 exact, 1 upper (fail low), 2 lower (fail high)
-                if (entry.flag == 0) {
+                if (entry.flag == 0 && (!pv_node || ply > 0)) {
                     return entry.score;
-                } else if (entry.flag == 2) {
+                } else if (!pv_node && entry.flag == 2) {
                     if (entry.score >= beta) return entry.score;
-                } else if (entry.flag == 1) {
+                } else if (!pv_node && entry.flag == 1) {
                     if (entry.score <= alpha) return entry.score;
                 }
             }

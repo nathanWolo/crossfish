@@ -1782,15 +1782,15 @@ class CrossfishDev {
             CompactTTEntry entry = transposition_table[board.tt_hash & (tt_size - 1)];
             bool tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
             Move tt_move = tt_hit ? unpack_tt_move(entry.best_move) : Move{99, 99};
-            if (tt_hit && (entry.depth >= depth) && !pv_node) {
+            if (tt_hit && (entry.depth >= depth)) {
                 // Flags match the original store: 0 exact, 1 upper (fail low), 2 lower (fail high).
-                if (entry.flag == TT_EXACT) {
+                if (entry.flag == TT_EXACT && (!pv_node || ply > 0)) {
                     return entry.score;
                 }
-                else if (entry.flag == TT_LOWER) {
+                else if (!pv_node && entry.flag == TT_LOWER) {
                     if (entry.score >= beta) return entry.score;
                 }
-                else if (entry.flag == TT_UPPER) {
+                else if (!pv_node && entry.flag == TT_UPPER) {
                     if (entry.score <= alpha) return entry.score;
                 }
             }

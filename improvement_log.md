@@ -567,3 +567,23 @@ move history screened -20 Elo; halving correction history each turn screened
 -7 Elo; removing the pseudo-singular extension screened -13 Elo despite higher
 NPS; clearing killers between completed iterations screened +3 Elo; delaying
 late-quiet LMR to `i >= 4` was -14.7 Elo at N=1344 in its formal run.
+
+---
+
+## 18. Reuse exact TT scores below the root (7 September 2026)
+
+Sufficient-depth exact transposition entries now return immediately at PV
+nodes below the root. Upper and lower bounds remain restricted to non-PV
+nodes. Root exact hits are deliberately excluded: returning before the root
+loop would leave `root_best_move` at the first generated legal move.
+
+```text
+N: 6560 W: 2487 D: 1795 L: 2278
+Elo diff: +11.07 +/- 7.17
+LLR: +3.03 (H0=0, H1=+5) — PASS
+```
+
+The unrestricted first prototype demonstrated the root hazard clearly,
+falling about 303 Elo before it was stopped at N=256. The accepted version
+changes neither evaluation nor TT replacement; it only reuses already exact
+work where the caller needs a score rather than a root move.
