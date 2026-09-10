@@ -206,7 +206,7 @@ CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags 
 
 ## CodinGame file and minifier
 
-CodinGame's source cap is **100,000 characters**. The readable source is `cpp_impl/codingame_nnue.cpp` (~134k, over the cap). Paste **`cpp_impl/cg_input.cpp`** into the IDE (~68k, about 32k of headroom).
+CodinGame's source cap is **100,000 characters**. The readable source is `cpp_impl/codingame_nnue.cpp` (~142k, over the cap). Paste **`cpp_impl/cg_input.cpp`** into the IDE (69,969 characters, about 30k of headroom).
 
 `tools/cg_minify.py` is an ice4-style minifier: it strips comments and indentation, renames identifiers, and packs tokens. It does not change search or eval. Rebuild the paste file after editing the readable source:
 
@@ -218,21 +218,25 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
 
 ## Latest strength result
 
-On 2026-09-10, the round-5 engine passed the official 95 ms raised-hypothesis
-gate against the exact then-current `origin/main`
+On 2026-09-10, the round-5 engine passed the official 95 ms gate against the
+exact then-current `origin/main`
 (`0c50c955327ff58767bfe3378a75aa2c8beb211f`):
 
 ```text
-95 ms: N 7744 W 3282 D 2385 L 2077
-Elo diff: +54.51 +/- 6.48
-LLR: +3.00274 (H0=+50, H1=+55) — PASS
+95 ms (official, independent): N 1056 W 433 D 352 L 271
+Elo diff: +53.72 +/- 17.23
+LLR: +3.00 (H0=0, H1=+5) — PASS
+Prev NPS: 26,194,176  Dev NPS: 23,589,632
 ```
+
+Author longer 95 ms H0=+50 run on the same pair: N 7744 W 3282 D 2385 L 2077,
++54.51 +/- 6.48, LLR +3.00274. That magnitude reproduced.
 
 The bundle combines exact tactical shortcuts (immediate global losses and
 forced mate-in-three), a two-way TT, a narrower aspiration window, a
 depth-8-search fine-tuned MiniNet, signed gravity-bounded history maluses,
 and small qsearch hot-path improvements. Paste `cpp_impl/cg_input.cpp`
-(rebuilt from this Dev).
+(69,969 characters, rebuilt from this Dev).
 
 Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
 

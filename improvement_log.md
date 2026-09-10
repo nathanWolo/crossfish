@@ -867,6 +867,16 @@ Elo diff: +54.51 +/- 6.48
 LLR: +3.00274 (H0=+50, H1=+55) — PASS
 ```
 
+Independent merge-host gate vs the same `0c50c95` baseline, H0=0 / H1=+5.
+The author's +54 at H0=+50 reproduced; these are the ship numbers:
+
+```text
+95 ms: N 1056 W 433 D 352 L 271
+Elo diff: +53.72 +/- 17.23
+LLR: +3.00 — PASS
+Prev NPS: 26,194,176  Dev NPS: 23,589,632
+```
+
 Rejected or inconclusive experiments on this baseline included a second
 projected-network cycle, an extra mate-in-three guard, TT generations,
 history-reward and divisor variants, killer/free/block/two-in-a-row weight
