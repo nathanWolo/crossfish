@@ -379,6 +379,37 @@ def write_mini_bin(path, model: MiniNet, bake=False):
     print(f"wrote {path} bake={int(bake)}", flush=True)
 
 
+def load_mini_bin(path: str, model: MiniNet):
+    blob = open(path, "rb").read()
+    if blob[:4] != b"CFM2":
+        raise SystemExit(f"bad MiniNet init magic in {path}")
+    d, h = struct.unpack_from("<ii", blob, 4)
+    if d != model.d or h != model.h:
+        raise SystemExit(
+            f"MiniNet init is D={d} H={h}, requested D={model.d} H={model.h}"
+        )
+    off = 12
+
+    def rd(shape):
+        nonlocal off
+        n = int(np.prod(shape))
+        value = np.frombuffer(blob, dtype="<f4", count=n, offset=off).copy()
+        off += 4 * n
+        return torch.from_numpy(value.reshape(shape)).to(model.l1.weight.device)
+
+    with torch.no_grad():
+        model.emb.weight.copy_(rd((N_IDX, d)))
+        model.super_e.weight.copy_(rd((4, d)))
+        model.loc.weight.copy_(rd((9, d)))
+        model.constr.weight.copy_(rd((10, d)))
+        model.active.weight.copy_(rd((2, d)))
+        model.l1.weight.copy_(rd((h, 10 * d)))
+        model.l1.bias.copy_(rd((h,)))
+        model.l2.weight.copy_(rd((1, h)))
+        model.l2.bias.copy_(rd((1,)))
+    print(f"initialized MiniNet from {path}", flush=True)
+
+
 def hce_mini_scores():
     """Scalar HCE for every ternary mini index, STM-positive, matching C++ MiniLut.
 
@@ -536,6 +567,8 @@ def train(args):
     if args.arch == "mini":
         # Residual: freeze output bias (shifted to 0 after fit). Replace: learn it.
         model = MiniNet(d=args.mini_d, h=args.hidden, learn_out_bias=not args.residual).to(device)
+        if args.init_mini:
+            load_mini_bin(args.init_mini, model)
         if args.freeze_lut:
             bake_hce_into_mini(model)
         cache = args.data + f".mini{args.mini_d}.{tag}.npz"
@@ -552,6 +585,10 @@ def train(args):
             torch.from_numpy(super_idx),
             torch.from_numpy(constr),
         )
+        empty_feat = empty_mini_tensors(device)
+        if args.residual and args.pin_empty:
+            with torch.no_grad():
+                model.l2.bias.data -= model(*empty_feat)
 
         def forward_idx(idx, parts=False):
             return model(
@@ -631,6 +668,10 @@ def train(args):
                     opt.zero_grad()
                     loss.backward()
                     opt.step()
+                    if args.arch == "mini" and args.residual and args.pin_empty:
+                        with torch.no_grad():
+                            empty_v = model(*empty_feat)
+                            model.l2.bias.data -= empty_v
                     if args.arch == "sparse":
                         with torch.no_grad():
                             model.emb.weight[nt.PAD].zero_()
@@ -791,6 +832,10 @@ def main():
     ap.add_argument("--upsample-times", type=int, default=2,
                     help="total copies of each upsampled row (2 = one extra)")
     ap.add_argument("--res-l2", type=float, default=0.0, help="L2 on the residual output")
+    ap.add_argument("--pin-empty", action="store_true",
+                    help="recenter a residual MiniNet to zero on the empty board after every step")
+    ap.add_argument("--init-mini",
+                    help="initialize MiniNet weights from an existing CFM2 blob")
     ap.add_argument("--crelu-max", type=float, default=4.0, help="sparse arch CReLU clip only")
     ap.add_argument("--huber", type=float, default=1500.0, help="Huber delta in label units")
     ap.add_argument("--mini-d", type=int, default=32, help="embedding width D (shipped=8)")

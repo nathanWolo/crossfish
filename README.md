@@ -218,26 +218,21 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
 
 ## Latest strength result
 
-On 2026-09-07, the round-4 bundle (earlier quiet LMR, exact PV TT below root,
-stronger corrhist, deferred move scoring, branchless tactics, decided-hash
-LUT, packed search moves, TT prefetch) passed both timed gates against the
-#16 compact-state engine (`1c5b3f7`):
+On 2026-09-10, the round-5 engine passed the official 95 ms raised-hypothesis
+gate against the exact then-current `origin/main`
+(`0c50c955327ff58767bfe3378a75aa2c8beb211f`):
 
 ```text
-95 ms (official): N 1568 W 630 D 480 L 458
-Elo diff: +38.27 +/- 14.38
-LLR: +3.05 (H0=0, H1=+5) — PASS
-Prev NPS: 19,946,496  Dev NPS: 20,539,392
-
-20 ms (screen):   N 2272 W 936 D 585 L 751
-Elo diff: +28.35 +/- 12.34
-LLR: +3.08 (H0=0, H1=+5) — PASS
+95 ms: N 7744 W 3282 D 2385 L 2077
+Elo diff: +54.51 +/- 6.48
+LLR: +3.00274 (H0=+50, H1=+55) — PASS
 ```
 
-Author longer 20 ms run on the same pair: N 5920, H0=+50 / H1=+55,
-+57.99 +/- 7.60, LLR +3.00. That +58 was not independently reproduced;
-the ship numbers are the merge-host gates above. Paste
-`cpp_impl/cg_input.cpp` (rebuilt from this Dev).
+The bundle combines exact tactical shortcuts (immediate global losses and
+forced mate-in-three), a two-way TT, a narrower aspiration window, a
+depth-8-search fine-tuned MiniNet, signed gravity-bounded history maluses,
+and small qsearch hot-path improvements. Paste `cpp_impl/cg_input.cpp`
+(rebuilt from this Dev).
 
 Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
 

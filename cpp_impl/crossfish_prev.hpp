@@ -14,7 +14,7 @@
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen TT-prefetch SPRT winner on 2026-09-07.
+// Frozen round-five +54.5 Elo SPRT winner on 2026-09-10.
 class CrossfishPrev {
        private:
         struct FastMoveStack {
@@ -162,6 +162,11 @@ class CrossfishPrev {
         };
         static_assert(sizeof(CompactTTEntry) == 16);
 
+        struct alignas(32) CompactTTBucket {
+            CompactTTEntry entries[2];
+        };
+        static_assert(sizeof(CompactTTBucket) == 32);
+
         static uint8_t pack_tt_move(Move move) {
             if (move.mini_board < 0 || move.mini_board >= 9
                 || move.square < 0 || move.square >= 9) {
@@ -196,9 +201,9 @@ class CrossfishPrev {
             return (uint8_t)((move >> 4) * 9 + (move & 15));
         }
 
-        static const int tt_size = 1 << 18;
-        std::vector<CompactTTEntry> transposition_table =
-            std::vector<CompactTTEntry>(tt_size);
+        static const int tt_bucket_count = 1 << 17;
+        std::vector<CompactTTBucket> transposition_table =
+            std::vector<CompactTTBucket>(tt_bucket_count);
 
         static constexpr int N_TIAR_MASKS = 48;
         static constexpr int two_in_a_row_masks[N_TIAR_MASKS] = {
@@ -267,10 +272,10 @@ class CrossfishPrev {
         // Kept at 10, not 1, so other terms can be tenths of a pawn. Texel freezes PAWN_IDX.
         static constexpr int PAWN_IDX = 7;
         static constexpr int PAWN = 10;
-        static constexpr int ASP_PAWNS = 50;
+        static constexpr int ASP_PAWNS = 40;
         static constexpr int RFP_PAWNS = 50;
         static constexpr int FP_PAWNS = 80;
-        static constexpr int QDELTA_PAWNS = 400;
+        static constexpr int QDELTA_PAWNS = 350;
         static constexpr int FREE_MOVE_PAWNS = 30;
         static constexpr int LUT_W_TIAR = 534;
         static constexpr int LUT_W_CENTER_SQ = 33;
@@ -861,7 +866,12 @@ class CrossfishPrev {
                 }
             }
             bool pv_node = (beta - alpha > 1);
-            CompactTTEntry entry = transposition_table[board.tt_hash & (tt_size - 1)];
+            CompactTTBucket &tt_bucket =
+                transposition_table[board.tt_hash & (tt_bucket_count - 1)];
+            CompactTTEntry entry = tt_bucket.entries[0];
+            if (entry.zobrist_hash != board.tt_hash) {
+                entry = tt_bucket.entries[1];
+            }
             bool tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
             FastMove tt_move = tt_hit ? tt_to_fast_move(entry.best_move) : NO_FAST_MOVE;
             if (tt_hit && (entry.depth >= depth)) {
@@ -898,7 +908,12 @@ class CrossfishPrev {
             if (pv_node && !tt_hit && depth > 2) {
                 search(board, 1, ply, alpha, beta);
                 if (stopped) return min_val;
-                entry = transposition_table[board.tt_hash & (tt_size - 1)];
+                CompactTTBucket &iid_bucket =
+                    transposition_table[board.tt_hash & (tt_bucket_count - 1)];
+                entry = iid_bucket.entries[0];
+                if (entry.zobrist_hash != board.tt_hash) {
+                    entry = iid_bucket.entries[1];
+                }
                 tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
                 tt_move = tt_hit ? tt_to_fast_move(entry.best_move) : NO_FAST_MOVE;
             }
@@ -933,6 +948,9 @@ class CrossfishPrev {
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
+            int stm = board.n_moves & 1;
+            int opponent_global_targets =
+                fast_win_moves[board.mini_board_states[stm ^ 1]];
             for (int i = 0; i < nmoves; i++) {
                 if (i == 1 && defer_move_scores) {
                     get_fast_move_scores(legal_moves + 1, nmoves - 1,
@@ -951,12 +969,23 @@ class CrossfishPrev {
                 }
 
                 make_move_fast(board, move);
-                __builtin_prefetch(
-                    &transposition_table[board.tt_hash & (tt_size - 1)], 0, 1);
-                if (i == 0) {
+                if (opponent_global_targets
+                    && has_immediate_global_win(board, opponent_global_targets)) {
+                    val = min_val + ply + 2;
+                }
+                else if (has_forced_global_win_after_reply(board, stm)) {
+                    val = max_val - ply - 3;
+                }
+                else if (i == 0) {
+                    __builtin_prefetch(
+                        &transposition_table[
+                            board.tt_hash & (tt_bucket_count - 1)], 0, 1);
                     val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                 }
                 else {
+                    __builtin_prefetch(
+                        &transposition_table[
+                            board.tt_hash & (tt_bucket_count - 1)], 0, 1);
                     int reduction = 0;
                     bool do_lmr = (scores[i] < 0 || (i >= 2 && !capture));
                     if (do_lmr) {
@@ -996,8 +1025,9 @@ class CrossfishPrev {
                         FastMove prior = legal_moves[j];
                         if (is_fast_capture(board, prior)) continue;
                         int &hj = history_table[stm][prior >> 4][prior & 15];
-                        hj -= bonus;
-                        if (hj < 0) hj = 0;
+                        int malus = 2 * bonus;
+                        hj -= malus + hj * malus / 10000;
+                        if (hj < -10000) hj = -10000;
                     }
                     if (board.n_moves > 0) {
                         Move prev = board.move_history.top();
@@ -1021,7 +1051,26 @@ class CrossfishPrev {
                     (int8_t)flag,
                     pack_tt_move(best_move)
                 };
-                transposition_table[board.tt_hash & (tt_size - 1)] = new_entry;
+                CompactTTBucket &store_bucket =
+                    transposition_table[board.tt_hash & (tt_bucket_count - 1)];
+                int replace = 0;
+                if (store_bucket.entries[0].zobrist_hash == board.tt_hash) {
+                    replace = 0;
+                }
+                else if (store_bucket.entries[1].zobrist_hash == board.tt_hash) {
+                    replace = 1;
+                }
+                else if (store_bucket.entries[0].zobrist_hash == 0) {
+                    replace = 0;
+                }
+                else if (store_bucket.entries[1].zobrist_hash == 0) {
+                    replace = 1;
+                }
+                else if (store_bucket.entries[1].depth
+                         < store_bucket.entries[0].depth) {
+                    replace = 1;
+                }
+                store_bucket.entries[replace] = new_entry;
                 // Only a bound that actually contradicts the static eval carries information.
                 if (have_static && abs(best_val) < CORR_MATE_BOUND
                     && (flag == TT_EXACT
@@ -1110,8 +1159,11 @@ class CrossfishPrev {
             if ((out_of_play & (1 << active_square)) == 0) {
                 add_from_mb(active_square);
             } else {
-                for (int mb = 0; mb < 9; mb++) {
-                    if ((out_of_play & (1 << mb)) == 0) add_from_mb(mb);
+                int live = (~out_of_play) & 511;
+                while (live) {
+                    int mb = __builtin_ctz(live);
+                    live &= live - 1;
+                    add_from_mb(mb);
                 }
             }
             return n;
@@ -1124,6 +1176,132 @@ class CrossfishPrev {
             int sq = move & 15;
             int mine = board.mini_boards[mb].markers[stm];
             return (fast_win_moves[mine] & (1 << sq)) != 0;
+        }
+
+        template <typename Board>
+        bool has_immediate_global_win(Board &board, int targets) {
+            int stm = board.n_moves & 1;
+            if (fast_has_win[board.mini_board_states[stm ^ 1]]) return false;
+            int out_of_play = board.mini_board_states[0]
+                            | board.mini_board_states[1]
+                            | board.mini_board_states[2];
+            int live = (~out_of_play) & 511;
+            targets &= live;
+            if (targets == 0) return false;
+            if (board.n_moves > 0 && !board.prev_move_was_pass) {
+                int active = board.move_history.top().square;
+                if (live & (1 << active)) {
+                    targets &= 1 << active;
+                }
+            }
+            while (targets) {
+                int mb = __builtin_ctz(targets);
+                targets &= targets - 1;
+                int occupied = board.mini_boards[mb].markers[0]
+                             | board.mini_boards[mb].markers[1];
+                if (fast_win_moves[board.mini_boards[mb].markers[stm]]
+                    & ~occupied & 511) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        template <typename Board>
+        bool has_forced_global_win_after_reply(Board &board, int player) {
+            if ((board.n_moves & 1) == player
+                || fast_has_win[board.mini_board_states[player]]) {
+                return false;
+            }
+            int targets = fast_win_moves[board.mini_board_states[player]];
+            int out_of_play = board.mini_board_states[0]
+                            | board.mini_board_states[1]
+                            | board.mini_board_states[2];
+            targets &= (~out_of_play) & 511;
+            int winning_targets = 0;
+            int remaining = targets;
+            while (remaining) {
+                int mb = __builtin_ctz(remaining);
+                remaining &= remaining - 1;
+                int occupied = board.mini_boards[mb].markers[0]
+                             | board.mini_boards[mb].markers[1];
+                if (fast_win_moves[board.mini_boards[mb].markers[player]]
+                    & ~occupied & 511) {
+                    winning_targets |= 1 << mb;
+                }
+            }
+            if (winning_targets == 0) return false;
+
+            int opponent = player ^ 1;
+            bool any_reply = false;
+            auto miniboard_refutes = [&](int mb) {
+                int mb_bit = 1 << mb;
+                int occupied = board.mini_boards[mb].markers[0]
+                             | board.mini_boards[mb].markers[1];
+                int empty = (~occupied) & 511;
+                if (empty == 0) return false;
+                any_reply = true;
+
+                int captures =
+                    fast_win_moves[
+                        board.mini_boards[mb].markers[opponent]] & empty;
+                int draws = 0;
+                if ((empty & (empty - 1)) == 0) {
+                    draws = empty & ~captures;
+                }
+                int decided = captures | draws;
+                int safe = 0;
+
+                int targets_after_decision = winning_targets & ~mb_bit;
+                if (targets_after_decision
+                    && (out_of_play | mb_bit) != 511) {
+                    int safe_destinations =
+                        out_of_play | targets_after_decision | mb_bit;
+                    int safe_decided = decided & safe_destinations;
+                    if (fast_has_win[
+                            board.mini_board_states[opponent] | mb_bit]) {
+                        safe_decided &= ~captures;
+                    }
+                    safe |= safe_decided;
+                }
+
+                int nondeciding = empty & ~decided;
+                int safe_nondeciding =
+                    nondeciding & (out_of_play | winning_targets);
+                if (winning_targets & mb_bit) {
+                    int player_wins =
+                        fast_win_moves[
+                            board.mini_boards[mb].markers[player]] & empty;
+                    if (player_wins
+                        && (player_wins & (player_wins - 1)) == 0) {
+                        int blocked_reply = nondeciding & player_wins;
+                        safe_nondeciding &= ~blocked_reply;
+                        int remaining_targets = winning_targets & ~mb_bit;
+                        if (remaining_targets) {
+                            safe_nondeciding |=
+                                blocked_reply
+                                & (out_of_play | remaining_targets);
+                        }
+                    }
+                }
+                safe |= safe_nondeciding;
+                return (empty & ~safe) != 0;
+            };
+
+            if (board.n_moves > 0 && !board.prev_move_was_pass) {
+                int active = board.move_history.top().square;
+                if ((out_of_play & (1 << active)) == 0) {
+                    if (miniboard_refutes(active)) return false;
+                    return any_reply;
+                }
+            }
+            int live = (~out_of_play) & 511;
+            while (live) {
+                int mb = __builtin_ctz(live);
+                live &= live - 1;
+                if (miniboard_refutes(mb)) return false;
+            }
+            return any_reply;
         }
 
         template <typename Board>

@@ -36,6 +36,10 @@ static double g_sprt_elo1 = 5;
 static double g_sprt_llr_bound = 3;
 static int g_sprt_max_games = 0;
 static unsigned int g_sprt_threads = 0;
+static int g_sprt_resume_wins = 0;
+static int g_sprt_resume_draws = 0;
+static int g_sprt_resume_losses = 0;
+static int g_sprt_game_offset = -1;
 #pragma GCC optimize("O3")
 #pragma GCC optimization("Ofast,unroll-loops")
 #pragma GCC target("avx2,bmi,bmi2,lzcnt,popcnt")
@@ -2304,10 +2308,37 @@ int main(int argc, char** argv) {
     if (const char *s = std::getenv("SPRT_THREADS")) {
         g_sprt_threads = (unsigned int)std::max(1, std::atoi(s));
     }
+    if (const char *s = std::getenv("SPRT_RESUME_WINS")) {
+        g_sprt_resume_wins = std::max(0, std::atoi(s));
+    }
+    if (const char *s = std::getenv("SPRT_RESUME_DRAWS")) {
+        g_sprt_resume_draws = std::max(0, std::atoi(s));
+    }
+    if (const char *s = std::getenv("SPRT_RESUME_LOSSES")) {
+        g_sprt_resume_losses = std::max(0, std::atoi(s));
+    }
+    if (const char *s = std::getenv("SPRT_GAME_OFFSET")) {
+        g_sprt_game_offset = std::max(0, std::atoi(s));
+    }
     if (!(g_sprt_elo1 > g_sprt_elo0)) {
         std::cerr << "SPRT_ELO1 must be greater than SPRT_ELO0" << std::endl;
         return 1;
     }
+    const int resumed_games =
+        g_sprt_resume_wins + g_sprt_resume_draws + g_sprt_resume_losses;
+    if (g_sprt_game_offset < 0) {
+        if (resumed_games & 1) {
+            std::cerr << "SPRT resume total must be even (one opening produces two games)"
+                      << std::endl;
+            return 1;
+        }
+        g_sprt_game_offset = resumed_games / 2;
+    }
+    global_total = {
+        g_sprt_resume_wins,
+        g_sprt_resume_draws,
+        g_sprt_resume_losses
+    };
     if (!nnue_init_runtime()) {
         return 1;
     }
@@ -2334,7 +2365,7 @@ int main(int argc, char** argv) {
         : std::max(1u, std::thread::hardware_concurrency());
     // const unsigned int n_threads = 6;
     std::cout << "Number of threads: " << n_threads << std::endl;
-    double llr = 0;
+    double llr = sprt(global_total[0], global_total[1], global_total[2]);
 
     //benchmark NPS from startpos for Prev and Dev
     CrossfishPrev prev;
@@ -2346,8 +2377,16 @@ int main(int argc, char** argv) {
     dev.getMove(board, thinking_time);
     int dev_nps = dev.nodes;
     std::cout << "Prev NPS: " << prev_nps << " Dev NPS: " << dev_nps << std::endl;
-    int total_games = 0;
-    int game_idx = 0;
+    int total_games = resumed_games;
+    int game_idx = g_sprt_game_offset;
+    if (resumed_games) {
+        std::cout << "SPRT resume: N=" << resumed_games
+                  << " W=" << global_total[0]
+                  << " D=" << global_total[1]
+                  << " L=" << global_total[2]
+                  << " next opening=" << game_idx
+                  << " LLR=" << llr << std::endl;
+    }
     while (std::abs(llr) < g_sprt_llr_bound
            && (g_sprt_max_games == 0 || total_games < g_sprt_max_games)) {
         std::vector<std::future<void>> futures;
