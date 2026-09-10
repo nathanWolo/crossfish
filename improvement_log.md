@@ -740,3 +740,150 @@ Prev NPS: 19,265,280  Dev NPS: 20,314,880
 ```
 
 `codingame_nnue.cpp` and `cg_input.cpp` carry this Dev.
+
+---
+
+## 26. Prove immediate global losses without searching them (9 September 2026)
+
+After a candidate move, the engine now checks whether the opponent can win
+the global board immediately. The test intersects the opponent's global
+winning targets with the legal destination miniboard and that miniboard's
+local winning squares. When such a move exists, the child is an exact loss
+and recursion is skipped.
+
+```text
+N: 12928 W: 4482 D: 4211 L: 4235
+Elo diff: +6.64 +/- 4.92
+LLR: +3.13 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 27. Prove forced global wins one reply ahead (9 September 2026)
+
+The symmetric tactical shortcut recognizes positions where every legal
+opponent reply still leaves a global winning move. It accounts for captures,
+drawn miniboards, a reply that wins the macro board, full-board count
+termination, and replies that block the sole local winning square.
+
+The original move-by-move proof passed SPRT. The shipped implementation is an
+equivalent bit-parallel mask test; a randomized depth-4 oracle matched on
+2,000 later-ply positions after catching and fixing an early missing-target
+condition.
+
+```text
+N: 5696 W: 2017 D: 1858 L: 1821
+Elo diff: +11.96 +/- 7.41
+LLR: +3.04 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 28. Keep two transposition entries per cache line (9 September 2026)
+
+The 4 MiB TT is now 131,072 aligned 32-byte buckets containing two 16-byte
+entries. Probes check both entries; stores preserve a matching or empty slot
+and otherwise replace the shallower entry. Capacity doubles without changing
+the table's memory footprint or requiring a second cache line.
+
+```text
+N: 11040 W: 3818 D: 3634 L: 3588
+Elo diff: +7.24 +/- 5.31
+LLR: +3.05 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 29. Narrow the aspiration window (9 September 2026)
+
+The initial iterative-deepening aspiration window moved from 50 to 40 HCE
+pawns. On this stronger and more stable baseline, the extra cutoffs outweighed
+the additional re-searches.
+
+```text
+N: 6496 W: 2326 D: 2050 L: 2120
+Elo diff: +11.02 +/- 6.99
+LLR: +3.10 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 30. Fine-tune MiniNet on current depth-8 search labels (9 September 2026)
+
+The packed D=8, H=4 residual MiniNet was fine-tuned from the shipped model on
+106,283 positions labeled by the current engine at depth 8. Training pins the
+empty-board residual to zero after every optimizer step, and the trainer can
+now initialize from an existing CFM2 model.
+
+The packed held-out MAE improved from 1123.66 to 1103.73, median absolute
+error from 552.10 to 527.41, and correlation from 0.86425 to 0.86601. Online
+play, not those offline metrics, was the acceptance gate:
+
+```text
+N: 13856 W: 4859 D: 4387 L: 4610
+Elo diff: +6.24 +/- 4.78
+LLR: +3.02 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 31. Let failed quiet moves earn negative history (9 September 2026)
+
+Quiet moves searched before a beta cutoff now receive a signed,
+gravity-bounded malus instead of being clamped at zero. The final malus is
+twice the cutoff bonus and remains bounded at -10000, matching the positive
+history update's saturation behavior.
+
+```text
+Signed malus, 1x:
+N: 13248 W: 4620 D: 4252 L: 4376
+Elo diff: +6.40 +/- 4.88
+LLR: +3.01 (H0=0, H1=+5) — PASS
+
+Final 2x malus:
+N: 4512 W: 1634 D: 1435 L: 1443
+Elo diff: +14.72 +/- 8.38
+LLR: +3.07 (H0=0, H1=+5) — PASS
+```
+
+---
+
+## 32. Round-five direct +50 proof (10 September 2026)
+
+The final stack also iterates live miniboard bits in free-choice qsearch,
+uses the bit-parallel mate-in-three proof described above, and lowers the
+qsearch delta margin from 400 to 350 pawns. These last hot-path changes were
+kept as part of the complete stack rather than claimed as independent +5 Elo
+winners.
+
+The complete engine was then tested at the official 95 ms control against the
+exact `origin/main` commit
+`0c50c955327ff58767bfe3378a75aa2c8beb211f`, with separate MiniNet namespaces
+so the comparator could not accidentally share the new weights:
+
+```text
+N: 7744 W: 3282 D: 2385 L: 2077
+Elo diff: +54.51 +/- 6.48
+LLR: +3.00274 (H0=+50, H1=+55) — PASS
+```
+
+Independent merge-host gate vs the same `0c50c95` baseline, H0=0 / H1=+5.
+The author's +54 at H0=+50 reproduced; these are the ship numbers:
+
+```text
+95 ms: N 1056 W 433 D 352 L 271
+Elo diff: +53.72 +/- 17.23
+LLR: +3.00 — PASS
+Prev NPS: 26,194,176  Dev NPS: 23,589,632
+```
+
+Rejected or inconclusive experiments on this baseline included a second
+projected-network cycle, an extra mate-in-three guard, TT generations,
+history-reward and divisor variants, killer/free/block/two-in-a-row weight
+changes, aspiration recentering, packed capture scores, cached winner state,
+a compact MiniNet lookup, searched-only maluses, a last-mover winner check,
+and a dedicated qsearch scorer. The live-miniboard capture scan alone was
+only +3.87 Elo at N=4128 and was not treated as an independent pass.
+
+`crossfish_prev.hpp`, `codingame_nnue.cpp`, and `cg_input.cpp` carry the
+verified round-five engine.
