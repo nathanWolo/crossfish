@@ -236,7 +236,29 @@ The bundle combines exact tactical shortcuts (immediate global losses and
 forced mate-in-three), a two-way TT, a narrower aspiration window, a
 depth-8-search fine-tuned MiniNet, signed gravity-bounded history maluses,
 and small qsearch hot-path improvements. Paste `cpp_impl/cg_input.cpp`
-(69,969 characters, rebuilt from this Dev).
+(70,638 characters, rebuilt from the current accepted Dev).
+
+The next sequential winner on top of that exact merged baseline adds a
+lower-weight correction history keyed by the STM-relative shape of the forced
+miniboard. It passed the official 95 ms gate at N=6240, 2236-1968-2036,
+**+11.14 +/- 7.14 Elo**, LLR +3.02 (H0=0, H1=+5). This is an accepted
+hill-climb step, not yet a new direct +30 bundle proof.
+
+The following exact hot-path bundle removes the unused full search-board
+hash, compacts killer/counter storage, keeps counter moves packed, and reuses
+correction-entry references. It matched the frozen engine on move, score, and
+node count across 400 randomized depth-4 positions. The authoritative 95 ms
+gate passed at N=14816, 5146-4783-4887, **+6.07 +/- 4.60 Elo**, LLR +3.11
+(H0=0, H1=+5). This is the second accepted step toward the next direct proof.
+
+The third accepted step caches the finished-miniboard mask and already-scaled
+correction values, then adds a bounded HCE penalty when the opponent has a
+latent local capture on a macro-winning target. The authoritative 95 ms gate
+passed at N=7392, 2646-2308-2438, **+9.78 +/- 6.57 Elo**, LLR +3.02
+(H0=0, H1=+5). A direct 95 ms H0=+30/H1=+35 run against `d5617e5` was
+stopped at N=2848, 1061-920-867, **+23.70 +/- 10.51 Elo**, LLR -0.84.
+Round six therefore ships as an approximately +25 Elo improvement, not as a
+formal direct +30 proof.
 
 Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
 
