@@ -887,3 +887,161 @@ only +3.87 Elo at N=4128 and was not treated as an independent pass.
 
 `crossfish_prev.hpp`, `codingame_nnue.cpp`, and `cg_input.cpp` carry the
 verified round-five engine.
+
+---
+
+## 33. Correct active-miniboard shape online (10 September 2026)
+
+The accepted correction history only keyed side to move, forced miniboard,
+and the mask of finished miniboards. Cross-depth analysis of the round-five
+depth-8 and depth-10 labels showed that the exact STM-relative shape of the
+forced miniboard explained another 100-112 points of static-HCE MAE, slightly
+more than the accepted structural key by itself.
+
+A second 19,684-entry correction table now learns that residual online. The
+first 19,683 entries are the ternary local-board states and the final entry is
+free choice. The existing correction remains unchanged at grain 24; the new
+table is deliberately weaker at grain 48. Both use the same bounded gravity
+update, and fixed-depth data generation clears both tables.
+
+The change passed the optional 20 ms screen:
+
+```text
+N: 11040 W: 4084 D: 3109 L: 3847
+Elo diff: +7.46 +/- 5.49
+LLR: +3.02 (H0=0, H1=+5) — PASS
+Prev NPS: 13,369,856  Dev NPS: 13,222,144
+```
+
+It then passed the authoritative 95 ms gate against the exact merged
+round-five baseline (`d5617e510925a3315215a2d14e6526839ca70933`):
+
+```text
+N: 6240 W: 2236 D: 1968 L: 2036
+Elo diff: +11.14 +/- 7.14
+LLR: +3.02 (H0=0, H1=+5) — PASS
+Prev NPS: 14,519,808  Dev NPS: 13,890,304
+```
+
+The start-position NPS moved slightly backward, so this is an evaluation /
+pruning-quality gain rather than an implementation-speed result.
+`crossfish_prev.hpp`, `codingame_nnue.cpp`, and `cg_input.cpp` carry the
+frozen winner.
+
+---
+
+## 34. Make the search hot path smaller without changing its tree (11 September 2026)
+
+Four exact implementation changes were combined after each had been checked
+against the current search:
+
+- `FastBoard` no longer maintains an unused full Zobrist hash alongside its
+  canonical transposition hash;
+- killer moves use byte storage;
+- counter moves stay packed in the engine's byte-sized internal format; and
+- correction-history entry addresses are retained from static evaluation to
+  the later update.
+
+A randomized real-`getMove` oracle compared 400 legal positions through depth
+4 and matched the frozen engine exactly on selected move, root score, and node
+count. Depending on the clean benchmark run, start-position throughput rose
+roughly 4-8%.
+
+The bundle passed the optional 20 ms screen:
+
+```text
+N: 17504 W: 6413 D: 4957 L: 6134
+Elo diff: +5.54 +/- 4.36
+LLR: +3.01 (H0=0, H1=+5) — PASS
+Prev NPS: 13,805,056  Dev NPS: 14,722,048
+```
+
+It then passed the authoritative 95 ms gate:
+
+```text
+N: 14816 W: 5146 D: 4783 L: 4887
+Elo diff: +6.07 +/- 4.60
+LLR: +3.11 (H0=0, H1=+5) — PASS
+Prev NPS: 14,384,384  Dev NPS: 14,971,136
+```
+
+This is a pure implementation-speed gain: the search tree is unchanged at a
+fixed node/depth budget. `crossfish_prev.hpp`, `codingame_nnue.cpp`, and the
+70,056-character `cg_input.cpp` carry the frozen winner.
+
+---
+
+## 35. Cache exact state and price latent macro captures (12 September 2026)
+
+Two exact hot-path values are now retained instead of recomputed: `FastBoard`
+incrementally maintains the finished-miniboard mask, and each correction
+history entry stores both its raw gravity value and its already-divided
+applied value in the same four-byte footprint.
+
+On top of those caches, HCE now applies a bounded `-800` side-to-move
+correction when the opponent has a local two-in-a-row on any live miniboard
+that would complete their macro line. The incremental evaluator already
+maintains both local-threat maps, so the search path adds only bit operations.
+The standalone reference evaluator reconstructs the maps for consistency
+tests.
+
+The sign was established empirically. A teacher-residual-inspired `+800`
+version failed fixed depth four at `-26.95 +/- 13.55` Elo. Reversing it to
+`-400` passed fixed depth but did not translate at 20 ms. The final `-800`
+version passed fixed depth four:
+
+```text
+N: 6592 W: 2906 D: 1011 L: 2675
+Elo diff: +12.18 +/- 7.72
+LLR: +3.07 (H0=0, H1=+5) — PASS
+```
+
+Its complete 20 ms screen was positive but stopped just short of acceptance:
+
+```text
+N: 12000 W: 4461 D: 3301 L: 4238
+Elo diff: +6.46 +/- 5.29
+LLR: +2.63 (H0=0, H1=+5)
+```
+
+The authoritative 95 ms gate then passed:
+
+```text
+N: 7392 W: 2646 D: 2308 L: 2438
+Elo diff: +9.78 +/- 6.57
+LLR: +3.02 (H0=0, H1=+5) — PASS
+Prev NPS: 14,095,360  Dev NPS: 14,220,288
+```
+
+The essentially flat NPS and strong equal-depth result indicate that the
+measured gain is primarily evaluation/search quality; the exact caches make
+the feature cheap and may contribute a smaller speed component. Full tests
+passed, including the 23,511-position incremental evaluator verifier.
+`crossfish_prev.hpp`, `codingame_nnue.cpp`, and the 70,638-character
+`cg_input.cpp` carry the frozen winner.
+
+---
+
+## 36. Round-six direct measurement (12 September 2026)
+
+The three accepted sequential 95 ms steps were measured directly as one stack
+against the exact merged round-five baseline
+`d5617e510925a3315215a2d14e6526839ca70933`. The run used the stricter
+H0=+30/H1=+35 hypotheses:
+
+```text
+N: 2848 W: 1061 D: 920 L: 867
+Elo diff: +23.70 +/- 10.51
+LLR: -0.84 (H0=+30, H1=+35) — stopped
+Prev NPS: 14,817,536  Dev NPS: 14,169,600
+```
+
+This does not establish the originally targeted direct +30 claim. It does
+show that the sequential winners compose to roughly +25 Elo, and that result
+was accepted as sufficient for the round-six handoff. The shipped stack
+contains:
+
+- active-miniboard-shape correction history;
+- exact hot-path state/storage reductions;
+- cached out-of-play and applied correction values; and
+- the opponent latent macro-capture HCE correction.
