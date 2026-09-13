@@ -2,7 +2,17 @@
 
 Entry for the UVicAI UTTT tournament (first place) and a CodinGame Ultimate Tic-Tac-Toe engine.
 
-The **active engine is C++**. `cpp_impl/codingame_nnue.cpp` is the readable MiniNet source. `cpp_impl/cg_input.cpp` is the minified file to paste into CodinGame. `cpp_impl/crossfish.cpp` is the self-contained HCE bot used as the packing source for that file. Local SPRT compares `cpp_impl/crossfish_dev.hpp` against the frozen previous in `cpp_impl/crossfish_prev.hpp`. `cpp_impl/cg_legend_hce.cpp` is a snapshot from the first Legend hit. The Python tree under `python_impl/` is legacy.
+The **active engine is C++**. `cpp_impl/codingame_nnue.cpp` is the readable
+CodinGame engine and includes the generated packed-eval headers;
+`cpp_impl/cg_input.cpp` is the bundled/minified file to paste into CodinGame.
+Local SPRT compares `cpp_impl/crossfish_dev.hpp` against the frozen previous
+in `cpp_impl/crossfish_prev.hpp`. `cpp_impl/cg_legend_hce.cpp` is a snapshot
+from the first Legend hit. The Python tree under `python_impl/` is legacy.
+
+Detailed project documentation:
+
+- [Engine improvement log](documentation/improvement_log.md)
+- [NNUE training and runtime implementation](documentation/nnue_training_and_implementation.md)
 
 Hill-climbing Elo is a specific loop: freeze Prev, edit only Dev, prove correctness, then SPRT. Read **Improving the engine** before changing search or eval.
 
@@ -29,12 +39,17 @@ That builds and runs the C++ unit tests, the Python rules oracle, and compiles t
 | `make test-cpp` | C++ unit tests only (`cpp_impl/unit_tests.cpp`) |
 | `make test-python` | Independent Python board perft / make-undo / winners (`python_impl/test_rules.py`), plus `tools/test_*.py` |
 | `make verify` | The older smoke checks inside `test_bots.cpp`, then exit (no SPRT) |
-| `make sprt` | Strength: Dev vs Prev self-play with SPRT at **95 ms** (slow, noisy) |
+| `make sprt` | Strength: Dev vs Prev self-play with SPRT at **90 ms** (slow, noisy) |
 | `make roundrobin` | 10k-game pairs of current C++ vs Legend vs Python at 20ms/move |
 | `make cg` | Compile the CodinGame submission |
 | `make cg-input` | Rebuild `cpp_impl/cg_input.cpp` from `codingame_nnue.cpp` with the minifier |
 
 SPRT answers "is this stronger?". Unit tests answer "did I break the rules, hashing, eval, or search?". Do not skip `make test` because SPRT passed.
+
+Timed referees enforce CodinGame's external clock independently of the bot's
+own timer. Any move returned after 100 ms is an immediate loss, and SPRT /
+round-robin summaries report timeout counts. Fixed-depth eval tests are exempt
+because they intentionally run without a move clock.
 
 SPRT hypotheses can be overridden through the environment. For example, this
 tests whether Dev clears +50 Elo instead of the default 0-vs-5 screen:
@@ -50,7 +65,13 @@ Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`, and
 
 This section is the process. The goal is Elo on CodinGame Ultimate Tic-Tac-Toe, not a prettier loss, a higher training correlation, or a faster NPS number that plays worse. Other agents will hill-climb from here. Follow the loop; do not invent a parallel scoring system.
 
-CodinGame gives 1000 ms on the first execute per player and 100 ms on later moves. The engine searches about 800 ms / 95 ms. The official SPRT bar is **95 ms/move** (the CodinGame later-move budget). A change is not shipped until it passes that gate. 20 ms is an optional cheap screen, not a ship. The submission cap is **100,000 characters**.
+CodinGame gives 1000 ms on the first execute per player and 100 ms on later
+moves. The fixed center opening, later moves, and official SPRT use a 90 ms
+search budget, leaving time for eager evaluator initialization, per-turn setup,
+scheduler jitter, search unwinding, and output before the independently
+enforced 100 ms deadline. A change is not shipped until it passes that gate
+without timeout forfeits. 20 ms is an optional cheap screen, not a ship. The
+submission cap is **100,000 characters**.
 
 ### The three copies of the engine
 
@@ -58,10 +79,11 @@ CodinGame gives 1000 ms on the first execute per player and 100 ms on later move
 | --- | --- | --- |
 | `cpp_impl/crossfish_prev.hpp` | Frozen baseline. `CrossfishPrev` in SPRT. | Only when **freezing** a landed win. Never during an experiment. |
 | `cpp_impl/crossfish_dev.hpp` | The experiment. `CrossfishDev` in SPRT. | The only search/eval file you change while testing. |
-| `cpp_impl/mini_eval.hpp` | Packed MiniNet (D=8, H=4) used by Dev, Prev, and tests. | Shared eval. A change here hits **both** sides unless Dev has a different path. |
+| `cpp_impl/mini_eval.hpp` | Frozen packed D8/H4 MiniNet used by Prev and regression tests. | Baseline eval; do not change during a Dev experiment. |
+| `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` | Generated packed evaluators used by Dev and the CG bot. | Regenerate only for an accepted eval candidate. |
 | `cpp_impl/global_board.hpp` | Board, movegen, make/unmake, Zobrist. Shared by everyone. | Rules/hash only. Perft is frozen. |
-| `cpp_impl/codingame_nnue.cpp` | Readable single-file CG bot. | After a pass, when porting. Not the experiment. |
-| `cpp_impl/cg_input.cpp` | Minified paste file. | Regenerated from `codingame_nnue.cpp`. |
+| `cpp_impl/codingame_nnue.cpp` | Readable CG bot; local eval headers are bundled for submission. | After a pass, when porting. Not the experiment. |
+| `cpp_impl/cg_input.cpp` | Bundled and minified paste file. | Regenerated from `codingame_nnue.cpp`. |
 | `cpp_impl/crossfish.cpp` | Self-contained HCE CG bot; packing source for a new MiniNet emit. | Only if you are emitting a new net or changing the HCE template. |
 | `cpp_impl/cg_legend_hce.cpp` | Historical Legend snapshot. | Do not touch. |
 
@@ -77,7 +99,7 @@ Do this in order. One hypothesis per loop.
 2. **Change only Dev** (and shared headers only if the change is truly shared and you understand both sides get it). Do not edit Prev. Do not port to `codingame_nnue.cpp` yet.
 3. **One axis.** Eval rewrite *or* search change *or* speed-only rewrite of the same eval *or* a new net. Not two of those in the same SPRT. If you cannot say in one sentence what Prev does that Dev should do better, the experiment is not ready.
 4. **`make test`.** Always. SPRT passing a broken engine is how you ship illegal moves or a wrong hash. Unit tests answer "did I break rules, hashing, eval, or search?". SPRT answers "is this stronger?".
-5. **Classify the change, then gate** (next subsection). Run **one** SPRT at a time, using all cores. Do not start a second SPRT on the same machine.
+5. **Classify the change, then gate** (next subsection). Run **one** SPRT at a time, reserving one physical core for the OS and referee. Do not start a second SPRT on the same machine.
 6. **On FAIL or a clearly marginal run:** stop the SPRT, revert Dev to the freeze, write down why it failed (eval, speed, or mixed). Do not keep a failed experiment in Dev as the new baseline.
 7. **On PASS:** freeze immediately (copy the accepted Dev into Prev), then port to the CG files, then record the result. Only then start the next experiment.
 
@@ -97,9 +119,10 @@ Harness: `cpp_impl/test_bots.cpp`, built as `cpp_impl/bin/test_bots`. Rebuild af
 
 ```bash
 make -C cpp_impl test          # correctness first
-make -C cpp_impl sprt          # official: 95ms, H0=0, H1=+5, all cores
+make -C cpp_impl sprt          # official: 90ms, H0=0, H1=+5, one core reserved
 # or, from cpp_impl/bin:
-./test_bots                    # 95ms (official bar)
+./test_bots                    # 90ms (official bar)
+./test_bots 95                 # optional historical comparison
 ./test_bots 20                 # optional cheap 20ms screen
 ./test_bots depth 4            # equal depth 4, eval pruning off
 ```
@@ -107,20 +130,20 @@ make -C cpp_impl sprt          # official: 95ms, H0=0, H1=+5, all cores
 Default hypotheses: **H0 = 0 Elo**, **H1 = +5 Elo**. The run stops at `|LLR| >= 3` (override with `SPRT_LLR_BOUND`).
 
 - `SPRT PASS: H1 … favored over H0` — accept the change (for that time control).
-- `SPRT FAIL: H0 … favored over H1` — reject. This means "not a +5 Elo gain", not "Dev is worse". A true +2 Elo at 95 ms will often fail H0-vs-+5. That is still not a ship.
+- `SPRT FAIL: H0 … favored over H1` — reject. This means "not a +5 Elo gain", not "Dev is worse". A true +2 Elo at 90 ms will often fail H0-vs-+5. That is still not a ship.
 - `SPRT INCONCLUSIVE` — hit `SPRT_MAX_GAMES` without a decision.
 
 Environment overrides:
 
 | Variable | Meaning |
 | --- | --- |
-| `SPRT_THINK_MS` | Move time (default 95). Ignored for play when `depth` is set. |
+| `SPRT_THINK_MS` | Search allocation (default 90). Ignored for play when `depth` is set. |
 | `SPRT_ELO0` / `SPRT_ELO1` | Hypotheses. `ELO1` must be greater than `ELO0`. |
 | `SPRT_LLR_BOUND` | Stop when `|LLR|` reaches this (default 3). |
 | `SPRT_MAX_GAMES` | Optional cap. 0 = run until LLR decides. |
-| `SPRT_THREADS` | Worker count. Default is `hardware_concurrency`. |
+| `SPRT_THREADS` | Worker count. On Linux the default uses physical-core topology and reserves one core; it falls back to logical CPUs when topology is unavailable. |
 
-Example: prove a huge speed win is more than +50 Elo at 95 ms:
+Example: prove a huge speed win is more than +50 Elo at 90 ms:
 
 ```bash
 SPRT_ELO0=50 SPRT_ELO1=55 make -C cpp_impl sprt
@@ -128,7 +151,12 @@ SPRT_ELO0=50 SPRT_ELO1=55 make -C cpp_impl sprt
 
 Use a raised H0 only when the first thousands of games already show a blowout. Do not use it to dress up a +8 Elo run.
 
-Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS** and **Dev NPS** from a 1-second startpos search. Treat NPS as a speed signal, not a strength score.
+Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS** and **Dev NPS** from a 1-second startpos search. Timed lines report each engine's maximum observed response latency. Treat NPS as a speed signal, not a strength score.
+
+Timed result lines also print external referee forfeits as
+`timeouts Prev=N Dev=N`. These losses count in W/D/L exactly as they would on
+CodinGame. A candidate that gains nodes by overrunning the clock is weaker, not
+faster.
 
 `depth N` sets a fixed search depth and turns **eval pruning off on both sides** (`g_disable_eval_prune`: no RFP / futility / qsearch-delta). That is the equal-depth gate: same node budget in ply, so a loss means a worse leaf, not a slower one.
 
@@ -136,9 +164,9 @@ Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS
 
 | Kind of change | First gate | Then | Ship only after |
 | --- | --- | --- | --- |
-| Different leaf / different net / different HCE weights | `depth 4` | optional 20 ms, then **95 ms** | Official 95 ms pass. Depth-only is not enough. |
-| Same eval, faster implementation (LUTs, MiniNet projection, AVX) | optional 20 ms | **95 ms** | Official 95 ms pass. Depth 4 should be ~0 Elo if the rewrite is equivalent. If depth 4 fails, the "speedup" changed the eval. |
-| Search (LMR, TT, move order, pruning) | optional 20 ms | **95 ms** | Official 95 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
+| Different leaf / different net / different HCE weights | `depth 4` | optional 20 ms, then **90 ms** | Official 90 ms pass. Depth-only is not enough. |
+| Same eval, faster implementation (LUTs, MiniNet projection, AVX) | optional 20 ms | **90 ms** | Official 90 ms pass. Depth 4 should be ~0 Elo if the rewrite is equivalent. If depth 4 fails, the "speedup" changed the eval. |
+| Search (LMR, TT, move order, pruning) | optional 20 ms | **90 ms** | Official 90 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
 
 Do not skip `make test` because a gate passed.
 
@@ -173,10 +201,15 @@ Early-game positions are where HCE is weakest (minis not yet decided). If you tr
 
 ### Shipping to CodinGame
 
-A Dev SPRT pass does **not** update the CG bot. `codingame_nnue.cpp` is a standalone copy, not `#include "crossfish_dev.hpp"`. After a freeze:
+A Dev SPRT pass does **not** update the CG bot. `codingame_nnue.cpp` keeps a
+standalone copy of the search but shares generated packed-eval headers. After
+a freeze:
 
-1. Port the accepted Dev/search/eval changes into `codingame_nnue.cpp` by hand (or re-emit a net with `tools/nnue_emit_mininet_cg.py` if the change *is* a new packed MiniNet). Keep LUTs `static inline`.
-2. `python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp`
+1. Port accepted search changes into `codingame_nnue.cpp`. For eval changes,
+   regenerate `mini_eval_d16.hpp` and/or `macro_eval.hpp` with the matching
+   tools. Keep large LUTs in static storage.
+2. Run `make -C cpp_impl cg-input`; the minifier recursively inlines local
+   headers before shortening the source.
 3. Confirm `cg_input.cpp` is under 100k characters. Paste **that** file into CodinGame, not the readable source unless you are debugging.
 4. Optionally play minified vs readable at 20 ms (`roundrobin.run_pair` on the two `match` binaries). Expect ~0 Elo if minify only renamed tokens.
 5. Write the SPRT line into **Latest strength result** (N, W/D/L, Elo, LLR, hypotheses, NPS).
@@ -199,45 +232,67 @@ CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags 
 - Revert Dev to Prev after every failed or killed gate. Do not stack unproven diffs.
 - Freeze Prev on every pass before the next idea. Hill-climbing without a freeze is measuring against a moving leftover.
 - Prefer the next experiment that is *cheap to falsify*: a LUT that must match `eval_consistency`, a search constant, a qsearch skip. Do not start with a new architecture and a week of training.
-- If depth 4 is ~0 and 95 ms is a big win, you shipped speed. If depth 4 wins and 95 ms dies, you shipped a slow eval; make it cheaper or drop it.
-- If 95 ms Elo is +1 to +3 after ~8k games, kill it. It will not clear H1 = +5 in a useful amount of time. A 20 ms screen that is already stuck near 0 can save the machine.
+- If depth 4 is ~0 and 90 ms is a big win, you shipped speed. If depth 4 wins and 90 ms dies, you shipped a slow eval; make it cheaper or drop it.
+- If 90 ms Elo is +1 to +3 after ~8k games, kill it. It will not clear H1 = +5 in a useful amount of time. A 20 ms screen that is already stuck near 0 can save the machine.
 - Never run two SPRTs at once. Never edit Prev "just for the test". Never ship `codingame_nnue.cpp` from an unfrozen Dev.
-- Sequential gates: depth 4 (if eval) → optional 20 ms screen → official 95 ms. Stop at the first fail. Do not ship on 20 ms alone.
+- Sequential gates: depth 4 (if eval) → optional 20 ms screen → official 90 ms. Stop at the first fail. Do not ship on 20 ms alone.
 
 ## CodinGame file and minifier
 
-CodinGame's source cap is **100,000 characters**. The readable source is `cpp_impl/codingame_nnue.cpp` (~142k, over the cap). Paste **`cpp_impl/cg_input.cpp`** into the IDE (69,969 characters, about 30k of headroom).
+CodinGame's source cap is **100,000 characters**. Paste
+**`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
+headers are intentionally kept separate for review.
 
-`tools/cg_minify.py` is an ice4-style minifier: it strips comments and indentation, renames identifiers, and packs tokens. It does not change search or eval. Rebuild the paste file after editing the readable source:
+`tools/cg_minify.py` is an ice4-style minifier: it can inline local quoted
+headers, strips comments and indentation, renames identifiers, and packs
+tokens. It does not change search or eval. Rebuild the paste file after
+editing the readable source:
 
 ```bash
-python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
+python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp \
+  -o cpp_impl/cg_input.cpp --inline-local
 ```
 
 `--no-rename` is whitespace-only (no identifier shortening). When regenerating the submission from a net, `tools/nnue_emit_mininet_cg.py` minifies by default; pass `--no-minify` to keep the readable file.
 
 ## Latest strength result
 
-On 2026-09-10, the round-5 engine passed the official 95 ms gate against the
-exact then-current `origin/main`
-(`0c50c955327ff58767bfe3378a75aa2c8beb211f`):
+On 2026-09-13, the timeout-hardened round-seven stack passed the official
+90 ms SPRT against the merged round-six engine
+(`db8bce60e8f88ad4201042484dccc578fb59ecd4`) with one of eight physical cores
+reserved:
 
 ```text
-95 ms (official, independent): N 1056 W 433 D 352 L 271
-Elo diff: +53.72 +/- 17.23
-LLR: +3.00 (H0=0, H1=+5) — PASS
-Prev NPS: 26,194,176  Dev NPS: 23,589,632
+90 ms: N 2954 W 1100 D 937 L 917
+Elo diff: +21.55 +/- 10.37
+LLR: +3.110 (H0=0, H1=+5) — PASS
+Timeouts: Prev=0 Dev=0
+Maximum response: Prev=97.99 ms Dev=90.19 ms
+Prev NPS: 14,007,040  Dev NPS: 11,566,848
 ```
 
-Author longer 95 ms H0=+50 run on the same pair: N 7744 W 3282 D 2385 L 2077,
-+54.51 +/- 6.48, LLR +3.00274. That magnitude reproduced.
+The earlier evaluation-only stack passed a stricter direct 95 ms strength
+target before the external referee was added:
 
-The bundle combines exact tactical shortcuts (immediate global losses and
-forced mate-in-three), a two-way TT, a narrower aspiration window, a
-depth-8-search fine-tuned MiniNet, signed gravity-bounded history maluses,
-and small qsearch hot-path improvements. Paste `cpp_impl/cg_input.cpp`
-(70,638 characters, rebuilt from the current accepted Dev).
+```text
+95 ms: N 5152 W 2012 D 1591 L 1549
+Elo diff: +31.31 +/- 7.91
+LLR: +3.063 (H0=+20, H1=+25) — PASS
+Prev NPS: 13,333,760  Dev NPS: 11,787,264
+```
 
+The optional 20 ms screen also passed at N=2208, 878-630-700,
+**+28.07 +/- 12.28 Elo**, LLR +3.03 (H0=0, H1=+5).
+
+The accepted evaluator combines a larger D16/H8 local-pattern MiniNet with a
+compact learned macro-context residual. The macro head is precomputed into a
+5 MiB static score table keyed by constraint and base-4 super-board state;
+search maintains both perspective keys only when a miniboard becomes decided.
+The table exactly matches the original macro MLP and recovered about 6% NPS
+within the new eval. Paste `cpp_impl/cg_input.cpp` (96,672 characters).
+
+The prior round-five direct bundle passed the official 95 ms gate at N=1056,
+433-352-271, **+53.72 +/- 17.23 Elo**, LLR +3.00 (H0=0, H1=+5).
 The next sequential winner on top of that exact merged baseline adds a
 lower-weight correction history keyed by the STM-relative shape of the forced
 miniboard. It passed the official 95 ms gate at N=6240, 2236-1968-2036,
@@ -274,9 +329,12 @@ Startpos perft is frozen in both C++ and Python. If one suite's counts change, u
 
 - `cpp_impl/global_board.hpp` — board, movegen, make/unmake (shared by tests and SPRT)
 - `cpp_impl/crossfish_dev.hpp` / `crossfish_prev.hpp` — search + eval
-- `cpp_impl/codingame_nnue.cpp` — readable MiniNet CodinGame source
-- `cpp_impl/cg_input.cpp` — minified paste file for the CodinGame IDE
+- `cpp_impl/codingame_nnue.cpp` — readable CodinGame search source
+- `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` — generated packed eval
+- `cpp_impl/cg_input.cpp` — bundled/minified paste file for the CodinGame IDE
 - `cpp_impl/crossfish.cpp` — self-contained HCE CG bot (packing source for MiniNet)
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting
+- `documentation/improvement_log.md` — chronological accepted and rejected engine experiments
+- `documentation/nnue_training_and_implementation.md` — data, training, packing, and runtime details for the learned evaluator

@@ -442,6 +442,36 @@ class TestMainCli(unittest.TestCase):
                 m.main()
         self.assertIn("foo_bar", dest.read_text(encoding="utf-8"))
 
+    def test_inline_local_includes(self):
+        src = self.dir / "in.cpp"
+        header = self.dir / "weights.hpp"
+        dest = self.dir / "out.cpp"
+        header.write_text(
+            "#pragma once\nint packed_weight = 7;\n",
+            encoding="utf-8",
+        )
+        src.write_text(
+            '#include "weights.hpp"\n#include <vector>\n'
+            "int main(){return packed_weight;}\n",
+            encoding="utf-8",
+        )
+        argv = [
+            "cg_minify.py",
+            str(src),
+            "-o",
+            str(dest),
+            "--inline-local",
+            "--no-rename",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            with mock.patch("sys.stdout", io.StringIO()):
+                m.main()
+        text = dest.read_text(encoding="utf-8")
+        self.assertNotIn("weights.hpp", text)
+        self.assertNotIn("#pragma once", text)
+        self.assertIn("packed_weight", text)
+        self.assertIn("#include<vector>", text)
+
     def test_over_100k_exits(self):
         src = self.dir / "big.cpp"
         dest = self.dir / "big.min.cpp"

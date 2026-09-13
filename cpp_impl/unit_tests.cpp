@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "global_board.hpp"
+#include "mini_eval.hpp"
 // Candidate engines can be unit-tested without editing the tracked header:
 //   -DCROSSFISH_DEV_HEADER='"/path/candidate.hpp"'
 #ifndef CROSSFISH_DEV_HEADER
@@ -831,6 +832,43 @@ static void test_mini_fast_matches_scalar(TestCtx &ctx) {
     CHECK(max_diff <= 2);
 }
 
+static void test_d16_fast_matches_scalar(TestCtx &ctx) {
+    d16_mini_load_packed();
+    macro_load_packed();
+    std::mt19937 rng(20260913);
+    int max_diff = 0;
+    int max_macro = 0;
+    for (int g = 0; g < 80; g++) {
+        GlobalBoard board;
+        for (int ply = 0; ply < 50; ply++) {
+            int scalar = d16_evaluate_mini(board);
+            int fast = d16_evaluate_mini_fast(board);
+            max_diff = std::max(max_diff, std::abs(scalar - fast));
+            int macro = evaluate_macro_fast(board);
+            int stm = board.n_moves & 1;
+            int macro_key = 0;
+            for (int mb = 0; mb < 9; mb++) {
+                int bit = 1 << mb;
+                int cls = 0;
+                if (board.mini_board_states[stm] & bit) cls = 1;
+                else if (board.mini_board_states[stm ^ 1] & bit) cls = 2;
+                else if (board.mini_board_states[2] & bit) cls = 3;
+                macro_key |= cls << (2 * mb);
+            }
+            CHECK_EQ(
+                macro,
+                evaluate_macro_key(
+                    d16_mini_board_constraint(board), macro_key));
+            max_macro = std::max(max_macro, std::abs(macro));
+            std::vector<Move> legal = board.getLegalMoves();
+            if (legal.empty() || board.checkWinner() != -1) break;
+            board.makeMove(legal[rng() % legal.size()]);
+        }
+    }
+    CHECK(max_diff <= 8);
+    CHECK(max_macro <= MACRO_CLIP);
+}
+
 static void test_lut_capture_block_tiar(TestCtx &ctx) {
     CrossfishDev::init_mini_lut();
     CrossfishDev dev;
@@ -924,6 +962,7 @@ int main() {
         {"ttentry_layout_matches_store", test_ttentry_layout_matches_store},
         {"mini_avx_matches_scalar", test_mini_avx_matches_scalar},
         {"mini_fast_matches_scalar", test_mini_fast_matches_scalar},
+        {"d16_fast_matches_scalar", test_d16_fast_matches_scalar},
         {"lut_capture_block_tiar", test_lut_capture_block_tiar},
     };
 

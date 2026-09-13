@@ -1,4 +1,5 @@
-#include "mini_eval.hpp"
+#include "mini_eval_d16.hpp"
+#include "macro_eval.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -7,14 +8,13 @@
 #include <mutex>
 #include <vector>
 
-// Landed engine: HCE at RFP/futility, HCE + packed MiniNet residual at qsearch
-// leaves. Free-move +300. Failed SEARCH/EVAL/NNUE experiment stubs removed.
+// Frozen round-seven eval winner on 2026-09-13: D16/H8 local MiniNet,
+// compact macro residual, and exact cached macro-score lookup.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 #endif
 
-// Frozen cached-state + latent macro-capture SPRT winner on 2026-09-12.
 class CrossfishPrev {
        private:
         using FastMove = uint8_t;
@@ -47,6 +47,7 @@ class CrossfishPrev {
             const MarkerHashTable &marker_hashes;
             int n_moves;
             bool prev_move_was_pass;
+            uint32_t macro_key[2]{};
 
             static const MarkerHashTable &get_marker_hashes(const GlobalBoard &board) {
                 static const MarkerHashTable hashes = [&board] {
@@ -150,14 +151,55 @@ class CrossfishPrev {
 
         static void xor_marker_hashes(GlobalBoard &, int) {}
 
-        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
+        static void sync_macro_key_mb(FastBoard &board, int mb) {
+            uint32_t shift = (uint32_t)(2 * mb);
+            uint32_t clear = ~(3u << shift);
+            int bit = 1 << mb;
+            int cls0 = 0;
+            int cls1 = 0;
+            if (board.mini_board_states[0] & bit) {
+                cls0 = 1;
+                cls1 = 2;
+            } else if (board.mini_board_states[1] & bit) {
+                cls0 = 2;
+                cls1 = 1;
+            } else if (board.mini_board_states[2] & bit) {
+                cls0 = cls1 = 3;
+            }
+            board.macro_key[0] =
+                (board.macro_key[0] & clear) | ((uint32_t)cls0 << shift);
+            board.macro_key[1] =
+                (board.macro_key[1] & clear) | ((uint32_t)cls1 << shift);
+        }
+
+        template <typename Board>
+        static void sync_macro_key_mb(Board &, int) {}
+
+        static void init_macro_key(FastBoard &board) {
+            board.macro_key[0] = board.macro_key[1] = 0;
+            for (int mb = 0; mb < 9; mb++) {
+                sync_macro_key_mb(board, mb);
+            }
+        }
+
+        static int evaluate_macro_cached(const FastBoard &board) {
+            int stm = board.n_moves & 1;
+            int constraint = d16_mini_board_constraint(board);
+            return evaluate_macro_key(
+                constraint, board.macro_key[stm]);
+        }
+
+        using SearchClock = std::chrono::steady_clock;
+        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(90);
         Move root_best_move;
-        std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
+        SearchClock::time_point start_time = SearchClock::now();
         int min_val = -99999;
         int max_val = 99999;
         bool stopped = false;
     public:
         int root_score;
+        int completed_root_score;
+        int completed_root_depth;
         int nodes;
         std::array<std::array<uint8_t, 9>, 128> killer_moves;
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
@@ -333,7 +375,8 @@ class CrossfishPrev {
         // Random-play MiniNet residuals reached ~4500; slack for search positions.
         static constexpr int MINI_MAX = 8000;
         CrossfishPrev() {
-            mini_load_packed();
+            d16_mini_load_packed();
+            macro_load_packed();
         }
 
         static constexpr int W_FREE_MOVE = FREE_MOVE_PAWNS * PAWN;
@@ -519,9 +562,8 @@ class CrossfishPrev {
 
         bool time_up() {
             if (stopped) return true;
-            if ((nodes & 255) == 0) {
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
+            if ((nodes & 127) == 0) {
+                if (SearchClock::now() - start_time >= thinking_time) {
                     stopped = true;
                 }
             }
@@ -732,6 +774,7 @@ class CrossfishPrev {
             if (decided) {
                 add_out_of_play(board, mb_bit);
                 xor_marker_hashes(board, move.mini_board);
+                sync_macro_key_mb(board, move.mini_board);
             }
             xor_position_hash(board, board.player_to_move_hash);
             board.n_moves++;
@@ -767,6 +810,7 @@ class CrossfishPrev {
             if (was_decided) {
                 remove_out_of_play(board, mb_bit);
                 xor_marker_hashes(board, move.mini_board);
+                sync_macro_key_mb(board, move.mini_board);
             }
             int stm = board.n_moves & 1;
             board.mini_boards[move.mini_board].markers[stm] &= ~(1 << move.square);
@@ -783,18 +827,22 @@ class CrossfishPrev {
             }
         }
 
-        Move getMove(GlobalBoard input_board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
+        Move getMove(GlobalBoard input_board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(90)) {
+            thinking_time = thinking_time_passed;
+            start_time = SearchClock::now();
             FastBoard board(input_board);
             init_mini_lut();
             init_lmr_table();
-            thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
             root_score = 0;
+            completed_root_score = 0;
+            completed_root_depth = 0;
             Move root_moves[81];
             fill_legal_moves_fast(board, root_moves);
             root_best_move = root_moves[0];
             init_hce_acc(board);
+            init_macro_key(board);
             killer_moves = {};
             for (auto &by_player : history_table) {
                 for (auto &by_miniboard : by_player) {
@@ -811,7 +859,6 @@ class CrossfishPrev {
                 }
                 counters_ready = true;
             }
-            start_time = std::chrono::high_resolution_clock::now();
             if (g_fixed_search_depth > 0) {
                 thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
                 depth = g_fixed_search_depth;
@@ -834,6 +881,8 @@ class CrossfishPrev {
                     beta += aspiration_window;
                 }
                 else {
+                    completed_root_score = eval;
+                    completed_root_depth = depth;
                     aspiration_window = ASP_PAWNS * eval_weights[PAWN_IDX];
                     alpha = eval - aspiration_window;
                     beta = eval + aspiration_window;
@@ -856,10 +905,11 @@ class CrossfishPrev {
             root_score = 0;
             depth = d;
             init_hce_acc(board);
+            init_macro_key(board);
             killer_moves = {};
             corr_hist = {};
             corr_local_hist = {};
-            start_time = std::chrono::high_resolution_clock::now();
+            start_time = SearchClock::now();
             int eval = search(board, d, 0, min_val, max_val);
             if (stopped || eval == min_val) return false;
             if (eval > SEARCH_SCORE_CLAMP) eval = SEARCH_SCORE_CLAMP;
@@ -886,18 +936,18 @@ class CrossfishPrev {
                     }
                 }
             }
-
-            int hce = corrected_eval(
-                evaluate_hce_incremental(board), corr_refs(board));
-            if (hce >= beta) {
+            CorrRefs qrefs = corr_refs(board);
+            int hce = evaluate_hce_incremental(board)
+                    + qrefs.structural->applied;
+            if (hce - 640 >= beta) {
                 return beta;
             }
             int stand_pat;
-            if (hce + MINI_MAX < alpha) {
-                // MiniNet is clamped near ±2000; it cannot raise alpha or fail high.
-                stand_pat = hce + MINI_MAX;
+            if (hce + MINI_MAX + MACRO_CLIP < alpha) {
+                stand_pat = hce + MINI_MAX + MACRO_CLIP;
             } else {
-                stand_pat = hce + evaluate_mini_fast(board);
+                stand_pat = hce + d16_evaluate_mini_fast(board)
+                          + evaluate_macro_cached(board);
             }
             if (stand_pat >= beta) {
                 return beta;
@@ -967,7 +1017,6 @@ class CrossfishPrev {
                     if (entry.score <= alpha) return entry.score;
                 }
             }
-
             if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
             }
@@ -983,6 +1032,12 @@ class CrossfishPrev {
 
                 int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                 if (static_eval - reverse_futility_margin * depth >= beta) {
+                    return beta;
+                }
+                if (depth == 1
+                    && static_eval + 2500 - reverse_futility_margin >= beta
+                    && static_eval + d16_evaluate_mini_fast(board)
+                       - reverse_futility_margin >= beta) {
                     return beta;
                 }
 
@@ -1743,7 +1798,9 @@ class CrossfishPrev {
             if (g_force_hce_eval) {
                 return evaluate_hce(board);
             }
-            return evaluate_hce(board) + evaluate_mini_avx(board);
+            return evaluate_hce(board)
+                 + d16_evaluate_mini_fast(board)
+                 + evaluate_macro_fast(board);
         }
 
 };

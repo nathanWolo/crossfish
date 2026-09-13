@@ -1045,3 +1045,161 @@ contains:
 - exact hot-path state/storage reductions;
 - cached out-of-play and applied correction values; and
 - the opponent latent macro-capture HCE correction.
+
+---
+
+## 37. Larger eval, better data, and exact macro lookup (13 September 2026)
+
+This cycle deliberately tested all four eval directions: faster inference, a
+larger NNUE, new training data, and new handcrafted features.
+
+### Accepted evaluator
+
+The shipped local net grows from D=8/H=4 to D=16/H=8. Its 19,683 local-board
+embeddings are compressed to 256 centroids in first-layer projection space,
+with the empty board reserved exactly. The hot path stores preprojected int32
+contributions for each centroid, super-board class, and active-board flag.
+
+A separate compact 16-hidden-unit residual models only the nine super-board
+classes and the forced-board constraint. Offline it reduced MAE versus
+independent deeper-search labels by roughly 40-53 points, while adding only a
+3,076-byte float payload.
+
+The final speed step precomputes that macro residual into
+`MACRO_SCORE[10][1<<18]`, a 5 MiB static int16 table. The key is a base-4
+encoding of the nine super-board cells. `FastBoard` maintains a key for each
+player perspective, updating it only when a miniboard becomes won or drawn.
+Random live-search verification compared every cached result with the
+original macro MLP and found no mismatch. Start-position throughput rose from
+about 11.05M to 11.71M NPS within the D16 build.
+
+The optional 20 ms screen passed:
+
+```text
+N: 2208 W: 878 D: 630 L: 700
+Elo diff: +28.07 +/- 12.28
+LLR: +3.028 (H0=0, H1=+5) — PASS
+Prev NPS: 14,469,120  Dev NPS: 11,710,720
+```
+
+The authoritative direct test used the stricter target hypotheses and passed:
+
+```text
+N: 5152 W: 2012 D: 1591 L: 1549
+Elo diff: +31.31 +/- 7.91
+LLR: +3.063 (H0=+20, H1=+25) — PASS
+Prev NPS: 13,333,760  Dev NPS: 11,787,264
+```
+
+The bundled CodinGame source is 96,672 characters, 3,328 below the limit.
+
+### Rejected experiments
+
+- A targeted 80k-position depth-12 fine-tune improved its own targeted MAE by
+  1.77, but worsened independent depth-12, depth-8, and qsearch-leaf sets.
+  The broader labels remained the better training distribution.
+- A tiny 8->16->1 proxy for the old H4 pruning net reached about 112 MAE on
+  independent positions, but its 20 ms screen finished only
+  `+13.29 +/- 10.60` at N=3008 and reduced start-position NPS to about 8.9M.
+- Affine D16-to-H4 calibrations improved score MAE but weakened online play.
+  The uncalibrated D16 depth-1 gate was stronger.
+- An active macro-target HCE bonus was only `+3.23 +/- 10.58` in an exact
+  3008-game A/B and cost about 6% NPS. The learned macro head already captures
+  most of that context.
+- Maintaining both D16 first-layer perspectives on every make/unmake was
+  bit-exact, but updates at all nodes cost more than recomputation at eval
+  nodes. The screen was `-5.87 +/- 17.17` at N=1184 and was stopped.
+- Larger/smaller macro clipping, a standard-centroid pack, a qleaf-adapted
+  macro head, and macro-aware HCE fail-high shortcuts all underperformed the
+  accepted projected-centroid, scale-1.25, clip-2000 configuration.
+
+This round is a mix of algorithmic evaluation quality and implementation
+speed. Most of the measured gain comes from the larger local net plus learned
+macro context; the exact macro lookup buys back part of their node cost.
+
+---
+
+## 38. Enforce the real CodinGame move deadline (13 September 2026)
+
+The first round-seven CodinGame bundle searched for 800 ms before its fixed
+center opening, even though that search result was discarded. Eager D16 and
+macro-table initialization took about 80 ms locally, so process start to first
+output was already roughly 879 ms. The slower CodinGame host crossed its
+one-second first-turn limit. Replacing the discarded search with the normal
+warm-up budget reduced local first output to roughly 174 ms.
+
+Later turns exposed the same missing safety margin in smaller form. The engine
+requested the full 95 ms, checked time only every 256 nodes, rounded elapsed
+time down to whole milliseconds, and started its clock after per-move setup.
+Across 250 varied positions, ordinary responses clustered near 96.1 ms and the
+99th percentile approached 98 ms, leaving almost no room for scheduling,
+recursive unwinding, or output.
+
+The CodinGame-only timing path now:
+
+- uses a 90 ms search budget;
+- starts the deadline before per-move setup;
+- compares the exact duration instead of rounded milliseconds;
+- checks every 128 nodes.
+
+Across 349 later-turn samples, the median was 90.08 ms, p99 was 91.73 ms, and
+the maximum was 91.86 ms. SPRT still used 95 ms at this stage; external-referee
+stress testing in the next section showed that this left too little wall-clock
+headroom.
+
+The C++ SPRT referee and process-based round-robin now independently enforce
+CodinGame's external 100 ms limit. A late move is an immediate loss, timeout
+counts are printed with match results, and a timed-out process is restarted so
+its stale output cannot corrupt the next game. Fixed-depth evaluator tests are
+explicitly exempt because they intentionally have no move clock.
+
+---
+
+## 39. Eliminate timeout forfeits in long SPRTs (13 September 2026)
+
+The first real referee-enabled direct SPRT used the historical 95 ms search
+allocation and all 16 logical CPUs of an m5.4xlarge. It passed for strength,
+but 420 of 2,176 games ended by timeout:
+
+```text
+N: 2176 W: 893 D: 572 L: 711
+Elo diff: +29.13 +/- 12.57
+LLR: +3.048 — PASS
+Timeouts: Prev=202 Dev=218
+```
+
+The machine has eight physical cores with two SMT threads per core. A 90 ms
+probe using all 16 logical CPUs still produced 29 forfeits in only 160 games.
+At eight workers, ordinary responses were stable, but rare VM scheduling
+stalls still produced two 103.6 ms Dev responses by game 1,008. This was not
+an engine-node-count problem; a non-real-time process can be descheduled after
+its final internal clock check.
+
+The final mitigation combines three layers:
+
+- both SPRT engines use `steady_clock`, start the timer before per-move setup,
+  compare exact durations, and check every 128 nodes;
+- the official search allocation is 90 ms, matching the submitted bot and
+  leaving ten milliseconds before the external deadline;
+- Linux test harnesses detect physical-core topology and reserve one physical
+  core by default instead of saturating every SMT context.
+
+Result lines now include maximum observed response latency as well as timeout
+counts. The process-based round-robin uses the same physical-core policy and
+reports its latency maxima.
+
+The exact merged-main versus PR-stack validation then completed 2,954 games
+with no timeout losses:
+
+```text
+N: 2954 W: 1100 D: 937 L: 917
+Elo diff: +21.55 +/- 10.37
+LLR: +3.110 (H0=0, H1=+5) — PASS
+Timeouts: Prev=0 Dev=0
+Maximum response: Prev=97.99 ms Dev=90.19 ms
+Prev NPS: 14,007,040  Dev NPS: 11,566,848
+```
+
+This does not make a hard real-time guarantee—general-purpose operating
+systems can pause any process—but it turns timeout regression into a measured
+failure and demonstrated zero forfeits across a multi-thousand-game SPRT.
