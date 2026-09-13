@@ -60,7 +60,13 @@ Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`, and
 
 This section is the process. The goal is Elo on CodinGame Ultimate Tic-Tac-Toe, not a prettier loss, a higher training correlation, or a faster NPS number that plays worse. Other agents will hill-climb from here. Follow the loop; do not invent a parallel scoring system.
 
-CodinGame gives 1000 ms on the first execute per player and 100 ms on later moves. The engine searches about 800 ms / 95 ms. The official SPRT bar is **95 ms/move** (the CodinGame later-move budget). A change is not shipped until it passes that gate. 20 ms is an optional cheap screen, not a ship. The submission cap is **100,000 characters**.
+CodinGame gives 1000 ms on the first execute per player and 100 ms on later
+moves. The fixed center opening uses a 95 ms warm-up search so eager evaluator
+initialization cannot exhaust the first-turn deadline; later moves search for
+95 ms. The official SPRT bar is **95 ms/move** (the CodinGame later-move
+budget). A change is not shipped until it passes that gate. 20 ms is an
+optional cheap screen, not a ship. The submission cap is **100,000
+characters**.
 
 ### The three copies of the engine
 

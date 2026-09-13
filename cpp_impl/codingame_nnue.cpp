@@ -2293,7 +2293,11 @@ int main(int argc, char** argv)
         }
         
         if (opponent_row == -1) {
-            crossfish.getMove(board, std::chrono::milliseconds(800));
+            // The opening is fixed, so this search only warms the persistent
+            // tables and search state. Keep it within the normal move budget:
+            // eager NNUE/macro initialization also counts against CodinGame's
+            // one-second first-turn deadline.
+            crossfish.getMove(board, std::chrono::milliseconds(95));
             std::cout << 4 << " " << 4 << std::endl;
             board.makeMove({4, 4});
         }
