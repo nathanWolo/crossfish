@@ -1203,3 +1203,36 @@ Prev NPS: 14,007,040  Dev NPS: 11,566,848
 This does not make a hard real-time guarantee—general-purpose operating
 systems can pause any process—but it turns timeout regression into a measured
 failure and demonstrated zero forfeits across a multi-thousand-game SPRT.
+
+---
+
+## 40. Lossless CodinGame payload compaction (13 September 2026)
+
+The D16 and macro evaluator payloads previously used Base64. Re-encoding the
+same binary data as ASCII85 reduces expansion from four source characters per
+three bytes to five per four bytes. Both generated headers now share the small
+D16 ASCII85 decoder, and use a `~` raw-string delimiter that cannot occur in
+the emitted `!`-through-`u` alphabet.
+
+This is a representation-only change: no weights, evaluation arithmetic,
+search logic, or time allocation changed. Decoding the old and new headers
+produced identical payloads:
+
+| Payload | Bytes | FNV-1a 64 |
+| --- | ---: | --- |
+| D16 local evaluator | 42,855 | `e35e987c17a453cf` |
+| Macro residual | 3,076 | `626e29f3a8d65679` |
+
+The C++ unit suite now verifies those lengths and hashes, in addition to a
+known ASCII85 decoder vector. The Python tests cover every possible partial
+tail length and randomized round trips.
+
+The bundled submission shrank from 96,674 to 92,759 characters, saving 3,915
+characters and increasing headroom under the 100,000-character cap from 3,326
+to 7,241. In 24 alternating process-start probes, first-move median latency
+was unchanged at 154.88 ms for the Base64 baseline and 154.91 ms for ASCII85.
+A clock-free depth-four comparison over 96 generated positions also produced
+identical scores and node counts; both complete outputs had SHA-256
+`b5540483238832734d2c9798f8d432ce71c5ae21c6f81729b2aa9ec2c8c46d2e`.
+Because the decoded bytes and all post-load engine code are identical, this
+size reduction does not change playing strength.
