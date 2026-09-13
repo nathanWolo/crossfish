@@ -426,6 +426,9 @@ enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 static int g_fixed_search_depth = 0;
 static bool g_disable_eval_prune = false;
 static bool g_force_hce_eval = false;
+// Leave enough of CodinGame's 100 ms turn for setup, scheduler jitter,
+// recursive-search unwinding, and flushing the selected move.
+static constexpr int CODINGAME_MOVE_MS = 90;
 
 class CrossfishDev {
        private:
@@ -601,7 +604,8 @@ class CrossfishDev {
                 constraint, board.macro_key[stm]);
         }
 
-        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
+        std::chrono::milliseconds thinking_time =
+            std::chrono::milliseconds(CODINGAME_MOVE_MS);
         Move root_best_move;
         std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
         int min_val = -99999;
@@ -971,9 +975,9 @@ class CrossfishDev {
 
         bool time_up() {
             if (stopped) return true;
-            if ((nodes & 255) == 0) {
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
+            if ((nodes & 127) == 0) {
+                if (std::chrono::high_resolution_clock::now() - start_time
+                    >= thinking_time) {
                     stopped = true;
                 }
             }
@@ -1237,11 +1241,15 @@ class CrossfishDev {
             }
         }
 
-        Move getMove(GlobalBoard input_board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
+        Move getMove(
+            GlobalBoard input_board,
+            std::chrono::milliseconds thinking_time_passed =
+                std::chrono::milliseconds(CODINGAME_MOVE_MS)) {
+            thinking_time = thinking_time_passed;
+            start_time = std::chrono::high_resolution_clock::now();
             FastBoard board(input_board);
             init_mini_lut();
             init_lmr_table();
-            thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
             root_score = 0;
@@ -1266,7 +1274,6 @@ class CrossfishDev {
                 }
                 counters_ready = true;
             }
-            start_time = std::chrono::high_resolution_clock::now();
             if (g_fixed_search_depth > 0) {
                 thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
                 depth = g_fixed_search_depth;
@@ -2297,12 +2304,14 @@ int main(int argc, char** argv)
             // tables and search state. Keep it within the normal move budget:
             // eager NNUE/macro initialization also counts against CodinGame's
             // one-second first-turn deadline.
-            crossfish.getMove(board, std::chrono::milliseconds(95));
+            crossfish.getMove(
+                board, std::chrono::milliseconds(CODINGAME_MOVE_MS));
             std::cout << 4 << " " << 4 << std::endl;
             board.makeMove({4, 4});
         }
         else {
-            Move best_move = crossfish.getMove(board);
+            Move best_move = crossfish.getMove(
+                board, std::chrono::milliseconds(CODINGAME_MOVE_MS));
             board.makeMove(best_move);
             std::array<int, 2> grid_coord = move_to_grid_coord(best_move);
             std::cout << grid_coord[0] << " " << grid_coord[1] << " D" << crossfish.depth << " E" << crossfish.root_score <<

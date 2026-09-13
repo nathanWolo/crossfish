@@ -11,6 +11,7 @@ import argparse
 import math
 import os
 import queue
+import select
 import subprocess
 import sys
 import time
@@ -25,6 +26,7 @@ from python_impl.operations import ops
 
 ROOT = Path(__file__).resolve().parent
 BIN = ROOT / "cpp_impl" / "bin"
+MOVE_TIMEOUT_MS = 100
 
 
 def cpp_to_py(mb: int, sq: int) -> tuple[int, int]:
@@ -79,6 +81,7 @@ class MatchBot:
         self.name = name
         self.cmd = cmd
         self.proc = None
+        self.timeouts = 0
         self.start()
 
     def start(self):
@@ -96,13 +99,17 @@ class MatchBot:
     def close(self):
         if self.proc is None:
             return
-        if self.proc.poll() is None:
-            self.proc.terminate()
+        proc = self.proc
+        if proc.poll() is None:
+            proc.terminate()
             try:
-                self.proc.wait(timeout=2)
+                proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
+                proc.kill()
+                proc.wait()
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
         self.proc = None
 
     def _send(self, line: str):
@@ -118,12 +125,35 @@ class MatchBot:
     def apply(self, mb: int, sq: int):
         self._send(f"APPLY {mb} {sq}")
 
-    def go(self, ms: int) -> tuple[int, int]:
+    def go(
+        self, ms: int, timeout_ms: int = MOVE_TIMEOUT_MS
+    ) -> tuple[int, int]:
+        started = time.perf_counter()
         self._send(f"GO {ms}")
         assert self.proc.stdout is not None
+        remaining = timeout_ms / 1000.0 - (
+            time.perf_counter() - started
+        )
+        ready, _, _ = select.select(
+            [self.proc.stdout], [], [], max(0.0, remaining)
+        )
+        if not ready:
+            self.timeouts += 1
+            self.close()
+            raise TimeoutError(
+                f"{self.name} exceeded {timeout_ms}ms move deadline"
+            )
         line = self.proc.stdout.readline()
         if not line:
             raise RuntimeError(f"{self.name} exited during GO (code {self.proc.poll()})")
+        elapsed_ms = 1000.0 * (time.perf_counter() - started)
+        if elapsed_ms > timeout_ms:
+            self.timeouts += 1
+            self.close()
+            raise TimeoutError(
+                f"{self.name} took {elapsed_ms:.1f}ms "
+                f"(limit {timeout_ms}ms)"
+            )
         parts = line.split()
         return int(parts[0]), int(parts[1])
 
@@ -191,9 +221,18 @@ def worker(task_q: Queue, result_q: Queue, cmd1: list[str], cmd2: list[str], nam
             seed = task
             rng = np.random.default_rng(seed)
             opening = random_opening(rng)
+            before1 = b1.timeouts
+            before2 = b2.timeouts
             r1 = play_one(b1, b2, opening, think_ms, True)
             r2 = play_one(b1, b2, opening, think_ms, False)
-            result_q.put((r1, r2))
+            result_q.put(
+                (
+                    r1,
+                    r2,
+                    b1.timeouts - before1,
+                    b2.timeouts - before2,
+                )
+            )
     finally:
         b1.close()
         b2.close()
@@ -208,6 +247,8 @@ class PairResult:
     losses: int
     seconds: float
     think_ms: int
+    timeouts1: int
+    timeouts2: int
 
     def summary(self) -> str:
         elo, ci = calc_elo(self.wins, self.losses, self.draws)
@@ -218,7 +259,9 @@ class PairResult:
             f"{self.name1} vs {self.name2}  N={n}  "
             f"W {self.wins} / D {self.draws} / L {self.losses}  "
             f"Elo {elo:+.1f} +/- {ci:.1f}  LOS {los:.1f}%  "
-            f"{gps:.1f} games/s  {self.think_ms}ms"
+            f"{gps:.1f} games/s  {self.think_ms}ms  "
+            f"timeouts {self.name1}={self.timeouts1} "
+            f"{self.name2}={self.timeouts2}"
         )
 
 
@@ -240,11 +283,14 @@ def run_pair(name1: str, cmd1: list[str], name2: str, cmd2: list[str], games: in
         task_q.put(None)
 
     wins = draws = losses = 0
+    timeouts1 = timeouts2 = 0
     done = 0
     t0 = time.time()
     print(f"== {name1} vs {name2}: {games} games, {think_ms}ms, {workers} workers ==", flush=True)
     while done < games:
-        r1, r2 = result_q.get()
+        r1, r2, pair_timeouts1, pair_timeouts2 = result_q.get()
+        timeouts1 += pair_timeouts1
+        timeouts2 += pair_timeouts2
         for r in (r1, r2):
             if r > 0:
                 wins += 1
@@ -263,7 +309,17 @@ def run_pair(name1: str, cmd1: list[str], name2: str, cmd2: list[str], games: in
             )
     for p in procs:
         p.join()
-    return PairResult(name1, name2, wins, draws, losses, time.time() - t0, think_ms)
+    return PairResult(
+        name1,
+        name2,
+        wins,
+        draws,
+        losses,
+        time.time() - t0,
+        think_ms,
+        timeouts1,
+        timeouts2,
+    )
 
 
 def main():

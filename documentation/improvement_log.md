@@ -1116,3 +1116,37 @@ The bundled CodinGame source is 96,672 characters, 3,328 below the limit.
 This round is a mix of algorithmic evaluation quality and implementation
 speed. Most of the measured gain comes from the larger local net plus learned
 macro context; the exact macro lookup buys back part of their node cost.
+
+---
+
+## 38. Enforce the real CodinGame move deadline (13 September 2026)
+
+The first round-seven CodinGame bundle searched for 800 ms before its fixed
+center opening, even though that search result was discarded. Eager D16 and
+macro-table initialization took about 80 ms locally, so process start to first
+output was already roughly 879 ms. The slower CodinGame host crossed its
+one-second first-turn limit. Replacing the discarded search with the normal
+warm-up budget reduced local first output to roughly 174 ms.
+
+Later turns exposed the same missing safety margin in smaller form. The engine
+requested the full 95 ms, checked time only every 256 nodes, rounded elapsed
+time down to whole milliseconds, and started its clock after per-move setup.
+Across 250 varied positions, ordinary responses clustered near 96.1 ms and the
+99th percentile approached 98 ms, leaving almost no room for scheduling,
+recursive unwinding, or output.
+
+The CodinGame-only timing path now:
+
+- uses a 90 ms search budget;
+- starts the deadline before per-move setup;
+- compares the exact duration instead of rounded milliseconds;
+- checks every 128 nodes.
+
+Across 349 later-turn samples, the median was 90.08 ms, p99 was 91.73 ms, and
+the maximum was 91.86 ms. The SPRT engine remains tested at 95 ms.
+
+The C++ SPRT referee and process-based round-robin now independently enforce
+CodinGame's external 100 ms limit. A late move is an immediate loss, timeout
+counts are printed with match results, and a timed-out process is restarted so
+its stale output cannot corrupt the next game. Fixed-depth evaluator tests are
+explicitly exempt because they intentionally have no move clock.

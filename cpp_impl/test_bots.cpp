@@ -28,9 +28,11 @@ namespace fs = std::experimental::filesystem;
 #endif
 #include <immintrin.h>
 
-// CodinGame UTTT: 1000ms first execute per player, 100ms per later move
-// (engine searches 800ms / 95ms). SPRT uses the per-move budget.
+// CodinGame UTTT: 1000ms first execute per player, 100ms per later move.
+// SPRT searches for 95ms and independently forfeits any move returned after
+// the real 100ms deadline. Fixed-depth eval tests intentionally have no clock.
 static int g_sprt_think_ms = 95;
+static constexpr int REFEREE_MOVE_TIMEOUT_MS = 100;
 static double g_sprt_elo0 = 0;
 static double g_sprt_elo1 = 5;
 static double g_sprt_llr_bound = 3;
@@ -170,6 +172,8 @@ class HumanPlayer {
 std::array<int, 3> global_total = {0, 0, 0}; //wins, draws, losses
 std::mutex global_mutex;
 std::atomic<int> completed_tasks(0);
+std::atomic<int> prev_timeout_losses{0};
+std::atomic<int> dev_timeout_losses{0};
 std::atomic<int> tune_games_done{0};
 static int tune_games_total = 0;
 static std::chrono::steady_clock::time_point tune_t0;
@@ -232,6 +236,12 @@ double sprt(int wins, int draws, int losses) {
 // SPRT_BOOK=0 to fall back to the unseeded rand() openings.
 static bool g_sprt_book = true;
 
+static bool referee_move_timed_out(
+    std::chrono::steady_clock::duration elapsed) {
+    return g_fixed_search_depth <= 0
+        && elapsed > std::chrono::milliseconds(REFEREE_MOVE_TIMEOUT_MS);
+}
+
 void play_game(int idx){
     //play two games from the same start position, alternating who goes first
     RandomMover random_mover;
@@ -267,36 +277,47 @@ void play_game(int idx){
     GlobalBoard startpos = GlobalBoard(board);
     //play two games, alternating who goes first
     for (int i = 0; i < 2; i++) {
-        int bot1_player;
-        int bot2_player;
+        const int bot1_player = i;
+        const int bot2_player = i ^ 1;
+        int forced_winner = -1;
         while (board.checkWinner() == -1){
             if (board.n_moves % 2 == i) {
-                bot1_player = board.n_moves % 2;
+                auto move_start = std::chrono::steady_clock::now();
                 Move m = bot1.getMove(board, std::chrono::milliseconds(g_sprt_think_ms));
+                auto elapsed = std::chrono::steady_clock::now() - move_start;
+                if (referee_move_timed_out(elapsed)) {
+                    prev_timeout_losses.fetch_add(1, std::memory_order_relaxed);
+                    forced_winner = bot2_player;
+                    break;
+                }
                 board.makeMove(m);
             }
             else {
-                bot2_player = board.n_moves % 2;
+                auto move_start = std::chrono::steady_clock::now();
                 Move best_move = bot2.getMove(board, std::chrono::milliseconds(g_sprt_think_ms));
+                auto elapsed = std::chrono::steady_clock::now() - move_start;
+                if (referee_move_timed_out(elapsed)) {
+                    dev_timeout_losses.fetch_add(1, std::memory_order_relaxed);
+                    forced_winner = bot1_player;
+                    break;
+                }
                 board.makeMove(best_move);
             }
         }
         //update global total
-        int winner = board.checkWinner();
-        if (winner  == bot1_player) {
-            global_mutex.lock();
-            global_total[2]++; //loss
-            global_mutex.unlock();
-        }
-        else if (winner  == bot2_player) {
-            global_mutex.lock();
-            global_total[0]++;  //win
-            global_mutex.unlock();
-        }
-        else {
-            global_mutex.lock();
-            global_total[1]++; //draw
-            global_mutex.unlock();
+        int winner =
+            forced_winner >= 0 ? forced_winner : board.checkWinner();
+        {
+            std::lock_guard<std::mutex> lock(global_mutex);
+            if (winner  == bot1_player) {
+                global_total[2]++; //loss
+            }
+            else if (winner  == bot2_player) {
+                global_total[0]++;  //win
+            }
+            else {
+                global_total[1]++; //draw
+            }
         }
         board = GlobalBoard(startpos);
     }
@@ -339,6 +360,17 @@ static void verify_fill_movegen() {
         }
     }
     std::cout << "movegen fill vs vector: OK" << std::endl;
+}
+
+static void verify_referee_timeout() {
+    const auto limit =
+        std::chrono::milliseconds(REFEREE_MOVE_TIMEOUT_MS);
+    if (referee_move_timed_out(limit)
+        || !referee_move_timed_out(limit + std::chrono::nanoseconds(1))) {
+        std::cerr << "referee timeout boundary mismatch" << std::endl;
+        std::exit(1);
+    }
+    std::cout << "referee 100ms deadline: OK" << std::endl;
 }
 
 static void verify_mini_lut() {
@@ -2454,6 +2486,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     verify_fill_movegen();
+    verify_referee_timeout();
     verify_mini_lut();
     verify_utttai_state();
     verify_eval_linear();
@@ -2551,6 +2584,10 @@ int main(int argc, char** argv) {
               << " H0=" << g_sprt_elo0
               << " H1=" << g_sprt_elo1
               << " bound=" << g_sprt_llr_bound
+              << " referee_timeout="
+              << (g_fixed_search_depth > 0
+                      ? std::string("off")
+                      : std::to_string(REFEREE_MOVE_TIMEOUT_MS) + "ms")
               << " eval=HCE+MiniNet"
               << " nnue_mode=" << g_nnue_mode
               << " residual=" << g_nnue_residual;
@@ -2606,7 +2643,11 @@ int main(int argc, char** argv) {
         llr = sprt(global_total[0], global_total[1], global_total[2]);
         std::cout << "N: " << total_games << " W: " << global_total[0]
                 << " D: " << global_total[1] << " L: " << global_total[2]
-                << " Elo diff: " << elo.elo_diff << " +/- " << elo.ci << " LLR: " << llr << std::endl;
+                << " Elo diff: " << elo.elo_diff << " +/- " << elo.ci
+                << " LLR: " << llr
+                << " timeouts Prev=" << prev_timeout_losses.load()
+                << " Dev=" << dev_timeout_losses.load()
+                << std::endl;
     }
     if (llr >= g_sprt_llr_bound) {
         std::cout << "SPRT PASS: H1 " << g_sprt_elo1

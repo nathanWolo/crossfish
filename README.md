@@ -46,6 +46,11 @@ That builds and runs the C++ unit tests, the Python rules oracle, and compiles t
 
 SPRT answers "is this stronger?". Unit tests answer "did I break the rules, hashing, eval, or search?". Do not skip `make test` because SPRT passed.
 
+Timed referees enforce CodinGame's external clock independently of the bot's
+own timer. Any move returned after 100 ms is an immediate loss, and SPRT /
+round-robin summaries report timeout counts. Fixed-depth eval tests are exempt
+because they intentionally run without a move clock.
+
 SPRT hypotheses can be overridden through the environment. For example, this
 tests whether Dev clears +50 Elo instead of the default 0-vs-5 screen:
 
@@ -61,12 +66,12 @@ Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`, and
 This section is the process. The goal is Elo on CodinGame Ultimate Tic-Tac-Toe, not a prettier loss, a higher training correlation, or a faster NPS number that plays worse. Other agents will hill-climb from here. Follow the loop; do not invent a parallel scoring system.
 
 CodinGame gives 1000 ms on the first execute per player and 100 ms on later
-moves. The fixed center opening uses a 95 ms warm-up search so eager evaluator
-initialization cannot exhaust the first-turn deadline; later moves search for
-95 ms. The official SPRT bar is **95 ms/move** (the CodinGame later-move
-budget). A change is not shipped until it passes that gate. 20 ms is an
-optional cheap screen, not a ship. The submission cap is **100,000
-characters**.
+moves. The fixed center opening and later moves use a 90 ms search budget,
+leaving time for eager evaluator initialization, per-turn setup, scheduler
+jitter, search unwinding, and output. The official SPRT bar remains **95
+ms/move** so engine changes are tested against nearly the full later-move
+budget. A change is not shipped until it passes that gate. 20 ms is an optional
+cheap screen, not a ship. The submission cap is **100,000 characters**.
 
 ### The three copies of the engine
 
@@ -146,6 +151,11 @@ SPRT_ELO0=50 SPRT_ELO1=55 make -C cpp_impl sprt
 Use a raised H0 only when the first thousands of games already show a blowout. Do not use it to dress up a +8 Elo run.
 
 Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS** and **Dev NPS** from a 1-second startpos search. Treat NPS as a speed signal, not a strength score.
+
+Timed result lines also print external referee forfeits as
+`timeouts Prev=N Dev=N`. These losses count in W/D/L exactly as they would on
+CodinGame. A candidate that gains nodes by overrunning the clock is weaker, not
+faster.
 
 `depth N` sets a fixed search depth and turns **eval pruning off on both sides** (`g_disable_eval_prune`: no RFP / futility / qsearch-delta). That is the equal-depth gate: same node budget in ply, so a loss means a worse leaf, not a slower one.
 

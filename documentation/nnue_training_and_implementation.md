@@ -948,6 +948,12 @@ For an evaluation change:
 6. run the authoritative 95 ms SPRT;
 7. freeze and port only after a pass.
 
+The timed referee measures wall-clock response time outside the engine. A move
+returned after CodinGame's 100 ms limit is scored as an immediate loss and
+included in the printed timeout totals. This catches internal timer
+regressions that ordinary W/D/L testing would otherwise misclassify as extra
+search strength. Fixed-depth tests remain exempt.
+
 The accepted direct round-seven result against the merged round-six engine was:
 
 ```text
