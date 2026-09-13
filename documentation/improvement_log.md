@@ -1236,3 +1236,22 @@ identical scores and node counts; both complete outputs had SHA-256
 `b5540483238832734d2c9798f8d432ce71c5ae21c6f81729b2aa9ec2c8c46d2e`.
 Because the decoded bytes and all post-load engine code are identical, this
 size reduction does not change playing strength.
+
+An official-time smoke SPRT then exercised the frozen merged-main Prev search
+against the PR Dev search at 90 ms, with the external 100 ms referee and the
+default seven workers (one of eight physical cores reserved). Non-regression
+hypotheses were H0=-5/H1=0, and the run was capped at 2,000 games; seven
+workers produce 14 games per batch, so it finished at 2,002:
+
+```text
+N: 2002 W: 667 D: 638 L: 697
+Elo diff: -5.21 +/- 12.57
+LLR: -0.324 (H0=-5, H1=0) — INCONCLUSIVE
+Timeouts: Prev=0 Dev=0
+Maximum response: Prev=90.06 ms Dev=90.30 ms
+```
+
+The in-process harness shares the generated evaluator tables, so this smoke
+primarily validates official-time search/referee stability after the source
+representation change. The stronger equivalence evidence remains the exact
+decoded payloads and clock-free identical search outputs above.
