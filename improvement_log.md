@@ -1045,3 +1045,74 @@ contains:
 - exact hot-path state/storage reductions;
 - cached out-of-play and applied correction values; and
 - the opponent latent macro-capture HCE correction.
+
+---
+
+## 37. Larger eval, better data, and exact macro lookup (13 September 2026)
+
+This cycle deliberately tested all four eval directions: faster inference, a
+larger NNUE, new training data, and new handcrafted features.
+
+### Accepted evaluator
+
+The shipped local net grows from D=8/H=4 to D=16/H=8. Its 19,683 local-board
+embeddings are compressed to 256 centroids in first-layer projection space,
+with the empty board reserved exactly. The hot path stores preprojected int32
+contributions for each centroid, super-board class, and active-board flag.
+
+A separate compact 16-hidden-unit residual models only the nine super-board
+classes and the forced-board constraint. Offline it reduced MAE versus
+independent deeper-search labels by roughly 40-53 points, while adding only a
+3,076-byte float payload.
+
+The final speed step precomputes that macro residual into
+`MACRO_SCORE[10][1<<18]`, a 5 MiB static int16 table. The key is a base-4
+encoding of the nine super-board cells. `FastBoard` maintains a key for each
+player perspective, updating it only when a miniboard becomes won or drawn.
+Random live-search verification compared every cached result with the
+original macro MLP and found no mismatch. Start-position throughput rose from
+about 11.05M to 11.71M NPS within the D16 build.
+
+The optional 20 ms screen passed:
+
+```text
+N: 2208 W: 878 D: 630 L: 700
+Elo diff: +28.07 +/- 12.28
+LLR: +3.028 (H0=0, H1=+5) — PASS
+Prev NPS: 14,469,120  Dev NPS: 11,710,720
+```
+
+The authoritative direct test used the stricter target hypotheses and passed:
+
+```text
+N: 5152 W: 2012 D: 1591 L: 1549
+Elo diff: +31.31 +/- 7.91
+LLR: +3.063 (H0=+20, H1=+25) — PASS
+Prev NPS: 13,333,760  Dev NPS: 11,787,264
+```
+
+The bundled CodinGame source is 96,672 characters, 3,328 below the limit.
+
+### Rejected experiments
+
+- A targeted 80k-position depth-12 fine-tune improved its own targeted MAE by
+  1.77, but worsened independent depth-12, depth-8, and qsearch-leaf sets.
+  The broader labels remained the better training distribution.
+- A tiny 8->16->1 proxy for the old H4 pruning net reached about 112 MAE on
+  independent positions, but its 20 ms screen finished only
+  `+13.29 +/- 10.60` at N=3008 and reduced start-position NPS to about 8.9M.
+- Affine D16-to-H4 calibrations improved score MAE but weakened online play.
+  The uncalibrated D16 depth-1 gate was stronger.
+- An active macro-target HCE bonus was only `+3.23 +/- 10.58` in an exact
+  3008-game A/B and cost about 6% NPS. The learned macro head already captures
+  most of that context.
+- Maintaining both D16 first-layer perspectives on every make/unmake was
+  bit-exact, but updates at all nodes cost more than recomputation at eval
+  nodes. The screen was `-5.87 +/- 17.17` at N=1184 and was stopped.
+- Larger/smaller macro clipping, a standard-centroid pack, a qleaf-adapted
+  macro head, and macro-aware HCE fail-high shortcuts all underperformed the
+  accepted projected-centroid, scale-1.25, clip-2000 configuration.
+
+This round is a mix of algorithmic evaluation quality and implementation
+speed. Most of the measured gain comes from the larger local net plus learned
+macro context; the exact macro lookup buys back part of their node cost.

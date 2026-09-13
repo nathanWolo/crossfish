@@ -480,7 +480,9 @@ struct NnueDumpPos {
 
 static void write_nnue_dump(const char *path, const std::vector<NnueDumpPos> &data);
 
-static void play_nnue_games(int n_games, int think_ms, std::vector<NnueDumpPos> &out, uint32_t seed) {
+static void play_nnue_games(int n_games, int think_ms,
+                            std::vector<NnueDumpPos> &out, uint32_t seed,
+                            bool record_root_score) {
     std::mt19937 rng(seed);
     RandomMover random_mover;
     CrossfishDev bot;
@@ -505,10 +507,15 @@ static void play_nnue_games(int n_games, int think_ms, std::vector<NnueDumpPos> 
             p.hce = bot.evaluate_hce(board);
             game_pos.push_back(p);
             Move m = bot.getMove(board, std::chrono::milliseconds(think_ms));
+            if (record_root_score) {
+                game_pos.back().y = (float)bot.completed_root_depth;
+                game_pos.back().hce = bot.completed_root_score;
+            }
             board.makeMove(m);
         }
         int winner = board.checkWinner();
         for (size_t i = 0; i < game_pos.size(); i++) {
+            if (record_root_score) continue;
             int stm_player = (n_random + (int)i) % 2;
             if (winner == 2) game_pos[i].y = 0.5f;
             else if (winner == stm_player) game_pos[i].y = 1.0f;
@@ -521,9 +528,11 @@ static void play_nnue_games(int n_games, int think_ms, std::vector<NnueDumpPos> 
     global_mutex.unlock();
 }
 
-static void dump_nnue_wdl(int n_games, int think_ms, const char *path) {
+static void dump_nnue_wdl(int n_games, int think_ms, const char *path,
+                          bool record_root_score = false) {
     const unsigned int n_threads = std::max(1u, std::thread::hardware_concurrency());
-    std::cout << "NNUE dump: " << n_games << " games at " << think_ms
+    std::cout << "NNUE " << (record_root_score ? "root-score " : "")
+              << "dump: " << n_games << " games at " << think_ms
               << "ms on " << n_threads << " threads -> " << path << std::endl;
     fs::path p(path);
     if (p.has_parent_path()) {
@@ -537,7 +546,9 @@ static void dump_nnue_wdl(int n_games, int think_ms, const char *path) {
     for (unsigned int t = 0; t < n_threads; t++) {
         int n = per + (t < (unsigned)extra ? 1 : 0);
         uint32_t seed = 9000u + t * 9973u;
-        futures.push_back(std::async(std::launch::async, play_nnue_games, n, think_ms, std::ref(data), seed));
+        futures.push_back(std::async(std::launch::async, play_nnue_games, n,
+                                     think_ms, std::ref(data), seed,
+                                     record_root_score));
     }
     for (auto &f : futures) f.get();
     std::cout << "positions: " << data.size() << std::endl;
@@ -873,10 +884,14 @@ static void write_nnue_dump(const char *path, const std::vector<NnueDumpPos> &da
 
 // Relabel existing dumps with a full-window fixed-depth HCE search score.
 // mix: random-legal + self-play 50/50. play: self-play boards only.
-static void dump_nnue_search(int depth, int n_pos, const char *path, bool play_only) {
-    g_force_hce_eval = true;
+static void dump_nnue_search(
+    int depth, int n_pos, const char *path, bool play_only,
+    const char *play_path_override = nullptr, bool force_hce = true) {
+    g_force_hce_eval = force_hce;
     std::string rand_path = find_data_file("nnue_hce_rand.bin");
-    std::string play_path = find_data_file("nnue_pos.bin");
+    std::string play_path = play_path_override
+        ? std::string(play_path_override)
+        : find_data_file("nnue_pos.bin");
     if (rand_path.empty()) rand_path = find_data_file("datasets/nnue_hce_rand.bin");
     if (play_path.empty()) play_path = find_data_file("datasets/nnue_pos.bin");
     if (play_path.empty() || (!play_only && rand_path.empty())) {
@@ -916,6 +931,7 @@ static void dump_nnue_search(int depth, int n_pos, const char *path, bool play_o
     }
     const unsigned int n_threads = std::max(1u, std::thread::hardware_concurrency());
     std::cout << "search dump depth=" << depth << " play_only=" << (int)play_only
+              << " eval=" << (force_hce ? "HCE" : "current")
               << " from " << rand_path
               << " (" << n_rand << ") + " << play_path << " (" << n_play
               << ") on " << n_threads << " threads -> " << path << std::endl;
@@ -1025,6 +1041,163 @@ static void dump_nnue_search(int depth, int n_pos, const char *path, bool play_o
                   << " clamped=" << n_clamp << std::endl;
     }
     write_nnue_dump(path, data);
+}
+
+struct NnueRankPos {
+    uint32_t group;
+    uint8_t move;
+    uint8_t n_legal;
+    char s[93];
+    float hce;
+    int32_t search;
+};
+
+// Label every non-terminal child of the same root. Training on score
+// differences within each group removes root-specific score calibration and
+// directly targets the move ordering induced by the leaf evaluator.
+static void dump_nnue_rank(int depth, int n_roots, const char *path) {
+    std::string play_path = find_data_file("nnue_pos.bin");
+    if (play_path.empty()) play_path = find_data_file("datasets/nnue_pos.bin");
+    std::vector<NnueDumpState> states;
+    if (play_path.empty() || !read_nnue_dump_states(play_path, states)) {
+        std::cerr << "need datasets/nnue_pos.bin" << std::endl;
+        std::exit(1);
+    }
+    subsample_dump_states(states, (size_t)std::max(1, n_roots), 20260912u);
+    const unsigned int n_threads =
+        std::max(1u, std::thread::hardware_concurrency());
+    std::cout << "rank dump depth=" << depth << " roots=" << states.size()
+              << " from " << play_path << " on " << n_threads
+              << " threads -> " << path << std::endl;
+    CrossfishDev::init_mini_lut();
+
+    std::vector<NnueRankPos> data;
+    data.reserve(states.size() * 10);
+    std::mutex data_mutex;
+    std::atomic<size_t> next{0};
+    std::atomic<size_t> done{0};
+    std::atomic<size_t> kept_groups{0};
+    std::atomic<size_t> skipped_terminal{0};
+    std::atomic<size_t> skipped_bad{0};
+    auto worker = [&]() {
+        CrossfishDev bot;
+        NnueNet enc;
+        GlobalBoard board;
+        Move moves[81];
+        std::vector<NnueRankPos> local;
+        local.reserve(4096);
+        for (;;) {
+            size_t group = next.fetch_add(1);
+            if (group >= states.size()) break;
+            if (!prepare_board_for_search(board, states[group].s)) {
+                skipped_bad.fetch_add(1);
+                done.fetch_add(1);
+                continue;
+            }
+            int n = board.fillLegalMoves(moves);
+            if (n < 2) {
+                skipped_bad.fetch_add(1);
+                done.fetch_add(1);
+                continue;
+            }
+            bool has_terminal = false;
+            for (int i = 0; i < n; i++) {
+                GlobalBoard child = board;
+                child.makeMove(moves[i]);
+                child.prev_move_was_pass = false;
+                if (child.checkWinner() != -1) {
+                    has_terminal = true;
+                    break;
+                }
+            }
+            if (has_terminal) {
+                skipped_terminal.fetch_add(1);
+                done.fetch_add(1);
+                continue;
+            }
+            size_t begin = local.size();
+            for (int i = 0; i < n; i++) {
+                GlobalBoard child = board;
+                child.makeMove(moves[i]);
+                child.prev_move_was_pass = false;
+                int score = 0;
+                if (!bot.search_fixed_depth(child, depth, score)) continue;
+                NnueRankPos rec{};
+                rec.group = (uint32_t)group;
+                rec.move = (uint8_t)(moves[i].mini_board * 9 + moves[i].square);
+                rec.n_legal = (uint8_t)n;
+                enc.encode_state(child, rec.s);
+                rec.hce = (float)bot.evaluate_hce(child);
+                rec.search = score;
+                local.push_back(rec);
+            }
+            if (local.size() - begin >= 2) {
+                kept_groups.fetch_add(1);
+            } else {
+                local.resize(begin);
+                skipped_bad.fetch_add(1);
+            }
+            if (local.size() >= 4096) {
+                std::lock_guard<std::mutex> lock(data_mutex);
+                data.insert(data.end(), local.begin(), local.end());
+                local.clear();
+            }
+            done.fetch_add(1);
+        }
+        if (!local.empty()) {
+            std::lock_guard<std::mutex> lock(data_mutex);
+            data.insert(data.end(), local.begin(), local.end());
+        }
+    };
+    std::vector<std::future<void>> futures;
+    for (unsigned int t = 0; t < n_threads; t++) {
+        futures.push_back(std::async(std::launch::async, worker));
+    }
+    auto t0 = std::chrono::high_resolution_clock::now();
+    while (done.load() < states.size()) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        size_t d = done.load();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::high_resolution_clock::now() - t0).count();
+        double rate = ms ? 1000.0 * d / ms : 0.0;
+        std::cout << "rank roots " << d << "/" << states.size()
+                  << " groups=" << kept_groups.load()
+                  << " terminal=" << skipped_terminal.load()
+                  << " bad=" << skipped_bad.load()
+                  << " " << rate << "/s" << std::endl;
+    }
+    for (auto &f : futures) f.get();
+    std::sort(data.begin(), data.end(), [](const NnueRankPos &a,
+                                          const NnueRankPos &b) {
+        if (a.group != b.group) return a.group < b.group;
+        return a.move < b.move;
+    });
+    fs::path p(path);
+    if (p.has_parent_path()) fs::create_directories(p.parent_path());
+    std::ofstream out(path, std::ios::binary);
+    const char magic[8] = {'N','N','U','E','R','N','K','1'};
+    uint64_t records = data.size();
+    uint64_t groups = kept_groups.load();
+    out.write(magic, 8);
+    out.write(reinterpret_cast<const char *>(&records), sizeof(records));
+    out.write(reinterpret_cast<const char *>(&groups), sizeof(groups));
+    out.write(reinterpret_cast<const char *>(&depth), sizeof(depth));
+    for (const NnueRankPos &rec : data) {
+        out.write(reinterpret_cast<const char *>(&rec.group), 4);
+        out.write(reinterpret_cast<const char *>(&rec.move), 1);
+        out.write(reinterpret_cast<const char *>(&rec.n_legal), 1);
+        out.write(rec.s, 93);
+        out.write(reinterpret_cast<const char *>(&rec.hce), 4);
+        out.write(reinterpret_cast<const char *>(&rec.search), 4);
+    }
+    if (!out) {
+        std::cerr << "failed to write " << path << std::endl;
+        std::exit(1);
+    }
+    std::cout << "wrote " << path << " records=" << records
+              << " groups=" << groups
+              << " terminal_skips=" << skipped_terminal.load()
+              << " bad_skips=" << skipped_bad.load() << std::endl;
 }
 
 static void pin_nnue_scale() {
@@ -2137,10 +2310,38 @@ int main(int argc, char** argv) {
             dump_nnue_search(depth, n_pos, path, play_only);
             return 0;
         }
+        if (argc >= 3 && std::strcmp(argv[2], "relabel") == 0) {
+            if (argc < 7) {
+                std::cerr
+                    << "usage: test_bots dump relabel depth n_pos in.bin out.bin"
+                    << " [hce|current]" << std::endl;
+                return 1;
+            }
+            int depth = std::atoi(argv[3]);
+            int n_pos = std::atoi(argv[4]);
+            bool force_hce =
+                argc < 8 || std::strcmp(argv[7], "current") != 0;
+            dump_nnue_search(
+                depth, n_pos, argv[6], true, argv[5], force_hce);
+            return 0;
+        }
+        if (argc >= 3 && std::strcmp(argv[2], "rank") == 0) {
+            int depth = 5;
+            int n_roots = 10000;
+            const char *path = "datasets/nnue_rank.bin";
+            if (argc >= 4) depth = std::atoi(argv[3]);
+            if (argc >= 5) n_roots = std::atoi(argv[4]);
+            if (argc >= 6) path = argv[5];
+            dump_nnue_rank(depth, n_roots, path);
+            return 0;
+        }
         int n_games = 8000;
         int think_ms = 20;
         const char *path = "../../datasets/nnue_pos.bin";
-        if (argc >= 3 && std::strcmp(argv[2], "nnue") == 0) {
+        bool record_root_score = false;
+        if (argc >= 3 && (std::strcmp(argv[2], "nnue") == 0
+                          || std::strcmp(argv[2], "root") == 0)) {
+            record_root_score = std::strcmp(argv[2], "root") == 0;
             if (argc >= 4) n_games = std::atoi(argv[3]);
             if (argc >= 5) think_ms = std::atoi(argv[4]);
             if (argc >= 6) path = argv[5];
@@ -2148,7 +2349,7 @@ int main(int argc, char** argv) {
             if (argc >= 3) n_games = std::atoi(argv[2]);
             if (argc >= 4) path = argv[3];
         }
-        dump_nnue_wdl(n_games, think_ms, path);
+        dump_nnue_wdl(n_games, think_ms, path, record_root_score);
         return 0;
     }
     if (argc >= 2 && std::strcmp(argv[1], "nnue") == 0 && argc >= 3 && std::strcmp(argv[2], "pin") == 0) {
@@ -2268,10 +2469,14 @@ int main(int argc, char** argv) {
         g_sprt_think_ms = 20;
         argi = 2;
     }
-    if (argi < argc && std::strcmp(argv[argi], "depth") == 0) {
+    if (argi < argc
+        && (std::strcmp(argv[argi], "depth") == 0
+            || std::strcmp(argv[argi], "depth-prune") == 0)) {
+        bool keep_eval_pruning =
+            std::strcmp(argv[argi], "depth-prune") == 0;
         g_fixed_search_depth = (argc > argi + 1) ? std::atoi(argv[argi + 1]) : 4;
         if (g_fixed_search_depth < 1) g_fixed_search_depth = 4;
-        g_disable_eval_prune = true;
+        g_disable_eval_prune = !keep_eval_pruning;
         argi += 2;
     }
     if (argi < argc) {

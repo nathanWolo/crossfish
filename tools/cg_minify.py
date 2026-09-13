@@ -23,6 +23,7 @@ import argparse
 import re
 import sys
 from collections import Counter
+from pathlib import Path
 
 # ice4/minifier/renamer.rs IDENT_CHARACTERS; first character skips '_'.
 _IDENT_CHARS = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -72,6 +73,10 @@ STD_METHODS = frozenset(
 )
 
 RESERVED = KEYWORDS | C_NAMES
+
+_LOCAL_INCLUDE_RE = re.compile(
+    r'^\s*#\s*include\s*"([^"]+)"\s*(?://.*)?$'
+)
 
 # Concatenating these adjacent single-char tokens would change the program.
 _GLUE_PAIRS = frozenset(
@@ -131,6 +136,45 @@ def _raw_string_end(src: str, i: int) -> tuple[str, int]:
     if k < 0:
         return src[i:], n
     return src[i : k + len(close)], k + len(close)
+
+
+def inline_local_includes(
+    src: str,
+    base_dir: Path,
+    seen: set[Path] | None = None,
+) -> str:
+    """Recursively inline quoted includes that resolve beside the source.
+
+    CodinGame accepts one source file. Keeping generated evaluator headers
+    separate makes normal C++ builds and review manageable; this bundler
+    flattens only repository-local quoted includes and leaves system or
+    unresolved includes untouched.
+    """
+    if seen is None:
+        seen = set()
+    output: list[str] = []
+    for line in src.splitlines(keepends=True):
+        match = _LOCAL_INCLUDE_RE.match(line.rstrip("\r\n"))
+        if not match:
+            output.append(line)
+            continue
+        path = (base_dir / match.group(1)).resolve()
+        if not path.is_file():
+            output.append(line)
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        nested = path.read_text(encoding="utf-8")
+        nested = re.sub(
+            r"^\s*#\s*pragma\s+once\s*(?:\r?\n|$)", "", nested, count=1
+        )
+        output.append(
+            inline_local_includes(nested, path.parent, seen)
+        )
+        if output[-1] and not output[-1].endswith("\n"):
+            output[-1] += "\n"
+    return "".join(output)
 
 
 def tokenize(src: str) -> list[str]:
@@ -385,15 +429,27 @@ def main() -> None:
     ap.add_argument("src")
     ap.add_argument("-o", "--out", default="")
     ap.add_argument("--no-rename", action="store_true", help="whitespace-only (old conservative mode)")
+    ap.add_argument(
+        "--inline-local",
+        action="store_true",
+        help="inline quoted includes that resolve relative to the source",
+    )
     args = ap.parse_args()
     with open(args.src, encoding="utf-8") as inf:
         src = inf.read()
+    input_len = len(src)
+    if args.inline_local:
+        source_path = Path(args.src).resolve()
+        src = inline_local_includes(
+            src, source_path.parent, {source_path}
+        )
     out = minify_cpp(src, rename=not args.no_rename)
     dest = args.out or args.src
     with open(dest, "w", encoding="utf-8", newline="\n") as f:
         f.write(out)
     print(
-        f"{args.src} {len(src)} -> {dest} {len(out)}  saved {len(src) - len(out)}  "
+        f"{args.src} {input_len} (bundled {len(src)}) -> "
+        f"{dest} {len(out)}  saved {len(src) - len(out)}  "
         f"cap {100000 - len(out)} left"
     )
     if len(out) >= 100000:

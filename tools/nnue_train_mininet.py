@@ -383,10 +383,11 @@ def load_mini_bin(path: str, model: MiniNet):
     blob = open(path, "rb").read()
     if blob[:4] != b"CFM2":
         raise SystemExit(f"bad MiniNet init magic in {path}")
-    d, h = struct.unpack_from("<ii", blob, 4)
-    if d != model.d or h != model.h:
+    source_d, source_h = struct.unpack_from("<ii", blob, 4)
+    if source_d > model.d or source_h > model.h:
         raise SystemExit(
-            f"MiniNet init is D={d} H={h}, requested D={model.d} H={model.h}"
+            f"MiniNet init is D={source_d} H={source_h}, requested "
+            f"D={model.d} H={model.h}; requested dimensions cannot be smaller"
         )
     off = 12
 
@@ -398,16 +399,40 @@ def load_mini_bin(path: str, model: MiniNet):
         return torch.from_numpy(value.reshape(shape)).to(model.l1.weight.device)
 
     with torch.no_grad():
-        model.emb.weight.copy_(rd((N_IDX, d)))
-        model.super_e.weight.copy_(rd((4, d)))
-        model.loc.weight.copy_(rd((9, d)))
-        model.constr.weight.copy_(rd((10, d)))
-        model.active.weight.copy_(rd((2, d)))
-        model.l1.weight.copy_(rd((h, 10 * d)))
-        model.l1.bias.copy_(rd((h,)))
-        model.l2.weight.copy_(rd((1, h)))
+        model.emb.weight[:, :source_d].copy_(rd((N_IDX, source_d)))
+        model.super_e.weight[:, :source_d].copy_(rd((4, source_d)))
+        model.loc.weight[:, :source_d].copy_(rd((9, source_d)))
+        model.constr.weight[:, :source_d].copy_(rd((10, source_d)))
+        model.active.weight[:, :source_d].copy_(rd((2, source_d)))
+
+        source_l1 = rd((source_h, 10 * source_d))
+        # Each of the ten input blocks grows independently when D expands.
+        # Zero the new columns for the inherited rows, then place every source
+        # block at the start of its wider target block. This preserves the
+        # source network exactly while letting the added dimensions learn.
+        model.l1.weight[:source_h].zero_()
+        for block in range(10):
+            source_lo = block * source_d
+            target_lo = block * model.d
+            model.l1.weight[
+                :source_h, target_lo : target_lo + source_d
+            ].copy_(source_l1[:, source_lo : source_lo + source_d])
+        model.l1.bias[:source_h].copy_(rd((source_h,)))
+        model.l2.weight[:, :source_h].copy_(rd((1, source_h)))
         model.l2.bias.copy_(rd((1,)))
-    print(f"initialized MiniNet from {path}", flush=True)
+        if source_h < model.h:
+            # Preserve the source network exactly at initialization. The new
+            # hidden neurons retain their random incoming weights but start
+            # disconnected; their output weights learn first, then gradients
+            # flow into the extra capacity.
+            model.l2.weight[:, source_h:].zero_()
+    expanded = []
+    if source_d < model.d:
+        expanded.append(f"D={source_d}->{model.d}")
+    if source_h < model.h:
+        expanded.append(f"H={source_h}->{model.h}")
+    suffix = f" (expanded {' '.join(expanded)})" if expanded else ""
+    print(f"initialized MiniNet from {path}{suffix}", flush=True)
 
 
 def hce_mini_scores():
@@ -588,15 +613,24 @@ def train(args):
         empty_feat = empty_mini_tensors(device)
         if args.residual and args.pin_empty:
             with torch.no_grad():
-                model.l2.bias.data -= model(*empty_feat)
+                empty_v = model(*empty_feat)
+                if args.output_relu:
+                    empty_v = F.relu(empty_v)
+                model.l2.bias.data -= empty_v
 
         def forward_idx(idx, parts=False):
-            return model(
+            value = model(
                 feat[0][idx].long().to(device),
                 feat[1][idx].long().to(device),
                 feat[2][idx].long().to(device),
                 parts=parts,
             )
+            if not args.output_relu:
+                return value
+            if parts:
+                output, mlp = value
+                return F.relu(output), mlp
+            return F.relu(value)
     else:
         # 199-feature dual-accumulator, same QAT net as nnue_train_sparse199.
         cache = args.data + f".sparse.{tag}.npz"
@@ -671,6 +705,8 @@ def train(args):
                     if args.arch == "mini" and args.residual and args.pin_empty:
                         with torch.no_grad():
                             empty_v = model(*empty_feat)
+                            if args.output_relu:
+                                empty_v = F.relu(empty_v)
                             model.l2.bias.data -= empty_v
                     if args.arch == "sparse":
                         with torch.no_grad():
@@ -683,11 +719,13 @@ def train(args):
             sched.step()
         return total / max(1, seen)
 
-    best_val = 1e9
-    best_state = None
-    bad = 0
     init_va = run_epoch(va.copy(), False)
     print(f"init val={init_va:.6f}", flush=True)
+    best_val = init_va
+    best_state = {
+        k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+    }
+    bad = 0
     warmup = max(0, int(args.hce_warmup))
     if warmup > 0 and not args.residual:
         # Replace-only: first clone HCE, then switch the target to search.
@@ -762,7 +800,10 @@ def train(args):
     if args.arch == "mini":
         with torch.no_grad():
             e0, e1, e2 = empty_mini_tensors(device)
-            empty_v = float(model(e0, e1, e2).cpu().numpy()[0])
+            empty_out = model(e0, e1, e2)
+            if args.output_relu:
+                empty_out = F.relu(empty_out)
+            empty_v = float(empty_out.cpu().numpy()[0])
         if args.residual:
             # C++ does evaluate_hce + MiniNet; empty HCE is already tempo 112.
             model.l2.bias.data -= empty_v
@@ -820,6 +861,11 @@ def main():
                     help="mini = MiniNet (shipped); sparse = 199-feature dual-acc")
     ap.add_argument("--residual", action="store_true",
                     help="train HCE+net vs search; C++ eval = HCE + MiniNet")
+    ap.add_argument(
+        "--output-relu",
+        action="store_true",
+        help="clamp MiniNet's residual to nonnegative values (C++ must match)",
+    )
     ap.add_argument("--label", choices=["linear", "asinh"], default="linear",
                     help="linear = Huber in HCE units; asinh compresses mate tails")
     ap.add_argument("--asinh-s", type=float, default=1000.0, help="S in asinh(score/S)")

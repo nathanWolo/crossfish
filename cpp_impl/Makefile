@@ -21,16 +21,16 @@ all: test
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp | $(BIN)
+$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ unit_tests.cpp
 
-$(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp | $(BIN)
+$(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ test_bots.cpp $(FILESYSTEM_LIB)
 
 $(BIN)/crossfish: crossfish.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ crossfish.cpp
 
-$(BIN)/codingame_nnue: codingame_nnue.cpp | $(BIN)
+$(BIN)/codingame_nnue: codingame_nnue.cpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ codingame_nnue.cpp
 
 $(BIN)/cg_input: cg_input.cpp | $(BIN)
@@ -63,7 +63,7 @@ sprt: $(BIN)/test_bots
 cg: compile-cg
 
 cg-input:
-	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
+	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp --inline-local
 
 clean:
 	rm -rf $(BIN)

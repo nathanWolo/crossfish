@@ -2,7 +2,12 @@
 
 Entry for the UVicAI UTTT tournament (first place) and a CodinGame Ultimate Tic-Tac-Toe engine.
 
-The **active engine is C++**. `cpp_impl/codingame_nnue.cpp` is the readable MiniNet source. `cpp_impl/cg_input.cpp` is the minified file to paste into CodinGame. `cpp_impl/crossfish.cpp` is the self-contained HCE bot used as the packing source for that file. Local SPRT compares `cpp_impl/crossfish_dev.hpp` against the frozen previous in `cpp_impl/crossfish_prev.hpp`. `cpp_impl/cg_legend_hce.cpp` is a snapshot from the first Legend hit. The Python tree under `python_impl/` is legacy.
+The **active engine is C++**. `cpp_impl/codingame_nnue.cpp` is the readable
+CodinGame engine and includes the generated packed-eval headers;
+`cpp_impl/cg_input.cpp` is the bundled/minified file to paste into CodinGame.
+Local SPRT compares `cpp_impl/crossfish_dev.hpp` against the frozen previous
+in `cpp_impl/crossfish_prev.hpp`. `cpp_impl/cg_legend_hce.cpp` is a snapshot
+from the first Legend hit. The Python tree under `python_impl/` is legacy.
 
 Hill-climbing Elo is a specific loop: freeze Prev, edit only Dev, prove correctness, then SPRT. Read **Improving the engine** before changing search or eval.
 
@@ -58,10 +63,11 @@ CodinGame gives 1000 ms on the first execute per player and 100 ms on later move
 | --- | --- | --- |
 | `cpp_impl/crossfish_prev.hpp` | Frozen baseline. `CrossfishPrev` in SPRT. | Only when **freezing** a landed win. Never during an experiment. |
 | `cpp_impl/crossfish_dev.hpp` | The experiment. `CrossfishDev` in SPRT. | The only search/eval file you change while testing. |
-| `cpp_impl/mini_eval.hpp` | Packed MiniNet (D=8, H=4) used by Dev, Prev, and tests. | Shared eval. A change here hits **both** sides unless Dev has a different path. |
+| `cpp_impl/mini_eval.hpp` | Frozen packed D8/H4 MiniNet used by Prev and regression tests. | Baseline eval; do not change during a Dev experiment. |
+| `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` | Generated packed evaluators used by Dev and the CG bot. | Regenerate only for an accepted eval candidate. |
 | `cpp_impl/global_board.hpp` | Board, movegen, make/unmake, Zobrist. Shared by everyone. | Rules/hash only. Perft is frozen. |
-| `cpp_impl/codingame_nnue.cpp` | Readable single-file CG bot. | After a pass, when porting. Not the experiment. |
-| `cpp_impl/cg_input.cpp` | Minified paste file. | Regenerated from `codingame_nnue.cpp`. |
+| `cpp_impl/codingame_nnue.cpp` | Readable CG bot; local eval headers are bundled for submission. | After a pass, when porting. Not the experiment. |
+| `cpp_impl/cg_input.cpp` | Bundled and minified paste file. | Regenerated from `codingame_nnue.cpp`. |
 | `cpp_impl/crossfish.cpp` | Self-contained HCE CG bot; packing source for a new MiniNet emit. | Only if you are emitting a new net or changing the HCE template. |
 | `cpp_impl/cg_legend_hce.cpp` | Historical Legend snapshot. | Do not touch. |
 
@@ -173,10 +179,15 @@ Early-game positions are where HCE is weakest (minis not yet decided). If you tr
 
 ### Shipping to CodinGame
 
-A Dev SPRT pass does **not** update the CG bot. `codingame_nnue.cpp` is a standalone copy, not `#include "crossfish_dev.hpp"`. After a freeze:
+A Dev SPRT pass does **not** update the CG bot. `codingame_nnue.cpp` keeps a
+standalone copy of the search but shares generated packed-eval headers. After
+a freeze:
 
-1. Port the accepted Dev/search/eval changes into `codingame_nnue.cpp` by hand (or re-emit a net with `tools/nnue_emit_mininet_cg.py` if the change *is* a new packed MiniNet). Keep LUTs `static inline`.
-2. `python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp`
+1. Port accepted search changes into `codingame_nnue.cpp`. For eval changes,
+   regenerate `mini_eval_d16.hpp` and/or `macro_eval.hpp` with the matching
+   tools. Keep large LUTs in static storage.
+2. Run `make -C cpp_impl cg-input`; the minifier recursively inlines local
+   headers before shortening the source.
 3. Confirm `cg_input.cpp` is under 100k characters. Paste **that** file into CodinGame, not the readable source unless you are debugging.
 4. Optionally play minified vs readable at 20 ms (`roundrobin.run_pair` on the two `match` binaries). Expect ~0 Elo if minify only renamed tokens.
 5. Write the SPRT line into **Latest strength result** (N, W/D/L, Elo, LLR, hypotheses, NPS).
@@ -206,38 +217,46 @@ CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags 
 
 ## CodinGame file and minifier
 
-CodinGame's source cap is **100,000 characters**. The readable source is `cpp_impl/codingame_nnue.cpp` (~142k, over the cap). Paste **`cpp_impl/cg_input.cpp`** into the IDE (69,969 characters, about 30k of headroom).
+CodinGame's source cap is **100,000 characters**. Paste
+**`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
+headers are intentionally kept separate for review.
 
-`tools/cg_minify.py` is an ice4-style minifier: it strips comments and indentation, renames identifiers, and packs tokens. It does not change search or eval. Rebuild the paste file after editing the readable source:
+`tools/cg_minify.py` is an ice4-style minifier: it can inline local quoted
+headers, strips comments and indentation, renames identifiers, and packs
+tokens. It does not change search or eval. Rebuild the paste file after
+editing the readable source:
 
 ```bash
-python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp
+python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp \
+  -o cpp_impl/cg_input.cpp --inline-local
 ```
 
 `--no-rename` is whitespace-only (no identifier shortening). When regenerating the submission from a net, `tools/nnue_emit_mininet_cg.py` minifies by default; pass `--no-minify` to keep the readable file.
 
 ## Latest strength result
 
-On 2026-09-10, the round-5 engine passed the official 95 ms gate against the
-exact then-current `origin/main`
-(`0c50c955327ff58767bfe3378a75aa2c8beb211f`):
+On 2026-09-13, the round-seven eval stack passed a strict direct 95 ms SPRT
+against the merged round-six engine (`db8bce60e8f88ad4201042484dccc578fb59ecd4`):
 
 ```text
-95 ms (official, independent): N 1056 W 433 D 352 L 271
-Elo diff: +53.72 +/- 17.23
-LLR: +3.00 (H0=0, H1=+5) — PASS
-Prev NPS: 26,194,176  Dev NPS: 23,589,632
+95 ms: N 5152 W 2012 D 1591 L 1549
+Elo diff: +31.31 +/- 7.91
+LLR: +3.063 (H0=+20, H1=+25) — PASS
+Prev NPS: 13,333,760  Dev NPS: 11,787,264
 ```
 
-Author longer 95 ms H0=+50 run on the same pair: N 7744 W 3282 D 2385 L 2077,
-+54.51 +/- 6.48, LLR +3.00274. That magnitude reproduced.
+The optional 20 ms screen also passed at N=2208, 878-630-700,
+**+28.07 +/- 12.28 Elo**, LLR +3.03 (H0=0, H1=+5).
 
-The bundle combines exact tactical shortcuts (immediate global losses and
-forced mate-in-three), a two-way TT, a narrower aspiration window, a
-depth-8-search fine-tuned MiniNet, signed gravity-bounded history maluses,
-and small qsearch hot-path improvements. Paste `cpp_impl/cg_input.cpp`
-(70,638 characters, rebuilt from the current accepted Dev).
+The accepted evaluator combines a larger D16/H8 local-pattern MiniNet with a
+compact learned macro-context residual. The macro head is precomputed into a
+5 MiB static score table keyed by constraint and base-4 super-board state;
+search maintains both perspective keys only when a miniboard becomes decided.
+The table exactly matches the original macro MLP and recovered about 6% NPS
+within the new eval. Paste `cpp_impl/cg_input.cpp` (96,672 characters).
 
+The prior round-five direct bundle passed the official 95 ms gate at N=1056,
+433-352-271, **+53.72 +/- 17.23 Elo**, LLR +3.00 (H0=0, H1=+5).
 The next sequential winner on top of that exact merged baseline adds a
 lower-weight correction history keyed by the STM-relative shape of the forced
 miniboard. It passed the official 95 ms gate at N=6240, 2236-1968-2036,
@@ -274,8 +293,9 @@ Startpos perft is frozen in both C++ and Python. If one suite's counts change, u
 
 - `cpp_impl/global_board.hpp` — board, movegen, make/unmake (shared by tests and SPRT)
 - `cpp_impl/crossfish_dev.hpp` / `crossfish_prev.hpp` — search + eval
-- `cpp_impl/codingame_nnue.cpp` — readable MiniNet CodinGame source
-- `cpp_impl/cg_input.cpp` — minified paste file for the CodinGame IDE
+- `cpp_impl/codingame_nnue.cpp` — readable CodinGame search source
+- `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` — generated packed eval
+- `cpp_impl/cg_input.cpp` — bundled/minified paste file for the CodinGame IDE
 - `cpp_impl/crossfish.cpp` — self-contained HCE CG bot (packing source for MiniNet)
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
