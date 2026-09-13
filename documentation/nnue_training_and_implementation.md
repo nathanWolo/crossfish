@@ -945,14 +945,26 @@ For an evaluation change:
 3. run correctness tests;
 4. run equal-depth testing to isolate leaf quality;
 5. optionally run a cheap 20 ms screen;
-6. run the authoritative 95 ms SPRT;
+6. run the authoritative 90 ms SPRT with the external 100 ms referee;
 7. freeze and port only after a pass.
 
 The timed referee measures wall-clock response time outside the engine. A move
 returned after CodinGame's 100 ms limit is scored as an immediate loss and
 included in the printed timeout totals. This catches internal timer
 regressions that ordinary W/D/L testing would otherwise misclassify as extra
-search strength. Fixed-depth tests remain exempt.
+search strength. Timed tests reserve one physical core for scheduler and
+referee headroom; fixed-depth tests remain exempt.
+
+The timeout-hardened direct validation against merged round six used the same
+90 ms allocation as the CodinGame bot:
+
+```text
+N: 2954 W: 1100 D: 937 L: 917
+Elo diff: +21.55 +/- 10.37
+LLR: +3.110 (H0=0, H1=+5) — PASS
+Timeouts: Prev=0 Dev=0
+Maximum response: Prev=97.99 ms Dev=90.19 ms
+```
 
 The accepted direct round-seven result against the merged round-six engine was:
 

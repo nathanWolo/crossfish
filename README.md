@@ -39,7 +39,7 @@ That builds and runs the C++ unit tests, the Python rules oracle, and compiles t
 | `make test-cpp` | C++ unit tests only (`cpp_impl/unit_tests.cpp`) |
 | `make test-python` | Independent Python board perft / make-undo / winners (`python_impl/test_rules.py`), plus `tools/test_*.py` |
 | `make verify` | The older smoke checks inside `test_bots.cpp`, then exit (no SPRT) |
-| `make sprt` | Strength: Dev vs Prev self-play with SPRT at **95 ms** (slow, noisy) |
+| `make sprt` | Strength: Dev vs Prev self-play with SPRT at **90 ms** (slow, noisy) |
 | `make roundrobin` | 10k-game pairs of current C++ vs Legend vs Python at 20ms/move |
 | `make cg` | Compile the CodinGame submission |
 | `make cg-input` | Rebuild `cpp_impl/cg_input.cpp` from `codingame_nnue.cpp` with the minifier |
@@ -66,12 +66,12 @@ Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`, and
 This section is the process. The goal is Elo on CodinGame Ultimate Tic-Tac-Toe, not a prettier loss, a higher training correlation, or a faster NPS number that plays worse. Other agents will hill-climb from here. Follow the loop; do not invent a parallel scoring system.
 
 CodinGame gives 1000 ms on the first execute per player and 100 ms on later
-moves. The fixed center opening and later moves use a 90 ms search budget,
-leaving time for eager evaluator initialization, per-turn setup, scheduler
-jitter, search unwinding, and output. The official SPRT bar remains **95
-ms/move** so engine changes are tested against nearly the full later-move
-budget. A change is not shipped until it passes that gate. 20 ms is an optional
-cheap screen, not a ship. The submission cap is **100,000 characters**.
+moves. The fixed center opening, later moves, and official SPRT use a 90 ms
+search budget, leaving time for eager evaluator initialization, per-turn setup,
+scheduler jitter, search unwinding, and output before the independently
+enforced 100 ms deadline. A change is not shipped until it passes that gate
+without timeout forfeits. 20 ms is an optional cheap screen, not a ship. The
+submission cap is **100,000 characters**.
 
 ### The three copies of the engine
 
@@ -99,7 +99,7 @@ Do this in order. One hypothesis per loop.
 2. **Change only Dev** (and shared headers only if the change is truly shared and you understand both sides get it). Do not edit Prev. Do not port to `codingame_nnue.cpp` yet.
 3. **One axis.** Eval rewrite *or* search change *or* speed-only rewrite of the same eval *or* a new net. Not two of those in the same SPRT. If you cannot say in one sentence what Prev does that Dev should do better, the experiment is not ready.
 4. **`make test`.** Always. SPRT passing a broken engine is how you ship illegal moves or a wrong hash. Unit tests answer "did I break rules, hashing, eval, or search?". SPRT answers "is this stronger?".
-5. **Classify the change, then gate** (next subsection). Run **one** SPRT at a time, using all cores. Do not start a second SPRT on the same machine.
+5. **Classify the change, then gate** (next subsection). Run **one** SPRT at a time, reserving one physical core for the OS and referee. Do not start a second SPRT on the same machine.
 6. **On FAIL or a clearly marginal run:** stop the SPRT, revert Dev to the freeze, write down why it failed (eval, speed, or mixed). Do not keep a failed experiment in Dev as the new baseline.
 7. **On PASS:** freeze immediately (copy the accepted Dev into Prev), then port to the CG files, then record the result. Only then start the next experiment.
 
@@ -119,9 +119,10 @@ Harness: `cpp_impl/test_bots.cpp`, built as `cpp_impl/bin/test_bots`. Rebuild af
 
 ```bash
 make -C cpp_impl test          # correctness first
-make -C cpp_impl sprt          # official: 95ms, H0=0, H1=+5, all cores
+make -C cpp_impl sprt          # official: 90ms, H0=0, H1=+5, one core reserved
 # or, from cpp_impl/bin:
-./test_bots                    # 95ms (official bar)
+./test_bots                    # 90ms (official bar)
+./test_bots 95                 # optional historical comparison
 ./test_bots 20                 # optional cheap 20ms screen
 ./test_bots depth 4            # equal depth 4, eval pruning off
 ```
@@ -129,20 +130,20 @@ make -C cpp_impl sprt          # official: 95ms, H0=0, H1=+5, all cores
 Default hypotheses: **H0 = 0 Elo**, **H1 = +5 Elo**. The run stops at `|LLR| >= 3` (override with `SPRT_LLR_BOUND`).
 
 - `SPRT PASS: H1 … favored over H0` — accept the change (for that time control).
-- `SPRT FAIL: H0 … favored over H1` — reject. This means "not a +5 Elo gain", not "Dev is worse". A true +2 Elo at 95 ms will often fail H0-vs-+5. That is still not a ship.
+- `SPRT FAIL: H0 … favored over H1` — reject. This means "not a +5 Elo gain", not "Dev is worse". A true +2 Elo at 90 ms will often fail H0-vs-+5. That is still not a ship.
 - `SPRT INCONCLUSIVE` — hit `SPRT_MAX_GAMES` without a decision.
 
 Environment overrides:
 
 | Variable | Meaning |
 | --- | --- |
-| `SPRT_THINK_MS` | Move time (default 95). Ignored for play when `depth` is set. |
+| `SPRT_THINK_MS` | Search allocation (default 90). Ignored for play when `depth` is set. |
 | `SPRT_ELO0` / `SPRT_ELO1` | Hypotheses. `ELO1` must be greater than `ELO0`. |
 | `SPRT_LLR_BOUND` | Stop when `|LLR|` reaches this (default 3). |
 | `SPRT_MAX_GAMES` | Optional cap. 0 = run until LLR decides. |
-| `SPRT_THREADS` | Worker count. Default is `hardware_concurrency`. |
+| `SPRT_THREADS` | Worker count. On Linux the default uses physical-core topology and reserves one core; it falls back to logical CPUs when topology is unavailable. |
 
-Example: prove a huge speed win is more than +50 Elo at 95 ms:
+Example: prove a huge speed win is more than +50 Elo at 90 ms:
 
 ```bash
 SPRT_ELO0=50 SPRT_ELO1=55 make -C cpp_impl sprt
@@ -150,7 +151,7 @@ SPRT_ELO0=50 SPRT_ELO1=55 make -C cpp_impl sprt
 
 Use a raised H0 only when the first thousands of games already show a blowout. Do not use it to dress up a +8 Elo run.
 
-Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS** and **Dev NPS** from a 1-second startpos search. Treat NPS as a speed signal, not a strength score.
+Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS** and **Dev NPS** from a 1-second startpos search. Timed lines report each engine's maximum observed response latency. Treat NPS as a speed signal, not a strength score.
 
 Timed result lines also print external referee forfeits as
 `timeouts Prev=N Dev=N`. These losses count in W/D/L exactly as they would on
@@ -163,9 +164,9 @@ faster.
 
 | Kind of change | First gate | Then | Ship only after |
 | --- | --- | --- | --- |
-| Different leaf / different net / different HCE weights | `depth 4` | optional 20 ms, then **95 ms** | Official 95 ms pass. Depth-only is not enough. |
-| Same eval, faster implementation (LUTs, MiniNet projection, AVX) | optional 20 ms | **95 ms** | Official 95 ms pass. Depth 4 should be ~0 Elo if the rewrite is equivalent. If depth 4 fails, the "speedup" changed the eval. |
-| Search (LMR, TT, move order, pruning) | optional 20 ms | **95 ms** | Official 95 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
+| Different leaf / different net / different HCE weights | `depth 4` | optional 20 ms, then **90 ms** | Official 90 ms pass. Depth-only is not enough. |
+| Same eval, faster implementation (LUTs, MiniNet projection, AVX) | optional 20 ms | **90 ms** | Official 90 ms pass. Depth 4 should be ~0 Elo if the rewrite is equivalent. If depth 4 fails, the "speedup" changed the eval. |
+| Search (LMR, TT, move order, pruning) | optional 20 ms | **90 ms** | Official 90 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
 
 Do not skip `make test` because a gate passed.
 
@@ -231,10 +232,10 @@ CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags 
 - Revert Dev to Prev after every failed or killed gate. Do not stack unproven diffs.
 - Freeze Prev on every pass before the next idea. Hill-climbing without a freeze is measuring against a moving leftover.
 - Prefer the next experiment that is *cheap to falsify*: a LUT that must match `eval_consistency`, a search constant, a qsearch skip. Do not start with a new architecture and a week of training.
-- If depth 4 is ~0 and 95 ms is a big win, you shipped speed. If depth 4 wins and 95 ms dies, you shipped a slow eval; make it cheaper or drop it.
-- If 95 ms Elo is +1 to +3 after ~8k games, kill it. It will not clear H1 = +5 in a useful amount of time. A 20 ms screen that is already stuck near 0 can save the machine.
+- If depth 4 is ~0 and 90 ms is a big win, you shipped speed. If depth 4 wins and 90 ms dies, you shipped a slow eval; make it cheaper or drop it.
+- If 90 ms Elo is +1 to +3 after ~8k games, kill it. It will not clear H1 = +5 in a useful amount of time. A 20 ms screen that is already stuck near 0 can save the machine.
 - Never run two SPRTs at once. Never edit Prev "just for the test". Never ship `codingame_nnue.cpp` from an unfrozen Dev.
-- Sequential gates: depth 4 (if eval) → optional 20 ms screen → official 95 ms. Stop at the first fail. Do not ship on 20 ms alone.
+- Sequential gates: depth 4 (if eval) → optional 20 ms screen → official 90 ms. Stop at the first fail. Do not ship on 20 ms alone.
 
 ## CodinGame file and minifier
 
@@ -256,8 +257,22 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp \
 
 ## Latest strength result
 
-On 2026-09-13, the round-seven eval stack passed a strict direct 95 ms SPRT
-against the merged round-six engine (`db8bce60e8f88ad4201042484dccc578fb59ecd4`):
+On 2026-09-13, the timeout-hardened round-seven stack passed the official
+90 ms SPRT against the merged round-six engine
+(`db8bce60e8f88ad4201042484dccc578fb59ecd4`) with one of eight physical cores
+reserved:
+
+```text
+90 ms: N 2954 W 1100 D 937 L 917
+Elo diff: +21.55 +/- 10.37
+LLR: +3.110 (H0=0, H1=+5) — PASS
+Timeouts: Prev=0 Dev=0
+Maximum response: Prev=97.99 ms Dev=90.19 ms
+Prev NPS: 14,007,040  Dev NPS: 11,566,848
+```
+
+The earlier evaluation-only stack passed a stricter direct 95 ms strength
+target before the external referee was added:
 
 ```text
 95 ms: N 5152 W 2012 D 1591 L 1549

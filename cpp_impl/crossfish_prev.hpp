@@ -189,9 +189,10 @@ class CrossfishPrev {
                 constraint, board.macro_key[stm]);
         }
 
-        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(95);
+        using SearchClock = std::chrono::steady_clock;
+        std::chrono::milliseconds thinking_time = std::chrono::milliseconds(90);
         Move root_best_move;
-        std::chrono::time_point<std::chrono::high_resolution_clock> start_time =  std::chrono::high_resolution_clock::now();
+        SearchClock::time_point start_time = SearchClock::now();
         int min_val = -99999;
         int max_val = 99999;
         bool stopped = false;
@@ -561,9 +562,8 @@ class CrossfishPrev {
 
         bool time_up() {
             if (stopped) return true;
-            if ((nodes & 255) == 0) {
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::high_resolution_clock::now() - start_time) > thinking_time) {
+            if ((nodes & 127) == 0) {
+                if (SearchClock::now() - start_time >= thinking_time) {
                     stopped = true;
                 }
             }
@@ -827,11 +827,12 @@ class CrossfishPrev {
             }
         }
 
-        Move getMove(GlobalBoard input_board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(95)) {
+        Move getMove(GlobalBoard input_board, std::chrono::milliseconds thinking_time_passed = std::chrono::milliseconds(90)) {
+            thinking_time = thinking_time_passed;
+            start_time = SearchClock::now();
             FastBoard board(input_board);
             init_mini_lut();
             init_lmr_table();
-            thinking_time = thinking_time_passed;
             nodes = 0;
             stopped = false;
             root_score = 0;
@@ -858,7 +859,6 @@ class CrossfishPrev {
                 }
                 counters_ready = true;
             }
-            start_time = std::chrono::high_resolution_clock::now();
             if (g_fixed_search_depth > 0) {
                 thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
                 depth = g_fixed_search_depth;
@@ -909,7 +909,7 @@ class CrossfishPrev {
             killer_moves = {};
             corr_hist = {};
             corr_local_hist = {};
-            start_time = std::chrono::high_resolution_clock::now();
+            start_time = SearchClock::now();
             int eval = search(board, d, 0, min_val, max_val);
             if (stopped || eval == min_val) return false;
             if (eval > SEARCH_SCORE_CLAMP) eval = SEARCH_SCORE_CLAMP;

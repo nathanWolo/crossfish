@@ -1143,10 +1143,63 @@ The CodinGame-only timing path now:
 - checks every 128 nodes.
 
 Across 349 later-turn samples, the median was 90.08 ms, p99 was 91.73 ms, and
-the maximum was 91.86 ms. The SPRT engine remains tested at 95 ms.
+the maximum was 91.86 ms. SPRT still used 95 ms at this stage; external-referee
+stress testing in the next section showed that this left too little wall-clock
+headroom.
 
 The C++ SPRT referee and process-based round-robin now independently enforce
 CodinGame's external 100 ms limit. A late move is an immediate loss, timeout
 counts are printed with match results, and a timed-out process is restarted so
 its stale output cannot corrupt the next game. Fixed-depth evaluator tests are
 explicitly exempt because they intentionally have no move clock.
+
+---
+
+## 39. Eliminate timeout forfeits in long SPRTs (13 September 2026)
+
+The first real referee-enabled direct SPRT used the historical 95 ms search
+allocation and all 16 logical CPUs of an m5.4xlarge. It passed for strength,
+but 420 of 2,176 games ended by timeout:
+
+```text
+N: 2176 W: 893 D: 572 L: 711
+Elo diff: +29.13 +/- 12.57
+LLR: +3.048 — PASS
+Timeouts: Prev=202 Dev=218
+```
+
+The machine has eight physical cores with two SMT threads per core. A 90 ms
+probe using all 16 logical CPUs still produced 29 forfeits in only 160 games.
+At eight workers, ordinary responses were stable, but rare VM scheduling
+stalls still produced two 103.6 ms Dev responses by game 1,008. This was not
+an engine-node-count problem; a non-real-time process can be descheduled after
+its final internal clock check.
+
+The final mitigation combines three layers:
+
+- both SPRT engines use `steady_clock`, start the timer before per-move setup,
+  compare exact durations, and check every 128 nodes;
+- the official search allocation is 90 ms, matching the submitted bot and
+  leaving ten milliseconds before the external deadline;
+- Linux test harnesses detect physical-core topology and reserve one physical
+  core by default instead of saturating every SMT context.
+
+Result lines now include maximum observed response latency as well as timeout
+counts. The process-based round-robin uses the same physical-core policy and
+reports its latency maxima.
+
+The exact merged-main versus PR-stack validation then completed 2,954 games
+with no timeout losses:
+
+```text
+N: 2954 W: 1100 D: 937 L: 917
+Elo diff: +21.55 +/- 10.37
+LLR: +3.110 (H0=0, H1=+5) — PASS
+Timeouts: Prev=0 Dev=0
+Maximum response: Prev=97.99 ms Dev=90.19 ms
+Prev NPS: 14,007,040  Dev NPS: 11,566,848
+```
+
+This does not make a hard real-time guarantee—general-purpose operating
+systems can pause any process—but it turns timeout regression into a measured
+failure and demonstrated zero forfeits across a multi-thousand-game SPRT.

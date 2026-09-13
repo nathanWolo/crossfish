@@ -1,7 +1,14 @@
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
-from roundrobin import MatchBot, play_one
+from roundrobin import (
+    MatchBot,
+    default_worker_count,
+    physical_core_count,
+    play_one,
+)
 
 
 BOT_SCRIPT = r"""
@@ -29,6 +36,7 @@ class TestMatchBotDeadline(unittest.TestCase):
         try:
             self.assertEqual(bot.go(1, timeout_ms=100), (0, 0))
             self.assertEqual(bot.timeouts, 0)
+            self.assertGreater(bot.max_move_ms, 0)
         finally:
             bot.close()
 
@@ -38,6 +46,7 @@ class TestMatchBotDeadline(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 bot.go(50, timeout_ms=5)
             self.assertEqual(bot.timeouts, 1)
+            self.assertGreaterEqual(bot.max_move_ms, 5)
             self.assertEqual(bot.go(1, timeout_ms=100), (0, 0))
         finally:
             bot.close()
@@ -64,6 +73,31 @@ class TestTimeoutScoring(unittest.TestCase):
         self.assertEqual(
             play_one(TimeoutBot(), TimeoutBot(), [], 20, False), 1
         )
+
+
+class TestPhysicalCoreCount(unittest.TestCase):
+    def test_smt_siblings_count_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for cpu, core in enumerate((0, 1, 0, 1)):
+                topology = root / f"cpu{cpu}" / "topology"
+                topology.mkdir(parents=True)
+                (topology / "physical_package_id").write_text("0\n")
+                (topology / "core_id").write_text(f"{core}\n")
+            self.assertEqual(
+                physical_core_count({0, 1, 2, 3}, root), 2
+            )
+
+    def test_missing_topology_falls_back_to_logical_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                physical_core_count({2, 4, 6}, Path(tmp)), 3
+            )
+
+    def test_default_reserves_one_physical_core(self):
+        workers = default_worker_count()
+        self.assertGreaterEqual(workers, 1)
+        self.assertLessEqual(workers, physical_core_count())
 
 
 if __name__ == "__main__":

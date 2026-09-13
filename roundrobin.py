@@ -29,6 +29,36 @@ BIN = ROOT / "cpp_impl" / "bin"
 MOVE_TIMEOUT_MS = 100
 
 
+def physical_core_count(
+    cpu_ids: set[int] | None = None,
+    topology_root: Path = Path("/sys/devices/system/cpu"),
+) -> int:
+    if cpu_ids is None:
+        try:
+            cpu_ids = set(os.sched_getaffinity(0))
+        except AttributeError:
+            cpu_ids = set(range(max(1, os.cpu_count() or 1)))
+    if not cpu_ids:
+        return 1
+
+    physical_cores: set[tuple[int, int]] = set()
+    try:
+        for cpu in cpu_ids:
+            topology = topology_root / f"cpu{cpu}" / "topology"
+            package_id = int(
+                (topology / "physical_package_id").read_text()
+            )
+            core_id = int((topology / "core_id").read_text())
+            physical_cores.add((package_id, core_id))
+    except (OSError, ValueError):
+        return len(cpu_ids)
+    return max(1, len(physical_cores))
+
+
+def default_worker_count() -> int:
+    return max(1, physical_core_count() - 1)
+
+
 def cpp_to_py(mb: int, sq: int) -> tuple[int, int]:
     return (mb // 3) * 3 + sq // 3, (mb % 3) * 3 + sq % 3
 
@@ -82,6 +112,7 @@ class MatchBot:
         self.cmd = cmd
         self.proc = None
         self.timeouts = 0
+        self.max_move_ms = 0.0
         self.start()
 
     def start(self):
@@ -138,6 +169,8 @@ class MatchBot:
             [self.proc.stdout], [], [], max(0.0, remaining)
         )
         if not ready:
+            elapsed_ms = 1000.0 * (time.perf_counter() - started)
+            self.max_move_ms = max(self.max_move_ms, elapsed_ms)
             self.timeouts += 1
             self.close()
             raise TimeoutError(
@@ -147,6 +180,7 @@ class MatchBot:
         if not line:
             raise RuntimeError(f"{self.name} exited during GO (code {self.proc.poll()})")
         elapsed_ms = 1000.0 * (time.perf_counter() - started)
+        self.max_move_ms = max(self.max_move_ms, elapsed_ms)
         if elapsed_ms > timeout_ms:
             self.timeouts += 1
             self.close()
@@ -231,6 +265,8 @@ def worker(task_q: Queue, result_q: Queue, cmd1: list[str], cmd2: list[str], nam
                     r2,
                     b1.timeouts - before1,
                     b2.timeouts - before2,
+                    b1.max_move_ms,
+                    b2.max_move_ms,
                 )
             )
     finally:
@@ -249,6 +285,8 @@ class PairResult:
     think_ms: int
     timeouts1: int
     timeouts2: int
+    max_move_ms1: float
+    max_move_ms2: float
 
     def summary(self) -> str:
         elo, ci = calc_elo(self.wins, self.losses, self.draws)
@@ -261,7 +299,9 @@ class PairResult:
             f"Elo {elo:+.1f} +/- {ci:.1f}  LOS {los:.1f}%  "
             f"{gps:.1f} games/s  {self.think_ms}ms  "
             f"timeouts {self.name1}={self.timeouts1} "
-            f"{self.name2}={self.timeouts2}"
+            f"{self.name2}={self.timeouts2}  "
+            f"max {self.name1}={self.max_move_ms1:.2f}ms "
+            f"{self.name2}={self.max_move_ms2:.2f}ms"
         )
 
 
@@ -284,13 +324,23 @@ def run_pair(name1: str, cmd1: list[str], name2: str, cmd2: list[str], games: in
 
     wins = draws = losses = 0
     timeouts1 = timeouts2 = 0
+    max_move_ms1 = max_move_ms2 = 0.0
     done = 0
     t0 = time.time()
     print(f"== {name1} vs {name2}: {games} games, {think_ms}ms, {workers} workers ==", flush=True)
     while done < games:
-        r1, r2, pair_timeouts1, pair_timeouts2 = result_q.get()
+        (
+            r1,
+            r2,
+            pair_timeouts1,
+            pair_timeouts2,
+            pair_max_move_ms1,
+            pair_max_move_ms2,
+        ) = result_q.get()
         timeouts1 += pair_timeouts1
         timeouts2 += pair_timeouts2
+        max_move_ms1 = max(max_move_ms1, pair_max_move_ms1)
+        max_move_ms2 = max(max_move_ms2, pair_max_move_ms2)
         for r in (r1, r2):
             if r > 0:
                 wins += 1
@@ -319,6 +369,8 @@ def run_pair(name1: str, cmd1: list[str], name2: str, cmd2: list[str], games: in
         think_ms,
         timeouts1,
         timeouts2,
+        max_move_ms1,
+        max_move_ms2,
     )
 
 
@@ -326,7 +378,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--games", type=int, default=10000)
     parser.add_argument("--ms", type=int, default=20)
-    parser.add_argument("--workers", type=int, default=max(1, os.cpu_count() or 1))
+    parser.add_argument("--workers", type=int, default=default_worker_count())
     parser.add_argument("--out", type=str, default="")
     args = parser.parse_args()
 

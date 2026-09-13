@@ -19,6 +19,10 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <set>
+#if defined(__linux__)
+#include <sched.h>
+#endif
 #if __has_include(<filesystem>)
 #include <filesystem>
 namespace fs = std::filesystem;
@@ -29,9 +33,9 @@ namespace fs = std::experimental::filesystem;
 #include <immintrin.h>
 
 // CodinGame UTTT: 1000ms first execute per player, 100ms per later move.
-// SPRT searches for 95ms and independently forfeits any move returned after
+// SPRT searches for 90ms and independently forfeits any move returned after
 // the real 100ms deadline. Fixed-depth eval tests intentionally have no clock.
-static int g_sprt_think_ms = 95;
+static int g_sprt_think_ms = 90;
 static constexpr int REFEREE_MOVE_TIMEOUT_MS = 100;
 static double g_sprt_elo0 = 0;
 static double g_sprt_elo1 = 5;
@@ -174,6 +178,8 @@ std::mutex global_mutex;
 std::atomic<int> completed_tasks(0);
 std::atomic<int> prev_timeout_losses{0};
 std::atomic<int> dev_timeout_losses{0};
+std::atomic<int64_t> prev_max_move_ns{0};
+std::atomic<int64_t> dev_max_move_ns{0};
 std::atomic<int> tune_games_done{0};
 static int tune_games_total = 0;
 static std::chrono::steady_clock::time_point tune_t0;
@@ -242,6 +248,66 @@ static bool referee_move_timed_out(
         && elapsed > std::chrono::milliseconds(REFEREE_MOVE_TIMEOUT_MS);
 }
 
+static void record_move_duration(
+    std::atomic<int64_t> &maximum,
+    std::chrono::steady_clock::duration elapsed) {
+    int64_t observed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+    int64_t current = maximum.load(std::memory_order_relaxed);
+    while (observed > current
+           && !maximum.compare_exchange_weak(
+               current, observed, std::memory_order_relaxed)) {
+    }
+}
+
+struct CpuTopology {
+    unsigned int logical;
+    unsigned int physical;
+};
+
+static CpuTopology detect_cpu_topology() {
+    unsigned int fallback =
+        std::max(1u, std::thread::hardware_concurrency());
+#if defined(__linux__)
+    std::vector<int> cpus;
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    if (sched_getaffinity(0, sizeof(affinity), &affinity) == 0) {
+        for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+            if (CPU_ISSET(cpu, &affinity)) {
+                cpus.push_back(cpu);
+            }
+        }
+    }
+    if (cpus.empty()) {
+        for (unsigned int cpu = 0; cpu < fallback; ++cpu) {
+            cpus.push_back((int)cpu);
+        }
+    }
+
+    std::set<std::pair<int, int>> physical_cores;
+    for (int cpu : cpus) {
+        std::string topology =
+            "/sys/devices/system/cpu/cpu" + std::to_string(cpu)
+            + "/topology/";
+        std::ifstream package_file(topology + "physical_package_id");
+        std::ifstream core_file(topology + "core_id");
+        int package_id;
+        int core_id;
+        if (!(package_file >> package_id) || !(core_file >> core_id)) {
+            return {(unsigned int)cpus.size(), (unsigned int)cpus.size()};
+        }
+        physical_cores.insert({package_id, core_id});
+    }
+    return {
+        (unsigned int)cpus.size(),
+        std::max(1u, (unsigned int)physical_cores.size())
+    };
+#else
+    return {fallback, fallback};
+#endif
+}
+
 void play_game(int idx){
     //play two games from the same start position, alternating who goes first
     RandomMover random_mover;
@@ -285,6 +351,7 @@ void play_game(int idx){
                 auto move_start = std::chrono::steady_clock::now();
                 Move m = bot1.getMove(board, std::chrono::milliseconds(g_sprt_think_ms));
                 auto elapsed = std::chrono::steady_clock::now() - move_start;
+                record_move_duration(prev_max_move_ns, elapsed);
                 if (referee_move_timed_out(elapsed)) {
                     prev_timeout_losses.fetch_add(1, std::memory_order_relaxed);
                     forced_winner = bot2_player;
@@ -296,6 +363,7 @@ void play_game(int idx){
                 auto move_start = std::chrono::steady_clock::now();
                 Move best_move = bot2.getMove(board, std::chrono::milliseconds(g_sprt_think_ms));
                 auto elapsed = std::chrono::steady_clock::now() - move_start;
+                record_move_duration(dev_max_move_ns, elapsed);
                 if (referee_move_timed_out(elapsed)) {
                     dev_timeout_losses.fetch_add(1, std::memory_order_relaxed);
                     forced_winner = bot1_player;
@@ -2495,7 +2563,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     int argi = 1;
-    if (argc >= 2 && (std::strcmp(argv[1], "95") == 0 || std::strcmp(argv[1], "95ms") == 0)) {
+    if (argc >= 2 && (std::strcmp(argv[1], "90") == 0 || std::strcmp(argv[1], "90ms") == 0)) {
+        g_sprt_think_ms = 90;
+        argi = 2;
+    } else if (argc >= 2 && (std::strcmp(argv[1], "95") == 0 || std::strcmp(argv[1], "95ms") == 0)) {
         g_sprt_think_ms = 95;
         argi = 2;
     } else if (argc >= 2 && (std::strcmp(argv[1], "20") == 0 || std::strcmp(argv[1], "20ms") == 0)) {
@@ -2602,11 +2673,17 @@ int main(int argc, char** argv) {
         }
         std::cout << "loaded " << MINI_SCORE_PATH << " into Dev" << std::endl;
     }
+    CpuTopology topology = detect_cpu_topology();
+    const unsigned int default_threads =
+        topology.physical > 1 ? topology.physical - 1 : 1;
     const unsigned int n_threads = g_sprt_threads
         ? g_sprt_threads
-        : std::max(1u, std::thread::hardware_concurrency());
-    // const unsigned int n_threads = 6;
-    std::cout << "Number of threads: " << n_threads << std::endl;
+        : default_threads;
+    std::cout << "Number of threads: " << n_threads
+              << " (" << topology.physical << " physical / "
+              << topology.logical << " logical available"
+              << (g_sprt_threads ? ", override" : ", one core reserved")
+              << ")" << std::endl;
     double llr = sprt(global_total[0], global_total[1], global_total[2]);
 
     //benchmark NPS from startpos for Prev and Dev
@@ -2647,6 +2724,9 @@ int main(int argc, char** argv) {
                 << " LLR: " << llr
                 << " timeouts Prev=" << prev_timeout_losses.load()
                 << " Dev=" << dev_timeout_losses.load()
+                << " max_ms Prev="
+                << prev_max_move_ns.load() / 1000000.0
+                << " Dev=" << dev_max_move_ns.load() / 1000000.0
                 << std::endl;
     }
     if (llr >= g_sprt_llr_bound) {

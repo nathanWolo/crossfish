@@ -50,7 +50,7 @@ compile-cg: $(BIN)/crossfish $(BIN)/codingame_nnue $(BIN)/cg_input
 compile-legend: $(BIN)/cg_legend
 
 roundrobin: compile-cg compile-legend
-	cd $(ROOT) && python3 roundrobin.py --games 10000 --ms 20 --workers $$(nproc) --out /tmp/roundrobin.txt
+	cd $(ROOT) && python3 roundrobin.py --games 10000 --ms 20 --out /tmp/roundrobin.txt
 
 test: test-cpp test-python compile-cg compile-legend
 
