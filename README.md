@@ -253,6 +253,10 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp \
   -o cpp_impl/cg_input.cpp --inline-local
 ```
 
+See the [minification guide](documentation/minification.md) for the complete
+source-to-submission pipeline, neural payload encoding, minifier
+implementation, and validation procedure.
+
 `--no-rename` is whitespace-only (no identifier shortening). When regenerating the submission from a net, `tools/nnue_emit_mininet_cg.py` minifies by default; pass `--no-minify` to keep the readable file.
 
 ## Latest strength result
