@@ -9,6 +9,11 @@ Local SPRT compares `cpp_impl/crossfish_dev.hpp` against the frozen previous
 in `cpp_impl/crossfish_prev.hpp`. `cpp_impl/cg_legend_hce.cpp` is a snapshot
 from the first Legend hit. The Python tree under `python_impl/` is legacy.
 
+Detailed project documentation:
+
+- [Engine improvement log](documentation/improvement_log.md)
+- [NNUE training and runtime implementation](documentation/nnue_training_and_implementation.md)
+
 Hill-climbing Elo is a specific loop: freeze Prev, edit only Dev, prove correctness, then SPRT. Read **Improving the engine** before changing search or eval.
 
 ## Verify a change
@@ -300,3 +305,5 @@ Startpos perft is frozen in both C++ and Python. If one suite's counts change, u
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting
+- `documentation/improvement_log.md` — chronological accepted and rejected engine experiments
+- `documentation/nnue_training_and_implementation.md` — data, training, packing, and runtime details for the learned evaluator
