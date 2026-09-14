@@ -202,6 +202,66 @@ score, ply, and first-move distributions look uniform. Permuted prefixes are
 therefore a more representative sample of the full benchmark. One opening
 still produces two games with colors swapped, so resume totals must be even.
 
+## Comparison with the legacy random opener
+
+A controlled fixed-size comparison measured the final Round 8 candidate
+against the same frozen Prev baseline under both opening systems. Both runs
+used:
+
+- 2,000 games at 90 ms;
+- eight physical workers;
+- H0=0, H1=+5, and an LLR bound of 100 to prevent early stopping;
+- opening-pair offset 5,000; and
+- two games per opening with engine colors swapped.
+
+The book arm used the pinned Fisher-Yates traversal. The legacy arm used
+`SPRT_OPENING_BOOK=none SPRT_BOOK=1`, which reproduces the old deterministic
+seeded 4-8-ply random opener.
+
+| Opening source | W / D / L | Draw rate | Elo | LLR | Timeouts |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Shuffled balanced book | 647 / 844 / 509 | 42.2% | +24.01 +/- 11.59 | +2.587 | 0 / 0 |
+| Legacy random 4-8 ply | 712 / 616 / 672 | 30.8% | +6.95 +/- 12.67 | +0.508 | 0 / 0 |
+
+The book's point estimate was 17.06 Elo higher. Treating the two Elo estimates
+as independent Gaussian measurements gives an approximate 95% interval of
+`-0.11` to `+34.23` Elo for that difference (`p=0.0515`, two-sided). The
+strength-estimate gap is therefore strongly suggestive but narrowly misses a
+conventional two-sided 95% threshold in this single matched comparison.
+
+For reporting the candidate's expected improvement in normal benchmark play,
+the book result is the preferred estimate: **+24.01 +/- 11.59 Elo**. It has
+better nominal precision and samples intentionally balanced, reasonable
+openings where engine quality can determine the result. This remains a
+distribution-conditional estimate, not a claim that the candidate is exactly
++24 Elo under every possible opening policy.
+
+The balance difference is unambiguous. The book produced 11.4 percentage
+points more draws, with an approximate 95% interval of +/-2.96 points. Its Elo
+confidence interval was 8.6% narrower; on the reported per-game model, the
+legacy opener would need about 20% more games to match that nominal precision.
+The book also accumulated about 5.1 times as much H0=0/H1=+5 LLR in the same
+number of games, although that ratio reflects both better precision and the
+larger measured effect.
+
+Color swapping makes a lopsided random position fair in expectation, but does
+not make it informative. A position already strongly favoring one player can
+produce a split pair in which each engine wins once when assigned the favored
+color. That contributes two decisive games but almost no evidence about the
+engine change. Near-even book positions leave more scope for the candidate's
+evaluation improvement to determine the result.
+
+The two opening populations also test somewhat different games. The book uses
+reasonable 4-10-ply lines filtered for depth-16 balance; the legacy opener
+uses arbitrary 4-8-ply legal moves. The Elo difference can therefore include
+a real interaction between the macro-evaluation change and more realistic,
+later opening positions, not only reduced sampling noise.
+
+Finally, the current harness reports a trinomial per-game SPRT even though
+games are produced in color-swapped pairs. A future pentanomial pair model
+would quantify split-pair correlation more directly. That limitation applies
+to both arms and does not change the clear draw-rate/balance result.
+
 ## Binary format
 
 The file is intentionally compact and dependency-free. Version 2 is little

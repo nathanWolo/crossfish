@@ -174,6 +174,13 @@ opening repeats. Missing the expected book is an error rather than a silent
 fallback. See the [opening-book guide](documentation/opening_book.md) before
 regenerating or replacing it.
 
+A controlled 2,000-game comparison measured the shuffled balanced book at
+**+24.01 +/- 11.59 Elo** with 42.2% draws, versus **+6.95 +/- 12.67 Elo** and
+30.8% draws for the legacy random opener. The book's nominal confidence
+interval was 8.6% narrower. The book result is the preferred estimate for
+strength from balanced, reasonable openings, while remaining conditional on
+that opening distribution; full methodology and caveats are in the guide.
+
 Timed result lines also print external referee forfeits as
 `timeouts Prev=N Dev=N`. These losses count in W/D/L exactly as they would on
 CodinGame. A candidate that gains nodes by overrunning the clock is weaker, not

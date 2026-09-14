@@ -1341,6 +1341,39 @@ is auditable as well as benchmark contents. The tracked traversal fingerprint
 is `8698397342672575767`, and the verify suite pins it as part of the benchmark
 contract.
 
+A fixed 2,000-game comparison then measured the final Round 8 candidate under
+the new book and the legacy deterministic 4-8-ply random opener. Both arms
+used 90 ms, eight workers, opening-pair offset 5,000, color-swapped pairs, and
+disabled early stopping:
+
+| Opening source | W / D / L | Draw rate | Elo | LLR |
+| --- | ---: | ---: | ---: | ---: |
+| Shuffled depth-16 book | 647 / 844 / 509 | 42.2% | +24.01 +/- 11.59 | +2.587 |
+| Legacy random opener | 712 / 616 / 672 | 30.8% | +6.95 +/- 12.67 | +0.508 |
+
+Neither run recorded a timeout. The book estimate was 17.06 Elo higher, with
+an approximate direct 95% interval of `-0.11` to `+34.23` Elo
+(`p=0.0515`, two-sided). That single between-opener strength difference is
+suggestive rather than conventionally conclusive, while the 11.4-point
+draw-rate increase is clear. The book's reported Elo interval was 8.6%
+narrower, meaning the legacy opener would require roughly 20% more games for
+the same nominal per-game precision.
+
+The depth-16 book's **+24.01 +/- 11.59 Elo** is therefore the preferred
+strength estimate for the candidate under the repository's intended balanced,
+reasonable-opening benchmark. It should still be described as conditional on
+that opening population rather than as a universal Elo value.
+
+The interpretation is methodological as well as engine-specific. Color
+swapping removes expected side bias, but a lopsided random position often
+produces a split pair that says little about relative engine strength.
+Depth-16-balanced starts leave more room for the tested evaluation change to
+decide the game. The book also reaches reasonable 4-10-ply positions rather
+than arbitrary 4-8-ply lines, so part of the larger measured gain may be a real
+interaction with later macro-evaluation decisions. The current trinomial SPRT
+does not explicitly model color-pair correlation; a pentanomial model would be
+a useful future refinement.
+
 ---
 
 ## 42. Exact macro-state correction history (14 September 2026)
