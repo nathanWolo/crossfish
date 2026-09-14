@@ -869,6 +869,34 @@ static void test_d16_fast_matches_scalar(TestCtx &ctx) {
     CHECK(max_macro <= MACRO_CLIP);
 }
 
+static void test_ascii85_decoder(TestCtx &ctx) {
+    unsigned char decoded[16]{};
+    int count = d16_mini_b85_decode(
+        R"(!!*-'"9eu7#RL)", decoded, (int)sizeof(decoded));
+    CHECK_EQ(count, 10);
+    for (int i = 0; i < count; i++) {
+        CHECK_EQ((int)decoded[i], i);
+    }
+
+    auto fnv1a = [](const unsigned char *data, int size) {
+        uint64_t hash = 0xcbf29ce484222325ULL;
+        for (int i = 0; i < size; i++) {
+            hash ^= data[i];
+            hash *= 0x100000001b3ULL;
+        }
+        return hash;
+    };
+    std::vector<unsigned char> payload(65536);
+    count = d16_mini_b85_decode(
+        D16_MINI_PACK_B85, payload.data(), (int)payload.size());
+    CHECK_EQ(count, 42855);
+    CHECK_EQ(fnv1a(payload.data(), count), 0xe35e987c17a453cfULL);
+    count = d16_mini_b85_decode(
+        MACRO_PACK_B85, payload.data(), (int)payload.size());
+    CHECK_EQ(count, 3076);
+    CHECK_EQ(fnv1a(payload.data(), count), 0x626e29f3a8d65679ULL);
+}
+
 static void test_lut_capture_block_tiar(TestCtx &ctx) {
     CrossfishDev::init_mini_lut();
     CrossfishDev dev;
@@ -963,6 +991,7 @@ int main() {
         {"mini_avx_matches_scalar", test_mini_avx_matches_scalar},
         {"mini_fast_matches_scalar", test_mini_fast_matches_scalar},
         {"d16_fast_matches_scalar", test_d16_fast_matches_scalar},
+        {"ascii85_decoder", test_ascii85_decoder},
         {"lut_capture_block_tiar", test_lut_capture_block_tiar},
     };
 

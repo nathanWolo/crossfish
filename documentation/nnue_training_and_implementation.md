@@ -572,8 +572,16 @@ The generated payload contains:
 - super, location, constraint, and active embeddings;
 - W1, b1, W2, and b2.
 
-It is Base64 encoded into `cpp_impl/mini_eval_d16.hpp`. At startup the header
-decodes the payload into static storage and builds runtime tables.
+It is ASCII85 encoded into `cpp_impl/mini_eval_d16.hpp`. ASCII85 represents
+four payload bytes with five source characters, versus Base64's four source
+characters for three bytes. The generated header therefore stores exactly the
+same float and code bytes with less source expansion. The macro payload uses
+the same decoder.
+
+The raw C++ string uses `~` as its delimiter. That character is outside the
+emitter's ASCII85 alphabet (`!` through `u`), so payload text cannot
+accidentally terminate the literal. At startup the header decodes the payload
+into static storage and builds runtime tables.
 
 ### 7.3 Mask-to-code lookup
 
@@ -900,8 +908,10 @@ wc -c cpp_impl/cg_input.cpp
 `tools/cg_minify.py --inline-local` recursively expands the local generated
 headers into `codingame_nnue.cpp`, then strips and renames the combined source.
 
-The accepted round-seven `cg_input.cpp` is 96,672 characters, leaving 3,328
-characters below the 100,000-character limit.
+The current `cg_input.cpp` is 92,759 characters, leaving 7,241 characters
+below the 100,000-character limit. The lossless ASCII85 payload conversion
+accounts for the reduction; the decoded evaluator data is byte-for-byte
+identical to the accepted round-seven payload.
 
 Always compile both the readable and minified sources. Packing bugs can preserve
 Python validation metrics while producing a broken submission.

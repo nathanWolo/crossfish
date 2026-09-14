@@ -253,6 +253,10 @@ python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp \
   -o cpp_impl/cg_input.cpp --inline-local
 ```
 
+See the [minification guide](documentation/minification.md) for the complete
+source-to-submission pipeline, neural payload encoding, minifier
+implementation, and validation procedure.
+
 `--no-rename` is whitespace-only (no identifier shortening). When regenerating the submission from a net, `tools/nnue_emit_mininet_cg.py` minifies by default; pass `--no-minify` to keep the readable file.
 
 ## Latest strength result
@@ -289,7 +293,8 @@ compact learned macro-context residual. The macro head is precomputed into a
 5 MiB static score table keyed by constraint and base-4 super-board state;
 search maintains both perspective keys only when a miniboard becomes decided.
 The table exactly matches the original macro MLP and recovered about 6% NPS
-within the new eval. Paste `cpp_impl/cg_input.cpp` (96,672 characters).
+within the new eval. Paste `cpp_impl/cg_input.cpp` (92,759 characters, leaving
+7,241 below the CodinGame limit).
 
 The prior round-five direct bundle passed the official 95 ms gate at N=1056,
 433-352-271, **+53.72 +/- 17.23 Elo**, LLR +3.00 (H0=0, H1=+5).
