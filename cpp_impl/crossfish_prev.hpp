@@ -8,8 +8,8 @@
 #include <mutex>
 #include <vector>
 
-// Frozen round-seven eval winner on 2026-09-13: D16/H8 local MiniNet,
-// compact macro residual, and exact cached macro-score lookup.
+// Frozen round-eight winner on 2026-09-14: D16/H8 local MiniNet,
+// compact macro residual, and exact macro-state correction history.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -221,6 +221,8 @@ class CrossfishPrev {
         static constexpr int CORR_MAX_WEIGHT = 8;
         static constexpr int CORR_LOCAL_KEYS = 19683 + 1;
         static constexpr int CORR_LOCAL_GRAIN = 48;
+        static constexpr int CORR_MACRO_KEYS = 1 << 18;
+        static constexpr int CORR_MACRO_GRAIN = 12;
         // Mate scores are ±(max_val - ply), i.e. distances to mate rather than
         // quantities the static eval can be measured against.
         static constexpr int CORR_MATE_BOUND = 90000;
@@ -234,6 +236,10 @@ class CrossfishPrev {
         // A second correction learns residuals by the exact STM-relative shape
         // of the forced miniboard. The final slot represents a free move.
         std::array<CorrEntry, CORR_LOCAL_KEYS> corr_local_hist{};
+        // The incrementally maintained macro key is already an exact compact
+        // description of all nine decided-miniboard states from the side to
+        // move's perspective, so use it directly rather than hashing it.
+        std::array<CorrEntry, CORR_MACRO_KEYS> corr_macro_hist{};
 
         struct HceUndo {
             int16_t score = 0;
@@ -594,15 +600,34 @@ class CrossfishPrev {
             return corr_local_hist[key];
         }
 
+        CorrEntry &corr_macro_entry(FastBoard &board) {
+            uint32_t key = board.macro_key[board.n_moves & 1];
+            CorrEntry &entry = corr_macro_hist[key];
+            if (entry.raw == 0 && entry.applied == 0
+                && __builtin_popcount((unsigned)board.out_of_play) >= 3) {
+                int raw = evaluate_macro_key(9, key) * CORR_MACRO_GRAIN;
+                if (raw > CORR_MAX) raw = CORR_MAX;
+                if (raw < -CORR_MAX) raw = -CORR_MAX;
+                // Keep a zero-valued prior distinguishable from untouched
+                // storage so it is initialized only once per exact state.
+                entry.raw = (int16_t)(raw == 0 ? 1 : raw);
+                entry.applied =
+                    (int16_t)(entry.raw / CORR_MACRO_GRAIN);
+            }
+            return entry;
+        }
+
         struct CorrRefs {
             CorrEntry *structural = nullptr;
             CorrEntry *local = nullptr;
+            CorrEntry *macro = nullptr;
         };
 
         CorrRefs corr_refs(FastBoard &board) {
             return CorrRefs{
                 &corr_entry(board),
-                &corr_local_entry(board)
+                &corr_local_entry(board),
+                &corr_macro_entry(board)
             };
         }
 
@@ -612,7 +637,8 @@ class CrossfishPrev {
         int corrected_eval(int static_eval, CorrRefs refs) {
             int v = static_eval
                   + refs.structural->applied
-                  + refs.local->applied;
+                  + refs.local->applied
+                  + refs.macro->applied;
             if (v > CORR_EVAL_LIMIT) v = CORR_EVAL_LIMIT;
             if (v < -CORR_EVAL_LIMIT) v = -CORR_EVAL_LIMIT;
             return v;
@@ -633,6 +659,7 @@ class CrossfishPrev {
             int w = std::min(d, CORR_MAX_WEIGHT);
             update_corr_entry(*refs.structural, diff, w, CORR_GRAIN);
             update_corr_entry(*refs.local, diff, w, CORR_LOCAL_GRAIN);
+            update_corr_entry(*refs.macro, diff, w, CORR_MACRO_GRAIN);
         }
 
         template <typename Board>
@@ -916,6 +943,7 @@ class CrossfishPrev {
             counters_ready = true;
             corr_hist = {};
             corr_local_hist = {};
+            corr_macro_hist = {};
             start_time = SearchClock::now();
             int eval = search(board, d, 0, min_val, max_val);
             if (stopped || eval == min_val) return false;
@@ -943,9 +971,9 @@ class CrossfishPrev {
                     }
                 }
             }
-            CorrRefs qrefs = corr_refs(board);
+            CorrEntry &qstruct = corr_entry(board);
             int hce = evaluate_hce_incremental(board)
-                    + qrefs.structural->applied;
+                    + qstruct.applied;
             if (hce - 640 >= beta) {
                 return beta;
             }
