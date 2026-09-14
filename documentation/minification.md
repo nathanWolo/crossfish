@@ -262,8 +262,8 @@ This produces one translation unit containing the readable engine and both
 generated evaluator implementations. For the current submission:
 
 ```text
-readable codingame_nnue.cpp: 100,909 characters
-after local-header bundling: 174,682 characters
+readable codingame_nnue.cpp: 102,956 characters
+after local-header bundling: 176,729 characters
 ```
 
 The bundled form is intentionally larger than the readable source. Its purpose
@@ -422,10 +422,10 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 100909 (bundled 174682)
--> cpp_impl/cg_input.cpp 92759
-saved 81923
-cap 7241 left
+cpp_impl/codingame_nnue.cpp 102956 (bundled 176729)
+-> cpp_impl/cg_input.cpp 93272
+saved 83457
+cap 6728 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
@@ -435,8 +435,10 @@ All current source text is ASCII, so Python's character count and `wc -c`
 agree. The CLI conservatively exits with failure when output is 100,000
 characters or larger.
 
-The ASCII85 conversion reduced the accepted 96,674-character submission to
-92,759 characters, saving 3,915 and increasing headroom from 3,326 to 7,241.
+The ASCII85 conversion originally reduced the accepted 96,674-character
+submission to 92,759 characters. Subsequent engine and match-harness logic
+brings the current payload to 93,272 characters, still leaving 6,728
+characters of headroom.
 
 ## 11. Reproducible generation procedure
 
@@ -507,8 +509,8 @@ wc -c cpp_impl/cg_input.cpp
 The current expected values are:
 
 ```text
-SHA-256  76135acf13bece53092b5a25fad102c9319210b654f15d2d9ec079ce77c61d37
-size     92,759 bytes
+SHA-256  c5aef709a1d182def56d54d7633fd42ca244aeaccf6488e57789acbe670496ae
+size     93,272 bytes
 ```
 
 These values must be updated intentionally whenever the readable engine or
@@ -559,6 +561,12 @@ For a representation-only payload change, verify:
 For any change that alters model values, runtime arithmetic, or search
 behavior, payload identity is no longer applicable and a normal strength SPRT
 is required.
+
+The persistent-process match protocol acknowledges `NEW` and `SYNC` before a
+move timer starts. This is important because table decoding and engine
+construction belong to CodinGame's 1000 ms first-turn allowance, not the
+100 ms later-turn deadline. External-match workers are also pinned one per
+physical core so process scheduling does not manufacture timeout regressions.
 
 ## 13. Troubleshooting
 

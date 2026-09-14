@@ -907,6 +907,13 @@ class CrossfishPrev {
             init_hce_acc(board);
             init_macro_key(board);
             killer_moves = {};
+            history_table = {};
+            for (int mb = 0; mb < 9; mb++) {
+                for (int sq = 0; sq < 9; sq++) {
+                    counter_move[mb][sq] = NO_FAST_MOVE;
+                }
+            }
+            counters_ready = true;
             corr_hist = {};
             corr_local_hist = {};
             start_time = SearchClock::now();

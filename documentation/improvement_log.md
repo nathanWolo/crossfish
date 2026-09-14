@@ -1255,3 +1255,230 @@ The in-process harness shares the generated evaluator tables, so this smoke
 primarily validates official-time search/referee stability after the source
 representation change. The stronger equivalence evidence remains the exact
 decoded payloads and clock-free identical search outputs above.
+
+---
+
+## 41. Controlled opening experiments and a durable SPRT book (14 September 2026)
+
+The proposed "Teccles" opening rule prefers, during the first few turns, a
+move whose square sends the opponent back to the miniboard just played. Early
+screens using the old 4-8-ply random opener were not meaningful because that
+opener consumed much of the heuristic's intended window. The harness gained a
+diagnostic center-first deterministic opener so the test could begin at ply
+four instead.
+
+The corrected controlled test still rejected the heuristic. Applying a
+60-point ordering bonus at all search nodes finished:
+
+```text
+N: 1092 W: 417 D: 234 L: 441
+Elo diff: -7.64 +/- 18.29
+```
+
+Earlier random-opener variants were also unpromising: all-node bonuses of 60,
+300, and tie-break-only strength finished at approximately -2.8, -12.1, and
+-8.6 Elo respectively, while a root-only bonus was exactly flat at N=1134.
+No Teccles ordering change was retained.
+
+That methodology issue motivated replacing implicit random starts with a
+versioned benchmark artifact. The new generator builds legal 4-10-ply lines
+by choosing only moves within 250 static-eval units of the frozen baseline's
+best move. It deduplicates exact states, applies cheap depth-4 and depth-12
+prefilters, then gives every retained position an independent fresh-engine
+depth-16 search. The final book admits only positions with
+`abs(depth16_score) <= 300` and guarantees at least 500 positions at every
+included ply.
+
+To avoid technically covering but practically neglecting the standard center
+opening, first-move proposals are stratified: all 81 moves receive one slot,
+the nine center-miniboard moves receive three extra slots, and center-center
+receives eight more. These are proposal weights only; every line still has to
+pass the identical reasonable-move and depth-16 balance filters.
+
+A 140-position calibration demonstrated why the deeper gate matters and
+quantified the optional depth-20 check:
+
+```text
+Depth 16: mean |score| 356.55, p50 341, p90 661
+Within +/-300: 61 / 140
+Depth-12 vs depth-16 Pearson correlation: 0.910
+Depth-12 abs(score) <= 525 retained all 61 depth-16 qualifiers
+Depth-16 vs depth-20 Pearson correlation: 0.944
+50 of 61 depth-16 qualifiers also remained within +/-300 at depth 20
+```
+
+The audit initially exposed an uninitialized counter-move array in the
+fixed-depth helper. Normal timed search initialized that table, but the
+offline scorer did not, so worker scheduling could change selective-search
+ordering and scores. Both frozen and Dev fixed-depth paths now explicitly
+clear history/counter state, and evaluator payloads are warmed before worker
+launch. The same 28 roots then produced identical scores and node counts with
+7 and 16 workers.
+
+The tracked `cpp_impl/opening_book.bin` contains 10,000 positions. The SPRT
+harness validates and loads it by default, plays every position twice with
+colors swapped, reports its metadata in the test header, and fails loudly if
+the expected artifact is absent. Generation, binary format, audit commands,
+and benchmark-versioning policy are documented in
+`documentation/opening_book.md`.
+
+The production artifact is 160,032 bytes with SHA-256
+`6bc7556e530ec0e1cd9c395dae16809596503480f2929c2c2ca3ba5f906c509d`.
+Its mean absolute stored score is 161.44 (p50 169, p90 275, p99 298), all 81
+first moves occur at least 45 times, center-center occurs 189 times, and the
+4-10-ply buckets contain
+784/1,854/1,004/2,087/1,190/1,891/1,190 positions. Re-searching the first 140
+records at depth 16 reproduced every stored score exactly. A depth-20 audit
+kept 105/140 inside +/-300 and 137/140 inside +/-500, quantifying the tradeoff
+made when the production gate was relaxed from depth 20 to depth 16.
+
+SPRT consumes the records through a deterministic Fisher-Yates permutation
+rather than raw generation order. This preserves exact resume/replay behavior
+while making short prefixes representative of the complete book instead of
+coupling a test slice to candidate-acceptance order. The inspect command emits
+the traversal seed, fingerprint, and initial record indices so benchmark order
+is auditable as well as benchmark contents. The tracked traversal fingerprint
+is `8698397342672575767`, and the verify suite pins it as part of the benchmark
+contract.
+
+A fixed 2,000-game comparison then measured the final Round 8 candidate under
+the new book and the legacy deterministic 4-8-ply random opener. Both arms
+used 90 ms, eight workers, opening-pair offset 5,000, color-swapped pairs, and
+disabled early stopping:
+
+| Opening source | W / D / L | Draw rate | Elo | LLR |
+| --- | ---: | ---: | ---: | ---: |
+| Shuffled depth-16 book | 647 / 844 / 509 | 42.2% | +24.01 +/- 11.59 | +2.587 |
+| Legacy random opener | 712 / 616 / 672 | 30.8% | +6.95 +/- 12.67 | +0.508 |
+
+Neither run recorded a timeout. The book estimate was 17.06 Elo higher, with
+an approximate direct 95% interval of `-0.11` to `+34.23` Elo
+(`p=0.0515`, two-sided). That single between-opener strength difference is
+suggestive rather than conventionally conclusive, while the 11.4-point
+draw-rate increase is clear. The book's reported Elo interval was 8.6%
+narrower, meaning the legacy opener would require roughly 20% more games for
+the same nominal per-game precision.
+
+The depth-16 book's **+24.01 +/- 11.59 Elo** is therefore the preferred
+strength estimate for the candidate under the repository's intended balanced,
+reasonable-opening benchmark. It should still be described as conditional on
+that opening population rather than as a universal Elo value.
+
+The interpretation is methodological as well as engine-specific. Color
+swapping removes expected side bias, but a lopsided random position often
+produces a split pair that says little about relative engine strength.
+Depth-16-balanced starts leave more room for the tested evaluation change to
+decide the game. The book also reaches reasonable 4-10-ply positions rather
+than arbitrary 4-8-ply lines, so part of the larger measured gain may be a real
+interaction with later macro-evaluation decisions. The current trinomial SPRT
+does not explicitly model color-pair correlation; a pentanomial model would be
+a useful future refinement.
+
+---
+
+## 42. Exact macro-state correction history (14 September 2026)
+
+The accepted evaluation change is primarily an algorithmic improvement, not
+an NNUE inference-speed optimization. The engine already maintained two
+online correction histories for static-eval errors:
+
+- a coarse exact table keyed by side to move, forced miniboard, and the
+  nine-bit decided-miniboard mask;
+- an exact table keyed by the side-to-move-relative contents of the currently
+  forced miniboard.
+
+Those keys cannot distinguish *which player* owns each decided miniboard.
+That omitted information becomes increasingly important late in the game,
+when otherwise similar decided masks can imply very different macro threats.
+The search board already maintains an exact two-bit classification for each
+of the nine miniboards, packed into an 18-bit side-to-move-relative macro key.
+Round 8 adds a third correction table indexed directly by that key:
+
+```text
+2^18 exact macro states * 4-byte CorrEntry = 1 MiB per engine
+```
+
+No hashing, collision handling, or key construction is added to the hot path.
+The existing incremental macro key is the array index. Each entry stores the
+same bounded raw/applied pair as the older histories, and receives the same
+search-bound feedback whenever a stored exact/lower/upper result genuinely
+contradicts the corrected static evaluation. A grain of 12 converts raw
+history units back into evaluation units.
+
+An untouched entry is lazily initialized from the shipped trained macro
+evaluator's free-choice output. This reuses learned macro structure as a prior
+without paying for a new network or adding another model payload. The prior is
+enabled only after at least three miniboards are decided; earlier macro scores
+were too noisy and weakened the test. A one-unit raw sentinel distinguishes a
+real zero prior from untouched zero-filled storage.
+
+The qsearch fast path deliberately does **not** touch the new table. It uses
+only the original structural correction for its cheap HCE fail-high test, as
+before. Calling the general correction accessor there would initialize macro
+entries as a side effect and read the larger table at every tactical node,
+despite qsearch not using the macro correction. Removing that accidental work
+restored the lost NPS and improved strength.
+
+Several nearby variants were screened and rejected:
+
+| Variant | Result | Decision |
+| --- | ---: | --- |
+| Add the trained macro residual directly at every non-PV interior node | N=784, +4.43 +/- 19.71 Elo, about 4% slower | reject |
+| Exact macro history, grain 24 | N=4,000, +10.51 +/- 8.56 | too weak |
+| Hashed macro + forced-miniboard interaction history | N=2,000, +9.04 +/- 12.26 | no gain |
+| Exact macro history, grain 12, no learned prior | N=2,000, +18.26 +/- 12.28 | promising but below target |
+| Exact macro history, grain 8 | N=1,328, +13.35 +/- 15.01 | reject |
+| Free-choice macro prior at every game phase | N=2,000, +20.00 +/- 12.31 | weaker than gating |
+| Prior only after three decided boards | N=2,000, +24.88 +/- 12.29 | retain |
+
+Mean-over-constraint priors, a late current-constraint delta, double-strength
+updates, skipping depth-one updates, and scaling the prior by 1.25 were also
+tested and reverted. None improved on the simple gated free-choice prior.
+
+The early screens above used contiguous ranges of the newly generated book.
+One later range produced a sharply different result despite similar broad
+ply, score, and first-move statistics. That exposed acceptance-order coupling
+in the benchmark rather than a useful engine parameter. Section 41's pinned
+Fisher-Yates traversal was added before final evaluation, and all final
+numbers below use that representative order.
+
+The final candidate first completed a fixed 2,000-game calibration on
+permutation indices 0-999:
+
+```text
+W 644 / D 863 / L 493
++26.28 +/- 11.49 Elo
+Timeout losses: Prev 0 / Dev 0
+```
+
+The formal gate was then run from permutation offset 1,000, so it reused none
+of those calibration games. At the official 90 ms search budget with the
+external 100 ms referee, H0=+20 and H1=+25 finished:
+
+```text
+N 4672  W 1564 / D 1941 / L 1167
++29.59 +/- 7.63 Elo
+LLR +3.02241: PASS H1=+25 over H0=+20
+Timeout losses: Prev 0 / Dev 0
+Maximum response: Prev 96.18 ms / Dev 91.30 ms
+```
+
+The one-second startup benchmark in that run measured 12.10M nodes/s for Prev
+and 12.33M for Dev, so the strength gain did not require a throughput tradeoff.
+`crossfish_dev.hpp`, the readable CodinGame source, and the generated
+submission carry the same correction logic. The regenerated payload is 93,272
+bytes, leaving 6,728 characters below the CodinGame cap, with SHA-256
+`c5aef709a1d182def56d54d7633fd42ca244aeaccf6488e57789acbe670496ae`.
+
+An external readable-versus-minified smoke initially appeared to show timeout
+losses, but it exposed a referee bug rather than an engine regression. The
+persistent match protocol sent `NEW`, opening moves, and `GO` without an
+acknowledgement, so the first nominal 100 ms move could include process
+startup, evaluator-table construction, and opening replay—work that receives
+1000 ms on CodinGame. The protocol now acknowledges `NEW` and a post-opening
+`SYNC`, and each referee/bot pair is pinned to a distinct physical core.
+
+With setup excluded correctly, a 500-game external-process comparison at
+90 ms completed with zero timeout losses for both source forms. Maximum
+responses were 90.32 ms for readable `codingame_nnue.cpp` and 90.27 ms for
+the generated `cg_input.cpp`.

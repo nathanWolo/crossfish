@@ -14,7 +14,7 @@ ROOT := $(abspath ..)
 PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,python3)
 BIN := $(SRC_DIR)/bin
 
-.PHONY: all test test-cpp test-python sprt verify cg compile-cg compile-legend cg-input roundrobin clean
+.PHONY: all test test-cpp test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect clean
 
 all: test
 
@@ -52,7 +52,13 @@ compile-legend: $(BIN)/cg_legend
 roundrobin: compile-cg compile-legend
 	cd $(ROOT) && python3 roundrobin.py --games 10000 --ms 20 --out /tmp/roundrobin.txt
 
-test: test-cpp test-python compile-cg compile-legend
+opening-book: $(BIN)/test_bots
+	$(BIN)/test_bots book generate $(SRC_DIR)/opening_book.bin 10000
+
+book-inspect: $(BIN)/test_bots
+	$(BIN)/test_bots book inspect $(SRC_DIR)/opening_book.bin
+
+test: test-cpp test-python compile-cg compile-legend book-inspect
 
 verify: $(BIN)/test_bots
 	$(BIN)/test_bots verify

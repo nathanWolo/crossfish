@@ -55,6 +55,9 @@
 // Round-7 eval stack vs merged round-6: D16/H8 local net, macro residual,
 // and exact macro-score lookup. 95ms N 5152 W 2012 D 1591 L 1549,
 // +31.31 +/- 7.91 Elo, LLR +3.063 for H0=+20 / H1=+25.
+// Round-8 exact macro-state correction history with a lazy trained prior.
+// Independent 90ms book SPRT: N 4672 W 1564 D 1941 L 1167,
+// +29.59 +/- 7.63 Elo, LLR +3.022 for H0=+20 / H1=+25; zero timeouts.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
@@ -634,7 +637,9 @@ class CrossfishDev {
         static constexpr int CORR_MAX_WEIGHT = 8;
         static constexpr int CORR_LOCAL_KEYS = 19683 + 1;
         static constexpr int CORR_LOCAL_GRAIN = 48;
-        // Mate scores are ±(max_val - ply), i.e. distances to mate rather than
+        static constexpr int CORR_MACRO_KEYS = 1 << 18;
+        static constexpr int CORR_MACRO_GRAIN = 12;
+        // Mate scores are +/-(max_val - ply), i.e. distances to mate rather than
         // quantities the static eval can be measured against.
         static constexpr int CORR_MATE_BOUND = 90000;
         struct CorrEntry {
@@ -647,6 +652,10 @@ class CrossfishDev {
         // A second correction learns residuals by the exact STM-relative shape
         // of the forced miniboard. The final slot represents a free move.
         std::array<CorrEntry, CORR_LOCAL_KEYS> corr_local_hist{};
+        // The incrementally maintained macro key is already an exact compact
+        // description of all nine decided-miniboard states from the side to
+        // move's perspective, so use it directly rather than hashing it.
+        std::array<CorrEntry, CORR_MACRO_KEYS> corr_macro_hist{};
 
         struct HceUndo {
             int16_t score = 0;
@@ -1008,15 +1017,34 @@ class CrossfishDev {
             return corr_local_hist[key];
         }
 
+        CorrEntry &corr_macro_entry(FastBoard &board) {
+            uint32_t key = board.macro_key[board.n_moves & 1];
+            CorrEntry &entry = corr_macro_hist[key];
+            if (entry.raw == 0 && entry.applied == 0
+                && __builtin_popcount((unsigned)board.out_of_play) >= 3) {
+                int raw = evaluate_macro_key(9, key) * CORR_MACRO_GRAIN;
+                if (raw > CORR_MAX) raw = CORR_MAX;
+                if (raw < -CORR_MAX) raw = -CORR_MAX;
+                // Keep a zero-valued prior distinguishable from untouched
+                // storage so it is initialized only once per exact state.
+                entry.raw = (int16_t)(raw == 0 ? 1 : raw);
+                entry.applied =
+                    (int16_t)(entry.raw / CORR_MACRO_GRAIN);
+            }
+            return entry;
+        }
+
         struct CorrRefs {
             CorrEntry *structural = nullptr;
             CorrEntry *local = nullptr;
+            CorrEntry *macro = nullptr;
         };
 
         CorrRefs corr_refs(FastBoard &board) {
             return CorrRefs{
                 &corr_entry(board),
-                &corr_local_entry(board)
+                &corr_local_entry(board),
+                &corr_macro_entry(board)
             };
         }
 
@@ -1026,7 +1054,8 @@ class CrossfishDev {
         int corrected_eval(int static_eval, CorrRefs refs) {
             int v = static_eval
                   + refs.structural->applied
-                  + refs.local->applied;
+                  + refs.local->applied
+                  + refs.macro->applied;
             if (v > CORR_EVAL_LIMIT) v = CORR_EVAL_LIMIT;
             if (v < -CORR_EVAL_LIMIT) v = -CORR_EVAL_LIMIT;
             return v;
@@ -1047,6 +1076,7 @@ class CrossfishDev {
             int w = std::min(d, CORR_MAX_WEIGHT);
             update_corr_entry(*refs.structural, diff, w, CORR_GRAIN);
             update_corr_entry(*refs.local, diff, w, CORR_LOCAL_GRAIN);
+            update_corr_entry(*refs.macro, diff, w, CORR_MACRO_GRAIN);
         }
 
         template <typename Board>
@@ -1306,7 +1336,7 @@ class CrossfishDev {
         }
 
         // One full-window search at `d`. No aspiration, no time cutoff.
-        // Returns false on timeout/unfinished sentinel. Mates clamp to ±20000.
+        // Returns false on timeout/unfinished sentinel. Mates clamp to +/-20000.
         static constexpr int SEARCH_SCORE_CLAMP = 20000;
         bool search_fixed_depth(GlobalBoard &input_board, int d, int &out_score) {
             FastBoard board(input_board);
@@ -1320,8 +1350,16 @@ class CrossfishDev {
             init_hce_acc(board);
             init_macro_key(board);
             killer_moves = {};
+            history_table = {};
+            for (int mb = 0; mb < 9; mb++) {
+                for (int sq = 0; sq < 9; sq++) {
+                    counter_move[mb][sq] = NO_FAST_MOVE;
+                }
+            }
+            counters_ready = true;
             corr_hist = {};
             corr_local_hist = {};
+            corr_macro_hist = {};
             start_time = std::chrono::high_resolution_clock::now();
             int eval = search(board, d, 0, min_val, max_val);
             if (stopped || eval == min_val) return false;
@@ -1350,9 +1388,9 @@ class CrossfishDev {
                 }
             }
 
-            CorrRefs qrefs = corr_refs(board);
+            CorrEntry &qstruct = corr_entry(board);
             int hce = evaluate_hce_incremental(board)
-                    + qrefs.structural->applied;
+                    + qstruct.applied;
             if (hce - 640 >= beta) {
                 return beta;
             }
@@ -2256,10 +2294,13 @@ static int run_match() {
         if (cmd == "NEW") {
             engine = CrossfishDev();
             board = GlobalBoard();
+            std::cout << "READY" << std::endl;
         } else if (cmd == "APPLY") {
             int mb, sq;
             std::cin >> mb >> sq;
             board.makeMove({(int8_t)mb, (int8_t)sq});
+        } else if (cmd == "SYNC") {
+            std::cout << "READY" << std::endl;
         } else if (cmd == "GO") {
             int ms;
             std::cin >> ms;

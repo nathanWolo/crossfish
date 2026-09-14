@@ -28,9 +28,12 @@ def main():
         if cmd == "NEW":
             engine = crossfish_v17()
             board = board_obj()
+            print("READY", flush=True)
         elif cmd == "APPLY":
             mb, sq = int(parts[1]), int(parts[2])
             engine.make_move(board, cpp_to_py(mb, sq))
+        elif cmd == "SYNC":
+            print("READY", flush=True)
         elif cmd == "GO":
             ms = int(parts[1])
             engine.thinking_time = max(ms, 1) / 1000.0
