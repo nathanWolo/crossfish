@@ -908,10 +908,10 @@ wc -c cpp_impl/cg_input.cpp
 `tools/cg_minify.py --inline-local` recursively expands the local generated
 headers into `codingame_nnue.cpp`, then strips and renames the combined source.
 
-The current `cg_input.cpp` is 92,759 characters, leaving 7,241 characters
+The current `cg_input.cpp` is 93,272 characters, leaving 6,728 characters
 below the 100,000-character limit. The lossless ASCII85 payload conversion
-accounts for the reduction; the decoded evaluator data is byte-for-byte
-identical to the accepted round-seven payload.
+keeps both evaluator payloads compact; their decoded data remains byte-for-byte
+identical to the accepted round-seven networks.
 
 Always compile both the readable and minified sources. Packing bugs can preserve
 Python validation metrics while producing a broken submission.

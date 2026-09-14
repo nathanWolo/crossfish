@@ -241,6 +241,298 @@ double sprt(int wins, int draws, int losses) {
 // compared over identical openings rather than independent random ones. Set
 // SPRT_BOOK=0 to fall back to the unseeded rand() openings.
 static bool g_sprt_book = true;
+// Opening-heuristic experiments need to retain the early game instead of
+// consuming it with the normal 4-8 random plies. This alternate book starts
+// with center-center, then enumerates three legal replies from the game index.
+// It yields hundreds of deterministic paired openings while always handing
+// the engines a position at ply four.
+static bool g_sprt_center_enum = false;
+
+static constexpr int OPENING_BOOK_MAX_PLIES = 12;
+struct OpeningLine {
+    uint8_t n_moves = 0;
+    std::array<uint8_t, OPENING_BOOK_MAX_PLIES> moves{};
+    int16_t baseline_score = 0;
+};
+
+struct OpeningBookMeta {
+    uint8_t format_version = 0;
+    uint32_t seed = 0;
+    uint16_t balance_limit = 0;
+    uint16_t move_margin = 0;
+    uint8_t guide_depth = 0;
+    uint8_t shallow_depth = 0;
+    uint8_t prefilter_depth = 0;
+    uint8_t score_depth = 0;
+    uint8_t min_ply = 0;
+    uint8_t max_ply = 0;
+    uint16_t prefilter_limit = 0;
+};
+
+static std::vector<OpeningLine> g_sprt_openings;
+static std::vector<size_t> g_sprt_opening_order;
+static OpeningBookMeta g_sprt_opening_meta;
+static std::string g_sprt_opening_source;
+static constexpr uint32_t OPENING_ORDER_SALT = 0x6D2B79F5u;
+
+static std::vector<size_t> make_opening_order(
+    size_t count, uint32_t book_seed) {
+    std::vector<size_t> order(count);
+    std::iota(order.begin(), order.end(), size_t{0});
+    // Spell out Fisher-Yates instead of std::shuffle so the traversal is
+    // reproducible across standard-library implementations. mt19937 output
+    // and the modulo operation are fully specified for this book size.
+    std::mt19937 rng(book_seed ^ OPENING_ORDER_SALT);
+    for (size_t remaining = count; remaining > 1; remaining--) {
+        size_t other = (size_t)rng() % remaining;
+        std::swap(order[remaining - 1], order[other]);
+    }
+    return order;
+}
+
+static uint64_t opening_order_fingerprint(
+    const std::vector<size_t> &order) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t index : order) {
+        uint64_t value = (uint64_t)index;
+        for (int byte = 0; byte < 8; byte++) {
+            hash ^= (value >> (byte * 8)) & 255;
+            hash *= 1099511628211ULL;
+        }
+    }
+    return hash;
+}
+
+static void write_u16_le(std::ostream &out, uint16_t value) {
+    char bytes[2] = {
+        (char)(value & 255),
+        (char)((value >> 8) & 255)
+    };
+    out.write(bytes, sizeof(bytes));
+}
+
+static void write_u32_le(std::ostream &out, uint32_t value) {
+    char bytes[4] = {
+        (char)(value & 255),
+        (char)((value >> 8) & 255),
+        (char)((value >> 16) & 255),
+        (char)((value >> 24) & 255)
+    };
+    out.write(bytes, sizeof(bytes));
+}
+
+static bool read_u16_le(std::istream &in, uint16_t &value) {
+    unsigned char bytes[2];
+    if (!in.read((char *)bytes, sizeof(bytes))) return false;
+    value = (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+    return true;
+}
+
+static bool read_u32_le(std::istream &in, uint32_t &value) {
+    unsigned char bytes[4];
+    if (!in.read((char *)bytes, sizeof(bytes))) return false;
+    value = (uint32_t)bytes[0]
+          | ((uint32_t)bytes[1] << 8)
+          | ((uint32_t)bytes[2] << 16)
+          | ((uint32_t)bytes[3] << 24);
+    return true;
+}
+
+static bool opening_move_is_legal(
+    GlobalBoard &board, uint8_t packed) {
+    if (packed >= 81) return false;
+    int mb = packed / 9;
+    int sq = packed % 9;
+    std::vector<Move> legal = board.getLegalMoves();
+    for (const Move &move : legal) {
+        if (move.mini_board == mb && move.square == sq) return true;
+    }
+    return false;
+}
+
+static bool replay_opening(
+    const OpeningLine &line, GlobalBoard &board) {
+    if (line.n_moves == 0
+        || line.n_moves > OPENING_BOOK_MAX_PLIES) {
+        return false;
+    }
+    board = GlobalBoard();
+    for (int i = 0; i < line.n_moves; i++) {
+        uint8_t packed = line.moves[i];
+        if (!opening_move_is_legal(board, packed)) return false;
+        board.makeMove(Move{packed / 9, packed % 9});
+        if (i + 1 < line.n_moves && board.checkWinner() != -1) {
+            return false;
+        }
+    }
+    return board.checkWinner() == -1;
+}
+
+static bool load_opening_book(
+    const std::string &path, bool quiet = false) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    char magic[8];
+    if (!in.read(magic, sizeof(magic))
+        || std::memcmp(magic, "CFBOOK", 6) != 0
+        || (magic[6] != '1' && magic[6] != '2')
+        || magic[7] != '\0') {
+        if (!quiet) std::cerr << "bad opening-book magic: " << path << std::endl;
+        return false;
+    }
+    uint32_t count = 0;
+    OpeningBookMeta meta;
+    meta.format_version = (uint8_t)(magic[6] - '0');
+    if (!read_u32_le(in, count)
+        || !read_u32_le(in, meta.seed)
+        || !read_u16_le(in, meta.balance_limit)
+        || !read_u16_le(in, meta.move_margin)) {
+        return false;
+    }
+    uint8_t encoded_max_plies = 0;
+    if (meta.format_version == 1) {
+        char fields[5];
+        char reserved[7];
+        if (!in.read(fields, sizeof(fields))
+            || !in.read(reserved, sizeof(reserved))) {
+            return false;
+        }
+        meta.guide_depth = (uint8_t)fields[0];
+        meta.shallow_depth = (uint8_t)fields[1];
+        meta.score_depth = (uint8_t)fields[1];
+        meta.min_ply = (uint8_t)fields[2];
+        meta.max_ply = (uint8_t)fields[3];
+        encoded_max_plies = (uint8_t)fields[4];
+        for (char value : reserved) {
+            if (value != 0) return false;
+        }
+    } else {
+        char fields[7];
+        char reserved[3];
+        if (!in.read(fields, sizeof(fields))
+            || !read_u16_le(in, meta.prefilter_limit)
+            || !in.read(reserved, sizeof(reserved))) {
+            return false;
+        }
+        meta.guide_depth = (uint8_t)fields[0];
+        meta.shallow_depth = (uint8_t)fields[1];
+        meta.prefilter_depth = (uint8_t)fields[2];
+        meta.score_depth = (uint8_t)fields[3];
+        meta.min_ply = (uint8_t)fields[4];
+        meta.max_ply = (uint8_t)fields[5];
+        encoded_max_plies = (uint8_t)fields[6];
+        for (char value : reserved) {
+            if (value != 0) return false;
+        }
+    }
+    if (encoded_max_plies != OPENING_BOOK_MAX_PLIES
+        || count == 0 || count > 1000000
+        || meta.balance_limit == 0
+        || meta.shallow_depth == 0
+        || meta.score_depth == 0
+        || meta.min_ply == 0
+        || meta.max_ply < meta.min_ply
+        || meta.max_ply > OPENING_BOOK_MAX_PLIES) {
+        return false;
+    }
+
+    std::vector<OpeningLine> loaded;
+    loaded.reserve(count);
+    std::set<std::string> seen_states;
+    NnueNet encoder;
+    for (uint32_t i = 0; i < count; i++) {
+        OpeningLine line;
+        char n_moves;
+        char moves[OPENING_BOOK_MAX_PLIES];
+        uint16_t raw_score = 0;
+        char record_reserved;
+        if (!in.get(n_moves)
+            || !in.read(moves, sizeof(moves))
+            || !read_u16_le(in, raw_score)
+            || !in.get(record_reserved)) {
+            return false;
+        }
+        if (record_reserved != 0) return false;
+        line.n_moves = (uint8_t)n_moves;
+        for (int j = 0; j < OPENING_BOOK_MAX_PLIES; j++) {
+            line.moves[j] = (uint8_t)moves[j];
+        }
+        line.baseline_score = (int16_t)raw_score;
+        if (line.n_moves < meta.min_ply
+            || line.n_moves > meta.max_ply
+            || std::abs((int)line.baseline_score)
+                   > meta.balance_limit) {
+            if (!quiet) {
+                std::cerr << "opening " << i
+                          << " violates book metadata in "
+                          << path << std::endl;
+            }
+            return false;
+        }
+        for (int j = line.n_moves;
+             j < OPENING_BOOK_MAX_PLIES;
+             j++) {
+            if (line.moves[j] != 0) {
+                if (!quiet) {
+                    std::cerr << "nonzero opening tail " << i
+                              << " in " << path << std::endl;
+                }
+                return false;
+            }
+        }
+        GlobalBoard board;
+        if (!replay_opening(line, board)) {
+            if (!quiet) {
+                std::cerr << "illegal opening " << i
+                          << " in " << path << std::endl;
+            }
+            return false;
+        }
+        char state[93];
+        encoder.encode_state(board, state);
+        if (!seen_states.insert(
+                std::string(state, sizeof(state))).second) {
+            if (!quiet) {
+                std::cerr << "duplicate opening state " << i
+                          << " in " << path << std::endl;
+            }
+            return false;
+        }
+        loaded.push_back(line);
+    }
+    if (in.peek() != std::char_traits<char>::eof()) {
+        if (!quiet) {
+            std::cerr << "trailing opening-book data: "
+                      << path << std::endl;
+        }
+        return false;
+    }
+    std::vector<size_t> order =
+        make_opening_order(loaded.size(), meta.seed);
+    g_sprt_openings = std::move(loaded);
+    g_sprt_opening_order = std::move(order);
+    g_sprt_opening_meta = meta;
+    g_sprt_opening_source = path;
+    return true;
+}
+
+static bool load_default_opening_book(bool quiet = false) {
+    static constexpr const char *paths[] = {
+        "cpp_impl/opening_book.bin",
+        "opening_book.bin",
+        "../opening_book.bin"
+    };
+    for (const char *path : paths) {
+        if (load_opening_book(path, true)) return true;
+    }
+    if (!quiet) {
+        std::cerr
+            << "failed to find the shipped opening book; tried"
+            << " cpp_impl/opening_book.bin, opening_book.bin, and"
+            << " ../opening_book.bin" << std::endl;
+    }
+    return false;
+}
 
 static bool referee_move_timed_out(
     std::chrono::steady_clock::duration elapsed) {
@@ -318,27 +610,51 @@ void play_game(int idx){
     CrossfishPrev bot1;
 
     GlobalBoard board;
-    //game loop
-    //first 4-8 moves are random
-    int num_random_moves = 4 + (int)(g_sprt_book ? book() % 5 : (unsigned int)rand() % 5);
-    for (int i = 0; i < num_random_moves; i++) {
-        if (i == 0) {
-            //30% chance of first move being very center
-            unsigned int roll = g_sprt_book ? book() % 10 : (unsigned int)rand() % 10;
-            if (roll < 3) {
-                Move m = {4, 4};
-                board.makeMove(m);
-                continue;
-            }
+    if (!g_sprt_openings.empty()) {
+        size_t traversal_index =
+            (size_t)idx % g_sprt_opening_order.size();
+        size_t opening_index =
+            g_sprt_opening_order[traversal_index];
+        const OpeningLine &line =
+            g_sprt_openings[opening_index];
+        if (!replay_opening(line, board)) {
+            std::cerr << "failed to replay traversal opening " << idx
+                      << " (book record " << opening_index << ')'
+                      << std::endl;
+            std::abort();
         }
-        Move m;
-        if (g_sprt_book) {
+    } else if (g_sprt_center_enum) {
+        board.makeMove(Move{4, 4});
+        unsigned int opening = (unsigned int)idx;
+        for (int i = 1; i < 4; i++) {
             std::vector<Move> legal_moves = board.getLegalMoves();
-            m = legal_moves[book() % legal_moves.size()];
-        } else {
-            m = random_mover.getMove(board);
+            unsigned int choice = opening % legal_moves.size();
+            opening /= legal_moves.size();
+            board.makeMove(legal_moves[choice]);
         }
-        board.makeMove(m);
+    } else {
+        // First 4-8 moves are random.
+        int num_random_moves =
+            4 + (int)(g_sprt_book ? book() % 5 : (unsigned int)rand() % 5);
+        for (int i = 0; i < num_random_moves; i++) {
+            if (i == 0) {
+                // 30% chance of first move being very center.
+                unsigned int roll =
+                    g_sprt_book ? book() % 10 : (unsigned int)rand() % 10;
+                if (roll < 3) {
+                    board.makeMove(Move{4, 4});
+                    continue;
+                }
+            }
+            Move m;
+            if (g_sprt_book) {
+                std::vector<Move> legal_moves = board.getLegalMoves();
+                m = legal_moves[book() % legal_moves.size()];
+            } else {
+                m = random_mover.getMove(board);
+            }
+            board.makeMove(m);
+        }
     }
     GlobalBoard startpos = GlobalBoard(board);
     //play two games, alternating who goes first
@@ -439,6 +755,28 @@ static void verify_referee_timeout() {
         std::exit(1);
     }
     std::cout << "referee 100ms deadline: OK" << std::endl;
+}
+
+static void verify_opening_order() {
+    std::vector<size_t> first = make_opening_order(257, 0x12345678u);
+    std::vector<size_t> repeat = make_opening_order(257, 0x12345678u);
+    std::vector<size_t> other = make_opening_order(257, 0x12345679u);
+    std::vector<size_t> sorted = first;
+    std::sort(sorted.begin(), sorted.end());
+    bool permutation = sorted.size() == 257;
+    for (size_t i = 0; permutation && i < sorted.size(); i++) {
+        permutation = sorted[i] == i;
+    }
+    if (!permutation || first != repeat || first == other
+        || make_opening_order(0, 1).size() != 0
+        || make_opening_order(1, 1) != std::vector<size_t>{0}
+        || opening_order_fingerprint(
+               make_opening_order(10000, 3237998146u))
+               != 8698397342672575767ULL) {
+        std::cerr << "opening traversal permutation mismatch" << std::endl;
+        std::exit(1);
+    }
+    std::cout << "opening traversal permutation: OK" << std::endl;
 }
 
 static void verify_mini_lut() {
@@ -2370,7 +2708,668 @@ static bool parse_nnue_mode(const char *mode, const char *bin) {
     return true;
 }
 
+struct GeneratedOpening {
+    bool accepted = false;
+    bool prefilter_passed = false;
+    bool deep_accepted = false;
+    uint32_t candidate_id = 0;
+    uint8_t target_ply = 0;
+    OpeningLine line;
+    std::string state;
+};
+
+static GeneratedOpening make_opening_candidate(
+    uint32_t candidate_id,
+    uint32_t base_seed,
+    int target_ply,
+    int move_margin,
+    int shallow_limit,
+    int shallow_depth,
+    int forced_first_move,
+    CrossfishPrev &bot,
+    NnueNet &encoder) {
+    GeneratedOpening result;
+    result.candidate_id = candidate_id;
+    result.target_ply = (uint8_t)target_ply;
+    if (target_ply < 1 || target_ply > OPENING_BOOK_MAX_PLIES) {
+        return result;
+    }
+
+    std::mt19937 rng(
+        base_seed ^ (0x9E3779B9u * (candidate_id + 1)));
+    GlobalBoard board;
+    OpeningLine line;
+    for (int ply = 0; ply < target_ply; ply++) {
+        std::vector<Move> legal = board.getLegalMoves();
+        if (legal.empty()) return result;
+        std::vector<int> values(legal.size());
+        int best = std::numeric_limits<int>::min();
+        for (size_t i = 0; i < legal.size(); i++) {
+            GlobalBoard child(board);
+            child.makeMove(legal[i]);
+            // Child evaluation is from the opponent's perspective.
+            values[i] = -bot.evaluate(child);
+            best = std::max(best, values[i]);
+        }
+        std::vector<size_t> reasonable;
+        for (size_t i = 0; i < legal.size(); i++) {
+            if (values[i] >= best - move_margin) {
+                reasonable.push_back(i);
+            }
+        }
+        if (reasonable.empty()) return result;
+        size_t selected = reasonable[rng() % reasonable.size()];
+        if (ply == 0 && forced_first_move >= 0) {
+            bool found = false;
+            for (size_t i : reasonable) {
+                int packed =
+                    legal[i].mini_board * 9 + legal[i].square;
+                if (packed == forced_first_move) {
+                    selected = i;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return result;
+        }
+        Move move = legal[selected];
+        board.makeMove(move);
+        line.moves[ply] =
+            (uint8_t)(move.mini_board * 9 + move.square);
+        line.n_moves++;
+        if (board.checkWinner() != -1) return result;
+    }
+
+    int score = 0;
+    // Use a fresh search object so candidate admission is independent of the
+    // worker count and of TT/history state left by earlier roots.
+    CrossfishPrev shallow_scorer;
+    if (!shallow_scorer.search_fixed_depth(
+            board, shallow_depth, score)
+        || std::abs(score) > shallow_limit) {
+        return result;
+    }
+    line.baseline_score = (int16_t)score;
+    char state[93];
+    encoder.encode_state(board, state);
+    result.accepted = true;
+    result.line = line;
+    result.state.assign(state, sizeof(state));
+    return result;
+}
+
+static bool save_opening_book(
+    const std::string &path,
+    const std::vector<OpeningLine> &lines,
+    const OpeningBookMeta &meta) {
+    fs::path output(path);
+    if (output.has_parent_path()) {
+        std::error_code ec;
+        fs::create_directories(output.parent_path(), ec);
+        if (ec) {
+            std::cerr << "failed to create " << output.parent_path()
+                      << ": " << ec.message() << std::endl;
+            return false;
+        }
+    }
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    const char magic[8] = {'C','F','B','O','O','K','2','\0'};
+    out.write(magic, sizeof(magic));
+    write_u32_le(out, (uint32_t)lines.size());
+    write_u32_le(out, meta.seed);
+    write_u16_le(out, meta.balance_limit);
+    write_u16_le(out, meta.move_margin);
+    char fields[7] = {
+        (char)meta.guide_depth,
+        (char)meta.shallow_depth,
+        (char)meta.prefilter_depth,
+        (char)meta.score_depth,
+        (char)meta.min_ply,
+        (char)meta.max_ply,
+        (char)OPENING_BOOK_MAX_PLIES
+    };
+    char reserved[3] = {};
+    out.write(fields, sizeof(fields));
+    write_u16_le(out, meta.prefilter_limit);
+    out.write(reserved, sizeof(reserved));
+    for (const OpeningLine &line : lines) {
+        out.put((char)line.n_moves);
+        out.write((const char *)line.moves.data(), line.moves.size());
+        write_u16_le(out, (uint16_t)line.baseline_score);
+        out.put(0);
+    }
+    return out.good();
+}
+
+static void report_opening_book(
+    const std::vector<OpeningLine> &lines,
+    const OpeningBookMeta &meta,
+    const std::string &source) {
+    std::array<int, OPENING_BOOK_MAX_PLIES + 1> by_ply{};
+    std::array<int, 81> first_moves{};
+    std::vector<int> absolute_scores;
+    absolute_scores.reserve(lines.size());
+    int64_t score_sum = 0;
+    int max_abs = 0;
+    for (const OpeningLine &line : lines) {
+        if (line.n_moves <= OPENING_BOOK_MAX_PLIES) {
+            by_ply[line.n_moves]++;
+        }
+        if (line.n_moves > 0 && line.moves[0] < first_moves.size()) {
+            first_moves[line.moves[0]]++;
+        }
+        score_sum += line.baseline_score;
+        int av = std::abs((int)line.baseline_score);
+        absolute_scores.push_back(av);
+        max_abs = std::max(max_abs, av);
+    }
+    std::sort(absolute_scores.begin(), absolute_scores.end());
+    auto percentile = [&](double q) {
+        if (absolute_scores.empty()) return 0;
+        size_t idx = (size_t)std::min<double>(
+            absolute_scores.size() - 1,
+            std::floor(q * (absolute_scores.size() - 1)));
+        return absolute_scores[idx];
+    };
+    std::cout << "Opening book: " << source
+              << " positions=" << lines.size()
+              << " format=" << (int)meta.format_version
+              << " seed=" << meta.seed
+              << " move_margin=" << meta.move_margin
+              << " shallow_depth=" << (int)meta.shallow_depth
+              << " prefilter_depth=" << (int)meta.prefilter_depth
+              << " prefilter_limit=" << meta.prefilter_limit
+              << " score_depth=" << (int)meta.score_depth
+              << " balance_limit=" << meta.balance_limit
+              << " mean_score="
+              << (lines.empty() ? 0.0
+                                : score_sum / (double)lines.size())
+              << " mean_abs=";
+    int64_t abs_sum =
+        std::accumulate(
+            absolute_scores.begin(), absolute_scores.end(), int64_t{0});
+    std::cout << (lines.empty() ? 0.0
+                               : abs_sum / (double)lines.size())
+              << " p50_abs=" << percentile(0.50)
+              << " p90_abs=" << percentile(0.90)
+              << " p99_abs=" << percentile(0.99)
+              << " max_abs=" << max_abs << std::endl;
+    std::cout << "Opening plies:";
+    for (int ply = 0; ply <= OPENING_BOOK_MAX_PLIES; ply++) {
+        if (by_ply[ply]) {
+            std::cout << ' ' << ply << '=' << by_ply[ply];
+        }
+    }
+    std::cout << std::endl;
+    int distinct_first_moves = 0;
+    int min_first_count = std::numeric_limits<int>::max();
+    int max_first_count = 0;
+    for (int count : first_moves) {
+        if (count == 0) continue;
+        distinct_first_moves++;
+        min_first_count = std::min(min_first_count, count);
+        max_first_count = std::max(max_first_count, count);
+    }
+    std::cout << "Opening first moves: distinct=" << distinct_first_moves
+              << " center=" << first_moves[4 * 9 + 4]
+              << " min_count="
+              << (distinct_first_moves ? min_first_count : 0)
+              << " max_count=" << max_first_count << std::endl;
+    std::vector<size_t> order =
+        make_opening_order(lines.size(), meta.seed);
+    std::cout << "Opening traversal: fisher-yates-v1"
+              << " seed=" << (meta.seed ^ OPENING_ORDER_SALT)
+              << " fingerprint=" << opening_order_fingerprint(order)
+              << " first_records=";
+    size_t preview = std::min<size_t>(8, order.size());
+    for (size_t i = 0; i < preview; i++) {
+        if (i) std::cout << ',';
+        std::cout << order[i];
+    }
+    std::cout << std::endl;
+}
+
+struct OpeningAuditResult {
+    bool ok = false;
+    int score = 0;
+    uint64_t nodes = 0;
+    int64_t elapsed_us = 0;
+};
+
+static int audit_opening_book(
+    const std::string &path,
+    int audit_depth,
+    int requested,
+    unsigned int threads,
+    const std::string &score_output = "") {
+    if (!load_opening_book(path)) return 1;
+    if (audit_depth < 1) audit_depth = 20;
+    size_t count = requested <= 0
+        ? g_sprt_openings.size()
+        : std::min<size_t>(
+            g_sprt_openings.size(), (size_t)requested);
+    threads = std::max(1u, std::min<unsigned int>(
+        threads, (unsigned int)std::max<size_t>(1, count)));
+    // The generated evaluator payload loaders predate concurrent tooling and
+    // use simple ready flags. Warm them on this thread before constructors run
+    // in parallel, establishing a happens-before edge through thread launch.
+    {
+        CrossfishPrev warmup;
+        CrossfishPrev::init_mini_lut();
+    }
+    std::vector<OpeningAuditResult> results(count);
+    std::atomic<size_t> next{0};
+    std::atomic<size_t> completed{0};
+    auto wall_start = std::chrono::steady_clock::now();
+    std::vector<std::future<void>> futures;
+    for (unsigned int worker = 0; worker < threads; worker++) {
+        futures.push_back(std::async(
+            std::launch::async,
+            [&]() {
+                while (true) {
+                    size_t i = next.fetch_add(1);
+                    if (i >= count) break;
+                    GlobalBoard board;
+                    OpeningAuditResult result;
+                    if (replay_opening(g_sprt_openings[i], board)) {
+                        // A fresh engine makes every score independent of TT,
+                        // history, and counter-move state from earlier roots.
+                        CrossfishPrev bot;
+                        auto started = std::chrono::steady_clock::now();
+                        result.ok = bot.search_fixed_depth(
+                            board, audit_depth, result.score);
+                        result.elapsed_us =
+                            std::chrono::duration_cast<
+                                std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - started)
+                                .count();
+                        result.nodes = (uint64_t)bot.nodes;
+                    }
+                    results[i] = result;
+                    size_t done = completed.fetch_add(1) + 1;
+                    size_t interval = std::max<size_t>(1, count / 20);
+                    if (done == count || done % interval == 0) {
+                        double elapsed =
+                            std::chrono::duration<double>(
+                                std::chrono::steady_clock::now()
+                                - wall_start).count();
+                        std::cout << "book audit: " << done << '/' << count
+                                  << " depth=" << audit_depth
+                                  << " elapsed=" << elapsed << "s"
+                                  << std::endl;
+                    }
+                }
+            }));
+    }
+    for (auto &future : futures) future.get();
+
+    std::vector<int> absolute_scores;
+    std::vector<int64_t> elapsed_us;
+    absolute_scores.reserve(count);
+    elapsed_us.reserve(count);
+    int failed = 0;
+    int within_100 = 0;
+    int within_200 = 0;
+    int within_300 = 0;
+    int within_500 = 0;
+    int stored_score_mismatches = 0;
+    int max_stored_score_delta = 0;
+    int64_t score_sum = 0;
+    uint64_t node_sum = 0;
+    for (size_t i = 0; i < results.size(); i++) {
+        const OpeningAuditResult &result = results[i];
+        if (!result.ok) {
+            failed++;
+            continue;
+        }
+        int av = std::abs(result.score);
+        absolute_scores.push_back(av);
+        elapsed_us.push_back(result.elapsed_us);
+        score_sum += result.score;
+        node_sum += result.nodes;
+        within_100 += av <= 100;
+        within_200 += av <= 200;
+        within_300 += av <= 300;
+        within_500 += av <= 500;
+        int stored_delta = std::abs(
+            result.score
+            - (int)g_sprt_openings[i].baseline_score);
+        if (stored_delta != 0) stored_score_mismatches++;
+        max_stored_score_delta =
+            std::max(max_stored_score_delta, stored_delta);
+    }
+    std::sort(absolute_scores.begin(), absolute_scores.end());
+    std::sort(elapsed_us.begin(), elapsed_us.end());
+    auto percentile = [](const auto &values, double q) {
+        if (values.empty()) {
+            return typename std::decay_t<decltype(values)>::value_type{};
+        }
+        size_t idx = (size_t)std::min<double>(
+            values.size() - 1,
+            std::floor(q * (values.size() - 1)));
+        return values[idx];
+    };
+    size_t ok = absolute_scores.size();
+    double wall_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - wall_start).count();
+    std::cout << "Deep opening audit: source=" << path
+              << " depth=" << audit_depth
+              << " positions=" << count
+              << " ok=" << ok
+              << " failed=" << failed
+              << " threads=" << threads
+              << " wall_seconds=" << wall_seconds << std::endl;
+    if (ok) {
+        int64_t abs_sum = std::accumulate(
+            absolute_scores.begin(), absolute_scores.end(), int64_t{0});
+        std::cout << "Deep scores: mean="
+                  << score_sum / (double)ok
+                  << " mean_abs=" << abs_sum / (double)ok
+                  << " p50_abs=" << percentile(absolute_scores, 0.50)
+                  << " p90_abs=" << percentile(absolute_scores, 0.90)
+                  << " p99_abs=" << percentile(absolute_scores, 0.99)
+                  << " max_abs=" << absolute_scores.back()
+                  << " within100=" << within_100
+                  << " within200=" << within_200
+                  << " within300=" << within_300
+                  << " within500=" << within_500
+                  << " stored_score_mismatches="
+                  << stored_score_mismatches
+                  << " max_stored_delta="
+                  << max_stored_score_delta << std::endl;
+        std::cout << "Deep search cost: mean_nodes="
+                  << node_sum / (double)ok
+                  << " median_ms="
+                  << percentile(elapsed_us, 0.50) / 1000.0
+                  << " p90_ms="
+                  << percentile(elapsed_us, 0.90) / 1000.0
+                  << " p99_ms="
+                  << percentile(elapsed_us, 0.99) / 1000.0
+                  << " max_ms=" << elapsed_us.back() / 1000.0
+                  << std::endl;
+    }
+    if (!score_output.empty()) {
+        std::ofstream out(score_output);
+        if (!out) {
+            std::cerr << "failed to write audit scores "
+                      << score_output << std::endl;
+            return 1;
+        }
+        out << "index\tplies\tbook_score\tdeep_score\tnodes\telapsed_us\n";
+        for (size_t i = 0; i < count; i++) {
+            const OpeningAuditResult &result = results[i];
+            out << i << '\t'
+                << (int)g_sprt_openings[i].n_moves << '\t'
+                << g_sprt_openings[i].baseline_score << '\t';
+            if (result.ok) {
+                out << result.score << '\t'
+                    << result.nodes << '\t'
+                    << result.elapsed_us;
+            } else {
+                out << "NA\tNA\tNA";
+            }
+            out << '\n';
+        }
+        if (!out.good()) {
+            std::cerr << "failed while writing audit scores "
+                      << score_output << std::endl;
+            return 1;
+        }
+        std::cout << "Wrote deep audit scores: "
+                  << score_output << std::endl;
+    }
+    if (audit_depth == g_sprt_opening_meta.score_depth
+        && stored_score_mismatches != 0) {
+        std::cerr << "stored opening scores do not reproduce at depth "
+                  << audit_depth << std::endl;
+        return 1;
+    }
+    return failed ? 1 : 0;
+}
+
+static int generate_opening_book(
+    const std::string &path,
+    int requested,
+    unsigned int threads) {
+    const int min_ply = 4;
+    const int max_ply = 10;
+    const int move_margin = 250;
+    const int shallow_depth = 4;
+    const int shallow_limit = 300;
+    const int prefilter_depth = 12;
+    const int prefilter_limit = 525;
+    const int balance_limit = 300;
+    const int score_depth = 16;
+    const uint32_t seed = 0xC0FFEE42u;
+    const int n_ply_buckets = max_ply - min_ply + 1;
+    if (requested < n_ply_buckets) requested = n_ply_buckets;
+    threads = std::max(1u, threads);
+    {
+        CrossfishPrev warmup;
+        CrossfishPrev::init_mini_lut();
+    }
+
+    std::array<int, OPENING_BOOK_MAX_PLIES + 1> accepted_by_ply{};
+    // Preserve broad early-game coverage without making the rarest ply bucket
+    // dictate the runtime of the entire production build.
+    const int minimum_per_ply =
+        std::min(500, requested / n_ply_buckets);
+
+    std::vector<OpeningLine> accepted;
+    accepted.reserve(requested);
+    std::set<std::string> seen_states;
+    uint32_t next_candidate = 0;
+    const int batch_size = std::max(32u, threads * 8u);
+    const uint32_t max_candidates =
+        (uint32_t)std::max(100000, requested * 150);
+    uint32_t last_report = 0;
+    uint64_t unique_shallow = 0;
+    uint64_t prefilter_passes = 0;
+    uint64_t deep_searches = 0;
+    uint64_t deep_passes = 0;
+    // Every proposal slot is paired once with each target ply. All 81 legal
+    // first moves get one slot; moves in the center miniboard get three extra
+    // slots, and center-center gets eight more. This preserves broad coverage
+    // while compensating for their much lower balance-filter acceptance.
+    const int first_proposal_slots = 116;
+    auto proposed_first_move = [&](uint32_t candidate_id) {
+        int slot =
+            (int)((candidate_id / n_ply_buckets)
+                  % first_proposal_slots);
+        if (slot < 81) return slot;
+        if (slot < 108) return 36 + (slot - 81) / 3;
+        return 40;
+    };
+    while ((int)accepted.size() < requested
+           && next_candidate < max_candidates) {
+        int current_batch = (int)std::min<uint32_t>(
+            batch_size, max_candidates - next_candidate);
+        std::vector<GeneratedOpening> results(current_batch);
+        std::vector<std::future<void>> futures;
+        for (unsigned int worker = 0; worker < threads; worker++) {
+            futures.push_back(std::async(
+                std::launch::async,
+                [&, worker, current_batch]() {
+                    CrossfishPrev bot;
+                    NnueNet encoder;
+                    for (int i = (int)worker;
+                         i < current_batch;
+                         i += (int)threads) {
+                        uint32_t id = next_candidate + (uint32_t)i;
+                        int target =
+                            min_ply + (int)(id % n_ply_buckets);
+                        int first_move = proposed_first_move(id);
+                        results[i] = make_opening_candidate(
+                            id, seed, target, move_margin, shallow_limit,
+                            shallow_depth, first_move, bot, encoder);
+                    }
+                }));
+        }
+        for (auto &future : futures) future.get();
+
+        std::vector<size_t> score_indices;
+        score_indices.reserve(results.size());
+        for (size_t i = 0; i < results.size(); i++) {
+            const GeneratedOpening &result = results[i];
+            if (!result.accepted) continue;
+            if (!seen_states.insert(result.state).second) continue;
+            unique_shallow++;
+            score_indices.push_back(i);
+        }
+        std::atomic<size_t> next_score{0};
+        futures.clear();
+        for (unsigned int worker = 0; worker < threads; worker++) {
+            futures.push_back(std::async(
+                std::launch::async,
+                [&]() {
+                    while (true) {
+                        size_t slot = next_score.fetch_add(1);
+                        if (slot >= score_indices.size()) break;
+                        GeneratedOpening &result =
+                            results[score_indices[slot]];
+                        GlobalBoard board;
+                        if (!replay_opening(result.line, board)) continue;
+                        int score = 0;
+                        CrossfishPrev prefilter_bot;
+                        if (!prefilter_bot.search_fixed_depth(
+                                board, prefilter_depth, score)
+                            || std::abs(score) > prefilter_limit) {
+                            continue;
+                        }
+                        result.prefilter_passed = true;
+                        CrossfishPrev deep_bot;
+                        if (!deep_bot.search_fixed_depth(
+                                board, score_depth, score)
+                            || std::abs(score) > balance_limit) {
+                            continue;
+                        }
+                        result.line.baseline_score = (int16_t)score;
+                        result.deep_accepted = true;
+                    }
+                }));
+        }
+        for (auto &future : futures) future.get();
+
+        for (size_t i : score_indices) {
+            GeneratedOpening &result = results[i];
+            if (result.prefilter_passed) {
+                prefilter_passes++;
+                deep_searches++;
+            }
+            if (!result.deep_accepted) continue;
+            deep_passes++;
+            int ply = result.target_ply;
+            if ((int)accepted.size() >= requested) continue;
+            int missing_minimum = 0;
+            for (int p = min_ply; p <= max_ply; p++) {
+                missing_minimum += std::max(
+                    0, minimum_per_ply - accepted_by_ply[p]);
+            }
+            int slots_left = requested - (int)accepted.size();
+            if (accepted_by_ply[ply] >= minimum_per_ply
+                && slots_left <= missing_minimum) {
+                continue;
+            }
+            accepted.push_back(result.line);
+            accepted_by_ply[ply]++;
+        }
+        next_candidate += (uint32_t)current_batch;
+        if ((int)accepted.size() == requested
+            || next_candidate - last_report
+                   >= (uint32_t)(batch_size * 4)) {
+            last_report = next_candidate;
+            std::cout << "book generation: accepted=" << accepted.size()
+                      << '/' << requested
+                      << " candidates=" << next_candidate << " plies";
+            for (int ply = min_ply; ply <= max_ply; ply++) {
+                std::cout << ' ' << ply << '=' << accepted_by_ply[ply];
+            }
+            std::cout << " minimum_per_ply=" << minimum_per_ply
+                      << " unique_shallow=" << unique_shallow
+                      << " prefilter_passes=" << prefilter_passes
+                      << " deep_searches=" << deep_searches
+                      << " deep_passes=" << deep_passes
+                      << std::endl;
+        }
+    }
+    if ((int)accepted.size() != requested) {
+        std::cerr << "opening generation exhausted candidates at "
+                  << accepted.size() << '/' << requested << std::endl;
+        return 1;
+    }
+
+    OpeningBookMeta meta;
+    meta.format_version = 2;
+    meta.seed = seed;
+    meta.balance_limit = balance_limit;
+    meta.move_margin = move_margin;
+    meta.guide_depth = 0;  // full static HCE + D16 + macro evaluator
+    meta.shallow_depth = shallow_depth;
+    meta.prefilter_depth = prefilter_depth;
+    meta.prefilter_limit = prefilter_limit;
+    meta.score_depth = score_depth;
+    meta.min_ply = min_ply;
+    meta.max_ply = max_ply;
+    if (!save_opening_book(path, accepted, meta)) {
+        std::cerr << "failed to write opening book " << path << std::endl;
+        return 1;
+    }
+    report_opening_book(accepted, meta, path);
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 3 && std::strcmp(argv[1], "book") == 0) {
+        if (std::strcmp(argv[2], "generate") == 0) {
+            std::string path =
+                argc >= 4 ? argv[3] : "cpp_impl/opening_book.bin";
+            int count = argc >= 5 ? std::max(1, std::atoi(argv[4])) : 10000;
+            CpuTopology topology = detect_cpu_topology();
+            unsigned int threads =
+                topology.physical > 1 ? topology.physical - 1 : 1;
+            if (argc >= 6) {
+                threads =
+                    (unsigned int)std::max(1, std::atoi(argv[5]));
+            }
+            return generate_opening_book(path, count, threads);
+        }
+        if (std::strcmp(argv[2], "inspect") == 0) {
+            if (argc < 4) {
+                if (!load_default_opening_book()) return 1;
+                report_opening_book(
+                    g_sprt_openings, g_sprt_opening_meta,
+                    g_sprt_opening_source);
+                return 0;
+            }
+            std::string path = argv[3];
+            if (!load_opening_book(path)) return 1;
+            report_opening_book(
+                g_sprt_openings, g_sprt_opening_meta, path);
+            return 0;
+        }
+        if (std::strcmp(argv[2], "audit") == 0) {
+            std::string path =
+                argc >= 4 ? argv[3] : "cpp_impl/opening_book.bin";
+            int depth = argc >= 5 ? std::max(1, std::atoi(argv[4])) : 20;
+            int count = argc >= 6 ? std::max(0, std::atoi(argv[5])) : 0;
+            CpuTopology topology = detect_cpu_topology();
+            unsigned int threads =
+                topology.physical > 1 ? topology.physical - 1 : 1;
+            if (argc >= 7) {
+                threads =
+                    (unsigned int)std::max(1, std::atoi(argv[6]));
+            }
+            std::string score_output = argc >= 8 ? argv[7] : "";
+            return audit_opening_book(
+                path, depth, count, threads, score_output);
+        }
+        std::cerr << "usage: test_bots book generate|inspect|audit"
+                  << " [path] [count/depth] [threads/count] [threads]"
+                  << " [audit_scores.tsv]"
+                  << std::endl;
+        return 1;
+    }
     if (argc >= 2 && std::strcmp(argv[1], "dump") == 0) {
         if (argc >= 3 && std::strcmp(argv[2], "hce") == 0) {
             int n_pos = 2000000;
@@ -2555,6 +3554,7 @@ int main(int argc, char** argv) {
     }
     verify_fill_movegen();
     verify_referee_timeout();
+    verify_opening_order();
     verify_mini_lut();
     verify_utttai_state();
     verify_eval_linear();
@@ -2614,6 +3614,9 @@ int main(int argc, char** argv) {
     if (const char *s = std::getenv("SPRT_BOOK")) {
         g_sprt_book = std::atoi(s) != 0;
     }
+    if (const char *s = std::getenv("SPRT_CENTER_ENUM")) {
+        g_sprt_center_enum = std::atoi(s) != 0;
+    }
     if (const char *s = std::getenv("SPRT_THREADS")) {
         g_sprt_threads = (unsigned int)std::max(1, std::atoi(s));
     }
@@ -2628,6 +3631,29 @@ int main(int argc, char** argv) {
     }
     if (const char *s = std::getenv("SPRT_GAME_OFFSET")) {
         g_sprt_game_offset = std::max(0, std::atoi(s));
+    }
+    const char *opening_book_env =
+        std::getenv("SPRT_OPENING_BOOK");
+    bool opening_book_disabled =
+        opening_book_env
+        && (std::strcmp(opening_book_env, "0") == 0
+            || std::strcmp(opening_book_env, "none") == 0);
+    if (!g_sprt_center_enum && !opening_book_disabled) {
+        if (opening_book_env && opening_book_env[0]) {
+            if (!load_opening_book(opening_book_env)) {
+                std::cerr << "failed to load SPRT_OPENING_BOOK="
+                          << opening_book_env << std::endl;
+                return 1;
+            }
+        } else if (g_sprt_book) {
+            if (!load_default_opening_book()) {
+                std::cerr
+                    << "Set SPRT_OPENING_BOOK to an explicit path, or set"
+                    << " SPRT_OPENING_BOOK=none to use the legacy seeded"
+                    << " 4-8 ply opener." << std::endl;
+                return 1;
+            }
+        }
     }
     if (!(g_sprt_elo1 > g_sprt_elo0)) {
         std::cerr << "SPRT_ELO1 must be greater than SPRT_ELO0" << std::endl;
@@ -2661,11 +3687,23 @@ int main(int argc, char** argv) {
                       : std::to_string(REFEREE_MOVE_TIMEOUT_MS) + "ms")
               << " eval=HCE+MiniNet"
               << " nnue_mode=" << g_nnue_mode
-              << " residual=" << g_nnue_residual;
+              << " residual=" << g_nnue_residual
+              << " opening="
+              << (!g_sprt_openings.empty()
+                      ? "book"
+                      : (g_sprt_center_enum
+                             ? "center-enum-4ply"
+                             : (g_sprt_book ? "seeded-4to8"
+                                            : "random-4to8")));
     if (g_nnue_bin_path[0]) {
         std::cout << " nnue_bin=" << g_nnue_bin_path;
     }
     std::cout << std::endl;
+    if (!g_sprt_openings.empty()) {
+        report_opening_book(
+            g_sprt_openings, g_sprt_opening_meta,
+            g_sprt_opening_source);
+    }
     if (argc >= 2 && std::strcmp(argv[1], "lut") == 0) {
         if (!load_mini_scores(MINI_SCORE_PATH)) {
             std::cerr << "failed to load " << MINI_SCORE_PATH << std::endl;

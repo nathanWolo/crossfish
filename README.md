@@ -13,6 +13,7 @@ Detailed project documentation:
 
 - [Engine improvement log](documentation/improvement_log.md)
 - [NNUE training and runtime implementation](documentation/nnue_training_and_implementation.md)
+- [SPRT opening-book generation and maintenance](documentation/opening_book.md)
 
 Hill-climbing Elo is a specific loop: freeze Prev, edit only Dev, prove correctness, then SPRT. Read **Improving the engine** before changing search or eval.
 
@@ -31,7 +32,9 @@ Run this after every engine/rules/eval change. It is fast and deterministic:
 make test
 ```
 
-That builds and runs the C++ unit tests, the Python rules oracle, and compiles the CodinGame binaries (`codingame_nnue.cpp`, `crossfish.cpp`, and the Legend snapshot) so they still build.
+That builds and runs the C++ unit tests, the Python rules oracle, validates the
+shipped opening book, and compiles the CodinGame binaries
+(`codingame_nnue.cpp`, `crossfish.cpp`, and the Legend snapshot).
 
 | Target | What it checks |
 | --- | --- |
@@ -40,6 +43,8 @@ That builds and runs the C++ unit tests, the Python rules oracle, and compiles t
 | `make test-python` | Independent Python board perft / make-undo / winners (`python_impl/test_rules.py`), plus `tools/test_*.py` |
 | `make verify` | The older smoke checks inside `test_bots.cpp`, then exit (no SPRT) |
 | `make sprt` | Strength: Dev vs Prev self-play with SPRT at **90 ms** (slow, noisy) |
+| `make book-inspect` | Validate and summarize the shipped 10k-position SPRT opening book |
+| `make opening-book` | Regenerate the depth-16-qualified opening book (slow; normally do not run) |
 | `make roundrobin` | 10k-game pairs of current C++ vs Legend vs Python at 20ms/move |
 | `make cg` | Compile the CodinGame submission |
 | `make cg-input` | Rebuild `cpp_impl/cg_input.cpp` from `codingame_nnue.cpp` with the minifier |
@@ -58,8 +63,12 @@ tests whether Dev clears +50 Elo instead of the default 0-vs-5 screen:
 SPRT_ELO0=50 SPRT_ELO1=55 make sprt
 ```
 
-Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`, and
-`SPRT_THREADS`.
+The shipped opening records are traversed through a deterministic permutation,
+not their generation order. `SPRT_GAME_OFFSET=N` starts at permutation index
+`N`; resume counters infer that offset automatically when it is omitted.
+
+Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`,
+`SPRT_THREADS`, and `SPRT_OPENING_BOOK`.
 
 ## Improving the engine
 
@@ -120,6 +129,7 @@ Harness: `cpp_impl/test_bots.cpp`, built as `cpp_impl/bin/test_bots`. Rebuild af
 ```bash
 make -C cpp_impl test          # correctness first
 make -C cpp_impl sprt          # official: 90ms, H0=0, H1=+5, one core reserved
+make -C cpp_impl book-inspect  # validate the frozen opening artifact
 # or, from cpp_impl/bin:
 ./test_bots                    # 90ms (official bar)
 ./test_bots 95                 # optional historical comparison
@@ -142,6 +152,9 @@ Environment overrides:
 | `SPRT_LLR_BOUND` | Stop when `|LLR|` reaches this (default 3). |
 | `SPRT_MAX_GAMES` | Optional cap. 0 = run until LLR decides. |
 | `SPRT_THREADS` | Worker count. On Linux the default uses physical-core topology and reserves one core; it falls back to logical CPUs when topology is unavailable. |
+| `SPRT_GAME_OFFSET` | Starting index in the deterministic opening permutation. One index produces two color-swapped games. |
+| `SPRT_OPENING_BOOK` | Override the shipped book path. `none` or `0` disables the file book and uses the legacy opener selected by `SPRT_BOOK`. |
+| `SPRT_BOOK` | Legacy fallback only: 1 selects deterministic seeded 4-8-ply openings and 0 selects unseeded random openings. The shipped file book is the default. |
 
 Example: prove a huge speed win is more than +50 Elo at 90 ms:
 
@@ -152,6 +165,14 @@ SPRT_ELO0=50 SPRT_ELO1=55 make -C cpp_impl sprt
 Use a raised H0 only when the first thousands of games already show a blowout. Do not use it to dress up a +8 Elo run.
 
 Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS** and **Dev NPS** from a 1-second startpos search. Timed lines report each engine's maximum observed response latency. Treat NPS as a speed signal, not a strength score.
+
+Normal SPRTs load `cpp_impl/opening_book.bin`. Its 10,000 positions were
+selected by the frozen merged baseline, independently searched to depth 16,
+and limited to an absolute baseline score of 300. Each position is played
+twice with colors swapped, so the complete book covers 20,000 games before an
+opening repeats. Missing the expected book is an error rather than a silent
+fallback. See the [opening-book guide](documentation/opening_book.md) before
+regenerating or replacing it.
 
 Timed result lines also print external referee forfeits as
 `timeouts Prev=N Dev=N`. These losses count in W/D/L exactly as they would on
@@ -293,8 +314,8 @@ compact learned macro-context residual. The macro head is precomputed into a
 5 MiB static score table keyed by constraint and base-4 super-board state;
 search maintains both perspective keys only when a miniboard becomes decided.
 The table exactly matches the original macro MLP and recovered about 6% NPS
-within the new eval. Paste `cpp_impl/cg_input.cpp` (92,759 characters, leaving
-7,241 below the CodinGame limit).
+within the new eval. Paste `cpp_impl/cg_input.cpp` (93,272 characters, leaving
+6,728 below the CodinGame limit).
 
 The prior round-five direct bundle passed the official 95 ms gate at N=1056,
 433-352-271, **+53.72 +/- 17.23 Elo**, LLR +3.00 (H0=0, H1=+5).
@@ -339,7 +360,9 @@ Startpos perft is frozen in both C++ and Python. If one suite's counts change, u
 - `cpp_impl/cg_input.cpp` — bundled/minified paste file for the CodinGame IDE
 - `cpp_impl/crossfish.cpp` — self-contained HCE CG bot (packing source for MiniNet)
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
+- `cpp_impl/opening_book.bin` — frozen 10k-position depth-16-qualified SPRT book
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting
 - `documentation/improvement_log.md` — chronological accepted and rejected engine experiments
 - `documentation/nnue_training_and_implementation.md` — data, training, packing, and runtime details for the learned evaluator
+- `documentation/opening_book.md` — book selection, binary format, validation, and versioning policy

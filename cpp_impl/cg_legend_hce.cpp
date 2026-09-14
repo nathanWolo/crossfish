@@ -951,10 +951,13 @@ static int run_match() {
         if (cmd == "NEW") {
             engine = CrossfishDev();
             board = GlobalBoard();
+            std::cout << "READY" << std::endl;
         } else if (cmd == "APPLY") {
             int mb, sq;
             std::cin >> mb >> sq;
             board.makeMove({(int8_t)mb, (int8_t)sq});
+        } else if (cmd == "SYNC") {
+            std::cout << "READY" << std::endl;
         } else if (cmd == "GO") {
             int ms;
             std::cin >> ms;

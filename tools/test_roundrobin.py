@@ -7,6 +7,7 @@ from roundrobin import (
     MatchBot,
     default_worker_count,
     physical_core_count,
+    physical_core_cpu_ids,
     play_one,
 )
 
@@ -19,7 +20,9 @@ for raw in sys.stdin:
     parts = raw.split()
     if not parts:
         continue
-    if parts[0] == "GO":
+    if parts[0] == "NEW" or parts[0] == "SYNC":
+        print("READY", flush=True)
+    elif parts[0] == "GO":
         time.sleep(int(parts[1]) / 1000.0)
         print("0 0", flush=True)
 """
@@ -59,6 +62,9 @@ class TimeoutBot:
     def apply(self, mb, sq):
         pass
 
+    def sync(self):
+        pass
+
     def go(self, ms):
         raise TimeoutError("synthetic timeout")
 
@@ -86,6 +92,9 @@ class TestPhysicalCoreCount(unittest.TestCase):
                 (topology / "core_id").write_text(f"{core}\n")
             self.assertEqual(
                 physical_core_count({0, 1, 2, 3}, root), 2
+            )
+            self.assertEqual(
+                physical_core_cpu_ids({0, 1, 2, 3}, root), [0, 1]
             )
 
     def test_missing_topology_falls_back_to_logical_count(self):

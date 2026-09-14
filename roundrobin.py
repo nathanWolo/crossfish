@@ -29,30 +29,37 @@ BIN = ROOT / "cpp_impl" / "bin"
 MOVE_TIMEOUT_MS = 100
 
 
-def physical_core_count(
+def physical_core_cpu_ids(
     cpu_ids: set[int] | None = None,
     topology_root: Path = Path("/sys/devices/system/cpu"),
-) -> int:
+) -> list[int]:
     if cpu_ids is None:
         try:
             cpu_ids = set(os.sched_getaffinity(0))
         except AttributeError:
             cpu_ids = set(range(max(1, os.cpu_count() or 1)))
     if not cpu_ids:
-        return 1
+        return [0]
 
-    physical_cores: set[tuple[int, int]] = set()
+    physical_cores: dict[tuple[int, int], int] = {}
     try:
-        for cpu in cpu_ids:
+        for cpu in sorted(cpu_ids):
             topology = topology_root / f"cpu{cpu}" / "topology"
             package_id = int(
                 (topology / "physical_package_id").read_text()
             )
             core_id = int((topology / "core_id").read_text())
-            physical_cores.add((package_id, core_id))
+            physical_cores.setdefault((package_id, core_id), cpu)
     except (OSError, ValueError):
-        return len(cpu_ids)
-    return max(1, len(physical_cores))
+        return sorted(cpu_ids)
+    return list(physical_cores.values()) or [min(cpu_ids)]
+
+
+def physical_core_count(
+    cpu_ids: set[int] | None = None,
+    topology_root: Path = Path("/sys/devices/system/cpu"),
+) -> int:
+    return len(physical_core_cpu_ids(cpu_ids, topology_root))
 
 
 def default_worker_count() -> int:
@@ -150,11 +157,33 @@ class MatchBot:
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
 
+    def _expect_ready(self, timeout_ms: int = 5000):
+        assert self.proc is not None
+        assert self.proc.stdout is not None
+        ready, _, _ = select.select(
+            [self.proc.stdout], [], [], timeout_ms / 1000.0
+        )
+        if not ready:
+            self.close()
+            raise TimeoutError(
+                f"{self.name} did not finish match setup in {timeout_ms}ms"
+            )
+        line = self.proc.stdout.readline().strip()
+        if line != "READY":
+            raise RuntimeError(
+                f"{self.name} returned {line!r}, expected setup READY"
+            )
+
     def new(self):
         self._send("NEW")
+        self._expect_ready()
 
     def apply(self, mb: int, sq: int):
         self._send(f"APPLY {mb} {sq}")
+
+    def sync(self):
+        self._send("SYNC")
+        self._expect_ready()
 
     def go(
         self, ms: int, timeout_ms: int = MOVE_TIMEOUT_MS
@@ -219,6 +248,10 @@ def play_one(b1: MatchBot, b2: MatchBot, opening: list[tuple[int, int]], think_m
         ops.make_move(board, rowcol)
         b1.apply(mb, sq)
         b2.apply(mb, sq)
+    # NEW and the opening replay are test setup, not a later-turn move. Wait
+    # until both children have consumed them before starting the 100ms clock.
+    b1.sync()
+    b2.sync()
 
     while not ops.check_game_finished(board):
         stm_is_b1 = ((board.n_moves % 2 == 0) == first_is_b1)
@@ -244,7 +277,24 @@ def play_one(b1: MatchBot, b2: MatchBot, opening: list[tuple[int, int]], think_m
     return -1 if p0_is_b1 else 1
 
 
-def worker(task_q: Queue, result_q: Queue, cmd1: list[str], cmd2: list[str], name1: str, name2: str, think_ms: int):
+def worker(
+    task_q: Queue,
+    result_q: Queue,
+    cmd1: list[str],
+    cmd2: list[str],
+    name1: str,
+    name2: str,
+    think_ms: int,
+    cpu_id: int | None,
+):
+    # The bot subprocesses inherit this affinity. One active bot and its
+    # mostly-blocked referee then share one physical core without competing
+    # with another match, making the 100ms wall-clock deadline reproducible.
+    if cpu_id is not None and hasattr(os, "sched_setaffinity"):
+        try:
+            os.sched_setaffinity(0, {cpu_id})
+        except OSError:
+            pass
     b1 = MatchBot(cmd1, name1)
     b2 = MatchBot(cmd2, name2)
     try:
@@ -311,9 +361,22 @@ def run_pair(name1: str, cmd1: list[str], name2: str, cmd2: list[str], games: in
     openings = games // 2
     task_q: Queue = Queue()
     result_q: Queue = Queue()
+    core_ids = physical_core_cpu_ids()
     procs = [
-        Process(target=worker, args=(task_q, result_q, cmd1, cmd2, name1, name2, think_ms))
-        for _ in range(workers)
+        Process(
+            target=worker,
+            args=(
+                task_q,
+                result_q,
+                cmd1,
+                cmd2,
+                name1,
+                name2,
+                think_ms,
+                core_ids[i] if i < len(core_ids) else None,
+            ),
+        )
+        for i in range(workers)
     ]
     for p in procs:
         p.start()
