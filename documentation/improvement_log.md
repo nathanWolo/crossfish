@@ -1656,3 +1656,143 @@ engines. It also failed both fixed-size screens:
 
 The unconditional same-key replacement policy therefore remains the
 accepted default.
+
+---
+
+## 44. A tree-identical hot-path rewrite worth +22% NPS (22 September 2026)
+
+Round nine had produced six candidates and no passes. Every one of them tried
+to change the search tree, and the two that looked most promising on short
+screens reversed on long runs. This round changed nothing about the tree and
+only made it cheaper to compute.
+
+The candidate is a bundle of speed-only changes, which the gate table treats
+as one axis. Each was required to produce a **bit-identical** tree: identical
+scores and identical node counts, not "close".
+
+- Move ordering carried two parallel arrays (`int scores[81]` and
+  `FastMove legal_moves[81]`) through a stable insertion sort whose
+  compare-and-shift inner branch mispredicts on nearly every element. Packing
+  each move into one 32-bit key, `((1<<20 - score) << 8) | packed_move`, makes
+  ascending key order exactly descending score with ties going to the smaller
+  packed move, which is the smaller original index — the same permutation.
+  Keys inside a list are then unique, so a key's rank *is* its sorted index
+  and the sort becomes a branchless AVX2 rank computation plus a scatter. 93%
+  of lists fit in one 8-lane vector.
+- `check_winner_fast` ran a full win/draw scan at the top of every search and
+  qsearch node. A terminal state can only be created or destroyed by a move
+  that decides a miniboard, so the answer is now a cached `FastBoard` field
+  refreshed only inside the existing decided/was_decided branches.
+- The move, destination-constraint and side-to-move Zobrist terms are
+  pre-XORed into one 1,296-byte table, so make and unmake each do one XOR
+  rather than three.
+- Squares 0..7 of a miniboard now leave movegen in one table load, one
+  popcount and one 8-byte store. The move buffer carries `FAST_MOVE_SLACK`
+  bytes of tail room for the wide store.
+- The MiniNet first layer looked up `D16_MN_MASK_CODE[(mine << 9) | opp]` for
+  all nine miniboards on every eval, nine probes into a 256 KiB byte table. A
+  miniboard's centroid code only changes when that miniboard changes, so it is
+  cached per (perspective, miniboard) and the eval reads nine contiguous
+  bytes. This is deliberately **not** the rejected idea of maintaining the
+  full 32-byte hidden accumulator incrementally (-5.87 Elo at N=1,184): only
+  the byte lookup moved, not the vector adds.
+- Smaller items: the global-HCE term cached rather than recomputed, a single
+  latent-capture mask instead of both sides', an inline integer `lround` for
+  the MiniNet head, the macro key set directly from the state index
+  `make_move_fast` already knows, and signed `% 2` replaced by `& 1` where
+  `n_moves` is provably non-negative.
+
+Official 90 ms SPRT against the round-eight freeze, pentanomial pairs, seven
+physical workers, the 50,000-position book:
+
+```text
+N 2366  W 723 / D 1048 / L 595
+Penta 69 / 257 / 434 / 323 / 100
++18.81 +/- 10.18 Elo
+LLR +3.010 (H0=0, H1=+5) — PASS
+Timeout losses: Prev 0 / Dev 0
+Maximum response: Prev 98.37 ms / Dev 98.40 ms
+Prev NPS 11,881,856  Dev NPS 14,548,864 (+22.4%)
+```
+
+### What measurement made possible, and what it killed
+
+`test_bots depth N` is not an equivalence test: each worker reuses one engine
+pair across the two games of an opening pair, so it carries transposition,
+history and correction-history state into the second game. A Dev that was
+*provably* tree-identical to Prev measured **-8.44 +/- 23.84 Elo** there at
+N=700. `cpp_impl/bench_ab.cpp` was added for this round and builds a fresh
+engine per position, which makes score and node count deterministic functions
+of the engine alone. Its `walk` mode replays one scripted move sequence
+through a single engine instance at a real millisecond budget, the way a game
+does, and reports mean completed root depth. Calibration from `walk`: **+3.3%
+nodes is +0.167 ply**, and the bundle as shipped is +22.9% nodes / +0.5 ply.
+
+Two candidates were killed by measurement before they cost any SPRT time.
+
+**Transposition-table capacity.** The table is genuinely saturated in play:
+about 39% occupancy after the first 90 ms move, 94% by move 3, 100% by move 9,
+at 690k-1.0M nodes per move. That is not the same as being the bottleneck.
+Doubling the entry count moves the TT hit rate only from 9.42% to 9.47%, and a
+**16x** table (27% occupancy, so no eviction pressure at all) searches 3.9%
+*more* nodes, because the pseudo-singular extension fires on any `tt_hit` with
+`entry.depth >= depth - 3`, so a higher hit rate buys more extensions than it
+saves in re-search. Node count at fixed depth is therefore not even a valid
+quality proxy for a capacity change. Measured at equal time, doubling the table
+to 8 MiB is **-0.258 ply** and about -10% NPS. An 8-byte-entry / 4-way design
+that would have bought the same capacity for free (and whose natural alignment
+fixes the stated failure cause of section 43's 3-way 10-byte bucket) was
+dropped for the same reason: the capacity is not worth having.
+
+**Lazy move selection.** A stable selection sort that rotates the best
+remaining move to the front of the unsearched suffix provably yields the same
+permutation as the stable insertion sort at every prefix (brute-forced over
+800,000 random arrays), and would let a beta cutoff at move 2 skip ordering
+moves 3..n. It measured **10-12% slower**. Instrumentation showed why: the
+move loop visits 60% of slots on average (4.49 of 7.47 moves, and still 50% at
+40-55-move free-choice nodes), because futility-pruned moves `continue` rather
+than break and the history-malus loop at a cutoff needs the whole ordered
+prefix. Selection only wins below roughly 30% visitation. The branchless sort
+that shipped came out of the instrumentation that disproved the premise.
+
+### Porting to CodinGame
+
+`codingame_nnue.cpp` keeps its own standalone copy of the board and the
+search, and nothing in `make test` checked that a port preserved behaviour;
+the only documented check was playing minified against readable, which cannot
+tell a correct port from a subtly wrong one. `cpp_impl/cg_selfcheck.cpp` now
+closes that: it renames the CG file's `main()` away, includes it whole, and
+drives the CG engine's own `search_fixed_depth` over a deterministic position
+set, printing a checksum over every search's score and node count. For a
+tree-identical change the pre-port and post-port checksums must match exactly.
+
+The port reproduced them at fifteen (positions, depth) configurations spanning
+depths 5 through 16 and roughly 100M nodes, including a run against the
+**minified bundle** itself (the minifier's rename map was recovered from
+`tools/cg_minify.py` to drive `cg_input.cpp`'s renamed engine). Instrumented
+builds additionally asserted, at every node, that each cached value equalled a
+from-scratch recompute — terminal state, `out_of_play`, `active_board`,
+centroid code, macro key, cached MiniNet output, `lround_bits`, and the cached
+global HCE term — with zero failures over ~12M nodes per configuration.
+
+Live 90 ms searches on the shipped binary: turn-one nodes rose from a mean of
+1,104,597 to 1,363,328 (+23.4%) and turn-two from 1,076,096 to 1,321,856
+(+22.8%), matching the +22.4% the SPRT header reported.
+
+Submission size went from 93,272 to **96,887** characters of the 100,000 cap,
+leaving 3,113. Static storage grew by 4,368 bytes (a 1,296-byte combo-hash
+table, a 2 KiB empty-square table, a 1 KiB open-win table); the 4 MiB
+transposition table and 5 MiB macro table are unchanged, and `FastBoard`
+itself got smaller. The sort scratch is a member rather than a local so the
+recursive search frame does not grow. First-turn initialisation uses about
+155 ms of the 1,000 ms allowance, down from 181 ms.
+
+Two things to know before the next change. Headroom is now thin: 3,113
+characters. Dead public API the CG bot never calls (`fill_captures_lut`,
+`is_capture_avx(Board&)`, `is_block_avx`, `creates_two_in_a_row`,
+`get_move_scores`, `eval_extra`, `eval_diffs`, `eval_parts`) and the generic
+no-op template overloads kept for reference parity are non-behavioural
+reclaim candidates if a future change needs room. Separately, the shipped
+`CODINGAME_MOVE_MS = 90` replies at 90.1-90.6 ms against a 100 ms referee, so
+there is only about 10 ms of scheduling slack; that is an argument against
+raising it, not for.

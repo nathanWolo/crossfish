@@ -120,3 +120,6 @@ dmypy.json
 a.out
 gmon.out
 cpp_impl/unit_tests
+
+# Agent worktrees
+.claude/worktrees/

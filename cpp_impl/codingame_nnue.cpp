@@ -58,6 +58,13 @@
 // Round-8 exact macro-state correction history with a lazy trained prior.
 // Independent 90ms book SPRT: N 4672 W 1564 D 1941 L 1167,
 // +29.59 +/- 7.63 Elo, LLR +3.022 for H0=+20 / H1=+25; zero timeouts.
+// Round-9 tree-identical hot-path rewrite: branchless AVX2 rank sort over one
+// packed move key, O(1) cached terminal answer, pre-XORed move/destination/
+// side-to-move hash, wide move emit, direct macro-key set/clear, cached
+// MiniNet centroid codes, cached global HCE term, inline integer lround.
+// The search tree is bit-identical to round eight; only its cost changed.
+// Official 90ms SPRT vs the round-eight freeze: N 2366, 723-1048-595,
+// +18.81 +/- 10.18 Elo, LLR +3.010 (H0=0, H1=+5) PASS, zero timeouts.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     std::array<int, 2> markers = {0, 0};
@@ -438,12 +445,32 @@ class CrossfishDev {
         using FastMove = uint8_t;
         static constexpr FastMove NO_FAST_MOVE = 255;
 
+        // Two bytes per history entry instead of two ints: the search board's
+        // history is 256 bytes rather than 1 KiB, so FastBoard stays cache hot.
+        struct FastHistoryMove {
+            uint8_t mini_board = 0;
+            uint8_t square = 0;
+
+            FastHistoryMove &operator=(const Move &move) {
+                mini_board = (uint8_t)move.mini_board;
+                square = (uint8_t)move.square;
+                return *this;
+            }
+
+            operator Move() const {
+                return Move{mini_board, square};
+            }
+        };
+        // The 256-byte history depends on this: padding here would silently
+        // double FastBoard's history and cost NPS with nothing failing.
+        static_assert(sizeof(FastHistoryMove) == 2);
+
         struct FastMoveStack {
-            std::array<Move, 128> moves{};
+            std::array<FastHistoryMove, 128> moves{};
             int count = 0;
 
-            Move &top() { return moves[count - 1]; }
-            const Move &top() const { return moves[count - 1]; }
+            FastHistoryMove &top() { return moves[count - 1]; }
+            const FastHistoryMove &top() const { return moves[count - 1]; }
             void push(const Move &move) { moves[count++] = move; }
             void pop() { count--; }
             bool empty() const { return count == 0; }
@@ -452,6 +479,11 @@ class CrossfishDev {
         struct FastBoard {
             using MarkerHashTable =
                 std::array<std::array<std::array<uint64_t, 512>, 9>, 2>;
+            // move_hashes[p][mb][sq] ^ legal_mini_board_hashes[sq]
+            // ^ player_to_move_hash: the three terms every make/unmake always
+            // folds in together, pre-XORed into one 1296-byte table.
+            using ComboHashTable =
+                std::array<std::array<std::array<uint64_t, 9>, 9>, 2>;
 
             std::array<MiniBoard, 9> mini_boards;
             std::array<int, 3> mini_board_states;
@@ -463,9 +495,19 @@ class CrossfishDev {
             const decltype(GlobalBoard::legal_mini_board_hashes) &legal_mini_board_hashes;
             const uint64_t &player_to_move_hash;
             const MarkerHashTable &marker_hashes;
+            const ComboHashTable &combo_hashes;
             int n_moves;
             bool prev_move_was_pass;
             uint32_t macro_key[2]{};
+            // MiniNet centroid code per (perspective, miniboard); only the
+            // played miniboard's two bytes change on a move.
+            uint8_t mini_code[2][9]{};
+            uint8_t active_board = 9;
+            // check_winner_fast's answer for the current position. Only a move
+            // that decides a miniboard can change it, so make/unmake refresh it
+            // and every node reads one byte instead of redoing the test.
+            int8_t terminal = -1;
+            std::array<uint8_t, 128> active_board_undo{};
 
             static const MarkerHashTable &get_marker_hashes(const GlobalBoard &board) {
                 static const MarkerHashTable hashes = [&board] {
@@ -477,6 +519,25 @@ class CrossfishDev {
                                 int sq = __builtin_ctz(mask);
                                 table[p][mb][mask] =
                                     table[p][mb][prev] ^ board.move_hashes[p][mb][sq];
+                            }
+                        }
+                    }
+                    return table;
+                }();
+                return hashes;
+            }
+
+            static const ComboHashTable &get_combo_hashes(
+                const GlobalBoard &board) {
+                static const ComboHashTable hashes = [&board] {
+                    ComboHashTable table{};
+                    for (int p = 0; p < 2; p++) {
+                        for (int mb = 0; mb < 9; mb++) {
+                            for (int sq = 0; sq < 9; sq++) {
+                                table[p][mb][sq] =
+                                    board.move_hashes[p][mb][sq]
+                                    ^ board.legal_mini_board_hashes[sq]
+                                    ^ board.player_to_move_hash;
                             }
                         }
                     }
@@ -497,6 +558,7 @@ class CrossfishDev {
                   legal_mini_board_hashes(board.legal_mini_board_hashes),
                   player_to_move_hash(board.player_to_move_hash),
                   marker_hashes(get_marker_hashes(board)),
+                  combo_hashes(get_combo_hashes(board)),
                   n_moves(board.n_moves),
                   prev_move_was_pass(board.prev_move_was_pass) {
                 auto history = board.move_history;
@@ -504,6 +566,20 @@ class CrossfishDev {
                 for (int i = move_history.count - 1; i >= 0; i--) {
                     move_history.moves[i] = history.top();
                     history.pop();
+                }
+                if (n_moves > 0 && !prev_move_was_pass) {
+                    int sent = move_history.top().square;
+                    if ((out_of_play & (1 << sent)) == 0) {
+                        active_board = (uint8_t)sent;
+                    }
+                }
+                // Seed the per-miniboard MiniNet codes; make/unmake keep them
+                // current from here on.
+                for (int mb = 0; mb < 9; mb++) {
+                    const int t0 = fast_mini_index[mini_boards[mb].markers[0]];
+                    const int t1 = fast_mini_index[mini_boards[mb].markers[1]];
+                    mini_code[0][mb] = D16_MN_CODE[t0 + 2 * t1];
+                    mini_code[1][mb] = D16_MN_CODE[t1 + 2 * t0];
                 }
                 // Stones inside a decided miniboard can never affect play again.
                 // Remove them from the search key so transpositions that reached
@@ -532,6 +608,35 @@ class CrossfishDev {
                  | board.mini_board_states[2];
         }
 
+        static int active_board_index(const FastBoard &board) {
+            return board.active_board;
+        }
+
+        template <typename Board>
+        static int active_board_index(const Board &board) {
+            return d16_mini_board_constraint(board);
+        }
+
+        static void update_active_board(FastBoard &board, int sent) {
+            board.active_board_undo[board.n_moves] = board.active_board;
+            board.active_board =
+                (!board.prev_move_was_pass
+                 && (board.out_of_play & (1 << sent)) == 0)
+                ? (uint8_t)sent
+                : (uint8_t)9;
+        }
+
+        template <typename Board>
+        static void update_active_board(Board &, int) {}
+
+        static void restore_active_board(FastBoard &board) {
+            board.active_board =
+                board.active_board_undo[board.n_moves];
+        }
+
+        template <typename Board>
+        static void restore_active_board(Board &) {}
+
         template <typename Board>
         static int cached_mini_key(
             const Board &board, int mb, int perspective = 0) {
@@ -539,6 +644,24 @@ class CrossfishDev {
                 board.mini_boards[mb].markers[perspective],
                 board.mini_boards[mb].markers[perspective ^ 1]);
         }
+
+        // The MiniNet centroid code of a miniboard changes only when that
+        // miniboard changes, so it is maintained here (two bytes per move)
+        // instead of being looked up nine times per evaluated leaf. Search
+        // markers are disjoint, and for disjoint masks the packed table obeys
+        // D16_MN_MASK_CODE[(mine << 9) | opp] == D16_MN_CODE[ternary], where
+        // the ternary index is the sum fast_mini_index already tabulates. So
+        // this reads the same byte the eval used to read, out of a 19 KiB table
+        // through a 1 KiB one rather than out of the 256 KiB packed table.
+        static void update_mini_code(FastBoard &board, int mb) {
+            const int t0 = fast_mini_index[board.mini_boards[mb].markers[0]];
+            const int t1 = fast_mini_index[board.mini_boards[mb].markers[1]];
+            board.mini_code[0][mb] = D16_MN_CODE[t0 + 2 * t1];
+            board.mini_code[1][mb] = D16_MN_CODE[t1 + 2 * t0];
+        }
+
+        template <typename Board>
+        static void update_mini_code(Board &, int) {}
 
         static void add_out_of_play(FastBoard &board, int bit) {
             board.out_of_play |= bit;
@@ -560,6 +683,17 @@ class CrossfishDev {
 
         static void xor_position_hash(GlobalBoard &board, uint64_t value) {
             board.zobrist_hash ^= value;
+        }
+
+        static void xor_move_combo(FastBoard &board, int stm, int mb, int sq) {
+            board.tt_hash ^= board.combo_hashes[stm][mb][sq];
+        }
+
+        static void xor_move_combo(GlobalBoard &board, int stm, int mb,
+                                   int sq) {
+            board.zobrist_hash ^= board.move_hashes[stm][mb][sq]
+                                ^ board.legal_mini_board_hashes[sq]
+                                ^ board.player_to_move_hash;
         }
 
         static void xor_marker_hashes(FastBoard &board, int mb) {
@@ -593,6 +727,30 @@ class CrossfishDev {
         template <typename Board>
         static void sync_macro_key_mb(Board &, int) {}
 
+        // Same result as sync_macro_key_mb when mini_board_states[state] has
+        // just gained mb, without re-reading the three state masks.
+        static void set_macro_key_mb(FastBoard &board, int mb, int state) {
+            static constexpr uint32_t CLS[2][3] = {{1, 2, 3}, {2, 1, 3}};
+            uint32_t shift = (uint32_t)(2 * mb);
+            uint32_t clear = ~(3u << shift);
+            board.macro_key[0] =
+                (board.macro_key[0] & clear) | (CLS[0][state] << shift);
+            board.macro_key[1] =
+                (board.macro_key[1] & clear) | (CLS[1][state] << shift);
+        }
+
+        template <typename Board>
+        static void set_macro_key_mb(Board &, int, int) {}
+
+        static void clear_macro_key_mb(FastBoard &board, int mb) {
+            uint32_t clear = ~(3u << (uint32_t)(2 * mb));
+            board.macro_key[0] &= clear;
+            board.macro_key[1] &= clear;
+        }
+
+        template <typename Board>
+        static void clear_macro_key_mb(Board &, int) {}
+
         static void init_macro_key(FastBoard &board) {
             board.macro_key[0] = board.macro_key[1] = 0;
             for (int mb = 0; mb < 9; mb++) {
@@ -602,9 +760,69 @@ class CrossfishDev {
 
         static int evaluate_macro_cached(const FastBoard &board) {
             int stm = board.n_moves & 1;
-            int constraint = d16_mini_board_constraint(board);
+            int constraint = active_board_index(board);
             return evaluate_macro_key(
                 constraint, board.macro_key[stm]);
+        }
+
+        // std::lround(float) compiles to an out-of-line lroundf@plt call, one
+        // per evaluated leaf. glibc's lroundf is pure integer bit manipulation
+        // on the float's encoding; running the same steps inline returns the
+        // identical int with no call. Verified equal to (int)std::lround for
+        // all 2,650,800,126 finite floats with |x| < 2^31.
+        static int lround_bits(float x) {
+            uint32_t bits;
+            memcpy(&bits, &x, sizeof(bits));
+            const int exponent = (int)((bits >> 23) & 0xff) - 127;
+            const int sign = ((int32_t)bits >> 31) | 1;
+            if (exponent >= 31) return (int)(long)x;
+            if (exponent < 0) return (exponent == -1) ? sign : 0;
+            uint32_t mantissa = (bits & 0x7fffffu) | 0x800000u;
+            if (exponent > 22) {
+                return sign * (int)(mantissa << (exponent - 23));
+            }
+            mantissa += 0x400000u >> exponent;
+            return sign * (int)(mantissa >> (23 - exponent));
+        }
+
+        // Same network and the same arithmetic as d16_evaluate_mini_fast, but
+        // the per-miniboard centroid codes and the super-board classes come out
+        // of FastBoard's incremental caches instead of nine probes into the
+        // 256 KiB packed table plus three state tests per miniboard.
+        static int evaluate_mini_cached(const FastBoard &board) {
+            const int stm = board.n_moves & 1;
+            const int c = active_board_index(board);
+            __m256i hidden = _mm256_load_si256(
+                (const __m256i *)D16_MN_FACTOR_INIT[c]);
+            uint32_t macro = board.macro_key[stm];
+            for (int mb = 0; mb < 9; mb++, macro >>= 2) {
+                const int code = board.mini_code[stm][mb];
+                hidden = _mm256_add_epi32(
+                    hidden,
+                    _mm256_load_si256(
+                        (const __m256i *)D16_MN_FACTOR_CODE[mb][code]));
+                const int super_cls = macro & 3;
+                if (super_cls) {
+                    hidden = _mm256_add_epi32(
+                        hidden,
+                        _mm256_load_si256(
+                            (const __m256i *)
+                                    D16_MN_FACTOR_SUPER[mb][super_cls]));
+                }
+            }
+            if (c < 9) {
+                hidden = _mm256_add_epi32(
+                    hidden,
+                    _mm256_load_si256(
+                        (const __m256i *)D16_MN_FACTOR_ACTIVE[c]));
+            }
+            __m256 value = _mm256_cvtepi32_ps(hidden);
+            value = _mm256_max_ps(value, _mm256_setzero_ps());
+            value = _mm256_mul_ps(value, _mm256_loadu_ps(D16_MN_W2));
+            const float out =
+                D16_MN_B2
+                + d16_mini_hsum256(value) / D16_MN_FACTOR_SCALE;
+            return lround_bits(out);
         }
 
         std::chrono::milliseconds thinking_time =
@@ -662,6 +880,7 @@ class CrossfishDev {
             uint8_t flags = 0;
         };
         int hce_local_score = 0;
+        int hce_global_score = 0;
         std::array<int, 2> hce_tiar_maps{};
         std::array<int16_t, 9> hce_mb_scores{};
         std::array<uint8_t, 9> hce_mb_flags{};
@@ -694,6 +913,11 @@ class CrossfishDev {
             if (packed >= 81) return Move{99, 99};
             return Move{packed / 9, packed % 9};
         }
+
+        // fill_fast_legal_moves emits a miniboard's squares 0..7 with one
+        // 8-byte store, so its output buffer needs slack past the 81 slots a
+        // position can legally use. 80 real moves + a 7-byte tail = index 86.
+        static constexpr int FAST_MOVE_SLACK = 15;
 
         static FastMove pack_fast_move(int mb, int sq) {
             return (FastMove)((mb << 4) | sq);
@@ -772,6 +996,13 @@ class CrossfishDev {
         // tables replace repeated AVX line tests in make/unmake and ordering.
         static inline uint16_t fast_win_moves[1 << 9];
         static inline uint8_t fast_has_win[1 << 9];
+        // fast_win_moves, forced to zero once the mask already contains a line.
+        // Used at the macro level so the "already won" guard costs no branch.
+        static inline uint16_t fast_win_moves_open[1 << 9];
+        // The set bits of an 8-bit mask as a little-endian list of byte
+        // indices, so a whole miniboard's empty squares are emitted with one
+        // 8-byte store instead of one store per square.
+        static inline uint64_t fast_empty_squares[1 << 8];
         // Number of global two-in-a-row masks in `ours` whose third square
         // is not occupied by `theirs`, indexed as (ours << 9) | theirs.
         static inline uint8_t fast_threat_count[1 << 18];
@@ -868,6 +1099,18 @@ class CrossfishDev {
                         }
                     }
                     fast_win_moves[markers] = (uint16_t)wins;
+                    fast_win_moves_open[markers] =
+                        fast_has_win[markers] ? 0 : (uint16_t)wins;
+                }
+                for (int mask = 0; mask < 256; mask++) {
+                    uint64_t list = 0;
+                    int k = 0;
+                    for (int b = 0; b < 8; b++) {
+                        if (mask & (1 << b)) {
+                            list |= (uint64_t)b << (8 * k++);
+                        }
+                    }
+                    fast_empty_squares[mask] = list;
                 }
                 const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
                 const int n_pairs = (int)(sizeof(tiar) / sizeof(tiar[0]) / 2);
@@ -996,23 +1239,16 @@ class CrossfishDev {
         // Live entry for this position; the constraint test mirrors fillLegalMoves.
         CorrEntry &corr_entry(FastBoard &board) {
             int out_of_play = out_of_play_mask(board);
-            int mb = 9;
-            if (board.n_moves > 0 && !board.prev_move_was_pass) {
-                int active = board.move_history.top().square;
-                if ((out_of_play & (1 << active)) == 0) mb = active;
-            }
-            return corr_hist[board.n_moves % 2][mb][out_of_play];
+            int mb = active_board_index(board);
+            return corr_hist[(board.n_moves & 1)][mb][out_of_play];
         }
 
         CorrEntry &corr_local_entry(FastBoard &board) {
             int key = MINI_LUT_SIZE;
-            if (board.n_moves > 0 && !board.prev_move_was_pass) {
-                int mb = board.move_history.top().square;
-                int out_of_play = out_of_play_mask(board);
-                if ((out_of_play & (1 << mb)) == 0) {
-                    int stm = board.n_moves & 1;
-                    key = cached_mini_key(board, mb, stm);
-                }
+            int mb = active_board_index(board);
+            if (mb < 9) {
+                int stm = board.n_moves & 1;
+                key = cached_mini_key(board, mb, stm);
             }
             return corr_local_hist[key];
         }
@@ -1079,18 +1315,29 @@ class CrossfishDev {
             update_corr_entry(*refs.macro, diff, w, CORR_MACRO_GRAIN);
         }
 
-        template <typename Board>
-        int check_winner_fast(Board &board) {
+        // Recompute the cached terminal answer. Called only where a miniboard
+        // was just decided or undecided, which is the only way it can change.
+        static void sync_terminal(FastBoard &board) {
             int p0 = board.mini_board_states[0];
             int p1 = board.mini_board_states[1];
-            if (fast_has_win[p0]) return 0;
-            if (fast_has_win[p1]) return 1;
-            if (out_of_play_mask(board) == 511) {
-                int n0 = __builtin_popcount(p0);
-                int n1 = __builtin_popcount(p1);
-                return n0 > n1 ? 0 : (n1 > n0 ? 1 : 2);
+            int t = -1;
+            if (fast_has_win[p0]) {
+                t = 0;
+            } else if (fast_has_win[p1]) {
+                t = 1;
+            } else if (board.out_of_play == 511) {
+                int n0 = __builtin_popcount((unsigned)p0);
+                int n1 = __builtin_popcount((unsigned)p1);
+                t = n0 > n1 ? 0 : (n1 > n0 ? 1 : 2);
             }
-            return -1;
+            board.terminal = (int8_t)t;
+        }
+
+        template <typename Board>
+        static void sync_terminal(Board &) {}
+
+        int check_winner_fast(FastBoard &board) {
+            return board.terminal;
         }
 
         template <typename Board>
@@ -1104,7 +1351,7 @@ class CrossfishDev {
                 }
                 return n;
             }
-            int active = board.move_history.top().square;
+            int active = active_board_index(board);
             int out_of_play = out_of_play_mask(board);
             auto add_from_mb = [&](int mb) {
                 int occupied = board.mini_boards[mb].markers[0]
@@ -1116,7 +1363,7 @@ class CrossfishDev {
                     dst[n++] = Move{mb, sq};
                 }
             };
-            if (!board.prev_move_was_pass && (out_of_play & (1 << active)) == 0) {
+            if (active < 9) {
                 add_from_mb(active);
             } else {
                 int live = (~out_of_play) & 511;
@@ -1161,6 +1408,7 @@ class CrossfishDev {
             for (int mb = 0; mb < 9; mb++) {
                 set_hce_mb(board, mb);
             }
+            hce_global_score = evaluate_hce_global(board);
             hce_acc_ready = true;
         }
 
@@ -1196,15 +1444,16 @@ class CrossfishDev {
             }
             board.move_history.push(move);
             board.mini_boards[move.mini_board].markers[stm] = before | bit;
-            xor_position_hash(
-                board, board.move_hashes[stm][move.mini_board][move.square]);
-            xor_position_hash(board, board.legal_mini_board_hashes[move.square]);
-            bool decided = false;
+            update_mini_code(board, move.mini_board);
+            // One lookup folds the stone, the destination-constraint term and
+            // the side-to-move flip that used to be three separate XORs.
+            xor_move_combo(board, stm, move.mini_board, move.square);
+            int decided_state = -1;
             if (fast_win_moves[before] & bit) {
                 board.mini_board_states[stm] |= mb_bit;
                 xor_position_hash(
                     board, board.mini_board_hashes[stm][move.mini_board]);
-                decided = true;
+                decided_state = stm;
             } else {
                 int occupied = board.mini_boards[move.mini_board].markers[0]
                              | board.mini_boards[move.mini_board].markers[1];
@@ -1212,25 +1461,32 @@ class CrossfishDev {
                     board.mini_board_states[2] |= mb_bit;
                     xor_position_hash(
                         board, board.mini_board_hashes[2][move.mini_board]);
-                    decided = true;
+                    decided_state = 2;
                 }
             }
-            if (decided) {
+            if (decided_state >= 0) {
                 add_out_of_play(board, mb_bit);
                 xor_marker_hashes(board, move.mini_board);
-                sync_macro_key_mb(board, move.mini_board);
+                // The deciding state is already known here, so there is no
+                // need to re-test all three mini_board_states masks.
+                set_macro_key_mb(board, move.mini_board, decided_state);
+                sync_terminal(board);
             }
-            xor_position_hash(board, board.player_to_move_hash);
+            update_active_board(board, move.square);
             board.n_moves++;
             if (hce_acc_ready) {
                 set_hce_mb(board, move.mini_board);
+                // The global terms read only mini_board_states, which change
+                // here exactly when this move decided a miniboard.
+                if (decided_state >= 0) {
+                    hce_global_score = evaluate_hce_global(board);
+                }
             }
         }
 
         template <typename Board>
         void unmake_move_fast(Board &board) {
             board.n_moves--;
-            xor_position_hash(board, board.player_to_move_hash);
             Move move = board.move_history.top();
             board.move_history.pop();
             int mb_bit = 1 << move.mini_board;
@@ -1254,13 +1510,14 @@ class CrossfishDev {
             if (was_decided) {
                 remove_out_of_play(board, mb_bit);
                 xor_marker_hashes(board, move.mini_board);
-                sync_macro_key_mb(board, move.mini_board);
+                // Undoing a decision always returns the slot to "undecided".
+                clear_macro_key_mb(board, move.mini_board);
+                sync_terminal(board);
             }
             int stm = board.n_moves & 1;
             board.mini_boards[move.mini_board].markers[stm] &= ~(1 << move.square);
-            xor_position_hash(
-                board, board.move_hashes[stm][move.mini_board][move.square]);
-            xor_position_hash(board, board.legal_mini_board_hashes[move.square]);
+            update_mini_code(board, move.mini_board);
+            xor_move_combo(board, stm, move.mini_board, move.square);
             if (board.n_moves > 0) {
                 xor_position_hash(
                     board,
@@ -1268,7 +1525,11 @@ class CrossfishDev {
             }
             if (hce_acc_ready) {
                 restore_hce_mb(board.n_moves, move.mini_board);
+                if (was_decided) {
+                    hce_global_score = evaluate_hce_global(board);
+                }
             }
+            restore_active_board(board);
         }
 
         Move getMove(
@@ -1277,8 +1538,8 @@ class CrossfishDev {
                 std::chrono::milliseconds(CODINGAME_MOVE_MS)) {
             thinking_time = thinking_time_passed;
             start_time = std::chrono::high_resolution_clock::now();
-            FastBoard board(input_board);
             init_mini_lut();
+            FastBoard board(input_board);
             init_lmr_table();
             nodes = 0;
             stopped = false;
@@ -1288,6 +1549,7 @@ class CrossfishDev {
             root_best_move = root_moves[0];
             init_hce_acc(board);
             init_macro_key(board);
+            sync_terminal(board);
             killer_moves = {};
             for (auto &by_player : history_table) {
                 for (auto &by_miniboard : by_player) {
@@ -1339,8 +1601,8 @@ class CrossfishDev {
         // Returns false on timeout/unfinished sentinel. Mates clamp to +/-20000.
         static constexpr int SEARCH_SCORE_CLAMP = 20000;
         bool search_fixed_depth(GlobalBoard &input_board, int d, int &out_score) {
-            FastBoard board(input_board);
             init_mini_lut();
+            FastBoard board(input_board);
             init_lmr_table();
             thinking_time = std::chrono::milliseconds(24 * 60 * 60 * 1000);
             nodes = 0;
@@ -1349,6 +1611,7 @@ class CrossfishDev {
             depth = d;
             init_hce_acc(board);
             init_macro_key(board);
+            sync_terminal(board);
             killer_moves = {};
             history_table = {};
             for (int mb = 0; mb < 9; mb++) {
@@ -1379,7 +1642,7 @@ class CrossfishDev {
                     return 0;
                 }
                 else {
-                    if (winner == board.n_moves % 2) {
+                    if (winner == (board.n_moves & 1)) {
                         return max_val - ply;
                     }
                     else {
@@ -1398,7 +1661,7 @@ class CrossfishDev {
             if (hce + MINI_MAX + MACRO_CLIP < alpha) {
                 stand_pat = hce + MINI_MAX + MACRO_CLIP;
             } else {
-                stand_pat = hce + d16_evaluate_mini_fast(board)
+                stand_pat = hce + evaluate_mini_cached(board)
                           + evaluate_macro_cached(board);
             }
             if (stand_pat >= beta) {
@@ -1412,13 +1675,13 @@ class CrossfishDev {
             }
 
             FastMove caps[81];
-            int scores[81];
+            int cap_keys[81];
             int n_caps = fill_fast_captures(board, caps);
-            get_fast_move_scores(caps, n_caps, board, ply, scores, true);
-            sort_fast_moves(caps, scores, n_caps);
+            get_fast_move_scores(caps, n_caps, board, ply, cap_keys, true);
+            sort_move_keys(cap_keys, n_caps);
             int val;
             for (int i = 0; i < n_caps; i++) {
-                Move move = unpack_fast_move(caps[i]);
+                Move move = unpack_fast_move(move_from_key(cap_keys[i]));
                 make_move_fast(board, move);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
                 unmake_move_fast(board);
@@ -1440,7 +1703,7 @@ class CrossfishDev {
                     return 0;
                 }
                 else {
-                    if (winner == board.n_moves % 2) {
+                    if (winner == (board.n_moves & 1)) {
                         return max_val - ply;
                     }
                     else {
@@ -1490,7 +1753,7 @@ class CrossfishDev {
                 }
                 if (depth == 1
                     && static_eval + 2500 - reverse_futility_margin >= beta
-                    && static_eval + d16_evaluate_mini_fast(board)
+                    && static_eval + evaluate_mini_cached(board)
                        - reverse_futility_margin >= beta) {
                     return beta;
                 }
@@ -1515,15 +1778,25 @@ class CrossfishDev {
                 tt_hit && entry.depth >= depth - 3
                 && (entry.flag == TT_LOWER || entry.flag == TT_EXACT);
 
-            FastMove legal_moves[81];
-            int scores[81];
+            // The wide emit in fill_fast_legal_moves stores 8 bytes at a time,
+            // so the move buffer carries slack past the 81 real slots.
+            FastMove legal_moves[81 + FAST_MOVE_SLACK];
+            int move_keys[81];
             int nmoves = fill_fast_legal_moves(board, legal_moves);
             bool defer_move_scores = false;
             int tt_index = -1;
-            for (int i = 0; i < nmoves; i++) {
-                if (legal_moves[i] == tt_move) {
-                    tt_index = i;
-                    break;
+            // Generated moves are grouped by miniboard, so when the position is
+            // forced the only candidate slot for the tt move is that miniboard:
+            // two compares replace a whole pass over the move list.
+            if (tt_move != NO_FAST_MOVE) {
+                int forced = active_board_index(board);
+                if (forced == 9 || (tt_move >> 4) == forced) {
+                    for (int i = 0; i < nmoves; i++) {
+                        if (legal_moves[i] == tt_move) {
+                            tt_index = i;
+                            break;
+                        }
+                    }
                 }
             }
             if (tt_index >= 0) {
@@ -1532,14 +1805,14 @@ class CrossfishDev {
                     legal_moves[i] = legal_moves[i - 1];
                 }
                 legal_moves[0] = hash_move;
-                scores[0] = 1000;
+                move_keys[0] = pack_move_key(1000, hash_move);
                 defer_move_scores = true;
             } else {
-                get_fast_move_scores(legal_moves, nmoves, board, ply, scores, false);
-                sort_fast_moves(legal_moves, scores, nmoves);
+                get_fast_move_scores(legal_moves, nmoves, board, ply, move_keys, false);
+                sort_move_keys(move_keys, nmoves);
             }
 
-            FastMove best_move = legal_moves[0];
+            FastMove best_move = move_from_key(move_keys[0]);
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
@@ -1549,10 +1822,10 @@ class CrossfishDev {
             for (int i = 0; i < nmoves; i++) {
                 if (i == 1 && defer_move_scores) {
                     get_fast_move_scores(legal_moves + 1, nmoves - 1,
-                                         board, ply, scores + 1, false);
-                    sort_fast_moves(legal_moves + 1, scores + 1, nmoves - 1);
+                                         board, ply, move_keys + 1, false);
+                    sort_move_keys(move_keys + 1, nmoves - 1);
                 }
-                FastMove fast_move = legal_moves[i];
+                FastMove fast_move = move_from_key(move_keys[i]);
                 Move move = unpack_fast_move(fast_move);
                 bool capture = is_fast_capture(board, fast_move);
                 if (can_futility_prune && i > 0 && !capture) {
@@ -1582,7 +1855,8 @@ class CrossfishDev {
                         &transposition_table[
                             board.tt_hash & (tt_bucket_count - 1)], 0, 1);
                     int reduction = 0;
-                    bool do_lmr = (scores[i] < 0 || (i >= 2 && !capture));
+                    bool do_lmr =
+                        (move_keys[i] > MOVE_KEY_ZERO || (i >= 2 && !capture));
                     if (do_lmr) {
                         reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
                         if (pv_node && reduction > 0) reduction--;
@@ -1612,12 +1886,12 @@ class CrossfishDev {
                     int mb = fast_move >> 4;
                     int sq = fast_move & 15;
                     killer_moves[ply][sq] = 1;
-                    int &h = history_table[board.n_moves % 2][mb][sq];
+                    int &h = history_table[board.n_moves & 1][mb][sq];
                     int bonus = depth * depth;
                     h += bonus - h * bonus / 10000;
-                    int stm = board.n_moves % 2;
+                    int stm = board.n_moves & 1;
                     for (int j = 0; j < i; j++) {
-                        FastMove prior = legal_moves[j];
+                        FastMove prior = move_from_key(move_keys[j]);
                         if (is_fast_capture(board, prior)) continue;
                         int &hj = history_table[stm][prior >> 4][prior & 15];
                         int malus = 2 * bonus;
@@ -1679,19 +1953,55 @@ class CrossfishDev {
             return best_val;
         }
 
-        void sort_fast_moves(FastMove* moves, int* scores, int n) {
-            for (int i = 1; i < n; i++) {
-                int key = scores[i];
-                FastMove key_move = moves[i];
-                int j = i - 1;
-                while (j >= 0 && scores[j] < key) {
-                    scores[j + 1] = scores[j];
-                    moves[j + 1] = moves[j];
-                    j = j - 1;
+        // Scratch for the wide path. Members, not locals, so the recursive
+        // search frame does not grow by hundreds of bytes per ply.
+        int sort_val[88]{};
+        int sort_rank[88]{};
+
+        // Branchless rank sort of the packed move keys, replacing the stable
+        // insertion sort. Keys inside one group are unique, so a key's rank is
+        // exactly its sorted index and scattering by rank reproduces the
+        // insertion sort's permutation with no data-dependent branch at all.
+        // Lanes past n read as INT_MAX, which exceeds every real key and so
+        // never contributes to a rank. Measured on real search data, 93% of
+        // ordered move lists have n <= 8.
+        void sort_move_keys(int *keys, int n) {
+            if (n < 2) return;
+            if (n <= 8) {
+                const __m256i mask = _mm256_cmpgt_epi32(
+                    _mm256_set1_epi32(n),
+                    _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
+                const __m256i v = _mm256_blendv_epi8(
+                    _mm256_set1_epi32(0x7fffffff),
+                    _mm256_maskload_epi32(keys, mask), mask);
+                int val[8];
+                int rank[8];
+                _mm256_storeu_si256((__m256i *)val, v);
+                __m256i r = _mm256_setzero_si256();
+                for (int j = 0; j < n; j++) {
+                    r = _mm256_sub_epi32(
+                        r, _mm256_cmpgt_epi32(
+                               v, _mm256_set1_epi32(val[j])));
                 }
-                scores[j + 1] = key;
-                moves[j + 1] = key_move;
+                _mm256_storeu_si256((__m256i *)rank, r);
+                for (int i = 0; i < n; i++) keys[rank[i]] = val[i];
+                return;
             }
+            const int padded = (n + 7) & ~7;
+            for (int i = 0; i < n; i++) sort_val[i] = keys[i];
+            for (int i = n; i < padded; i++) sort_val[i] = 0x7fffffff;
+            for (int b = 0; b < n; b += 8) {
+                const __m256i v = _mm256_loadu_si256(
+                    (const __m256i *)(sort_val + b));
+                __m256i r = _mm256_setzero_si256();
+                for (int j = 0; j < n; j++) {
+                    r = _mm256_sub_epi32(
+                        r, _mm256_cmpgt_epi32(
+                               v, _mm256_set1_epi32(sort_val[j])));
+                }
+                _mm256_storeu_si256((__m256i *)(sort_rank + b), r);
+            }
+            for (int i = 0; i < n; i++) keys[sort_rank[i]] = sort_val[i];
         }
 
         template <typename Board>
@@ -1705,22 +2015,27 @@ class CrossfishDev {
                 }
                 return n;
             }
-            int active = board.move_history.top().square;
-            int out_of_play = out_of_play_mask(board);
+            int active = active_board_index(board);
+            // Squares 0..7 of a miniboard leave in one 8-byte store: the index
+            // list comes from the table and the miniboard tag is broadcast into
+            // the high nibble of every byte. Bytes past the count are either
+            // overwritten by the next group or never read, so `dst` only needs
+            // FAST_MOVE_SLACK bytes of tail room.
             auto add_from_mb = [&](int mb) {
                 int occupied = board.mini_boards[mb].markers[0]
                              | board.mini_boards[mb].markers[1];
                 int empty = (~occupied) & 511;
-                while (empty) {
-                    int sq = __builtin_ctz(empty);
-                    empty &= empty - 1;
-                    dst[n++] = pack_fast_move(mb, sq);
-                }
+                uint64_t packed = fast_empty_squares[empty & 255]
+                                | (uint64_t)(mb << 4) * 0x0101010101010101ull;
+                __builtin_memcpy(dst + n, &packed, sizeof(packed));
+                n += __builtin_popcount((unsigned)(empty & 255));
+                dst[n] = pack_fast_move(mb, 8);
+                n += (empty >> 8) & 1;
             };
-            if (!board.prev_move_was_pass && (out_of_play & (1 << active)) == 0) {
+            if (active < 9) {
                 add_from_mb(active);
             } else {
-                int live = (~out_of_play) & 511;
+                int live = (~out_of_play_mask(board)) & 511;
                 while (live) {
                     int mb = __builtin_ctz(live);
                     live &= live - 1;
@@ -1734,24 +2049,26 @@ class CrossfishDev {
         int fill_fast_captures(Board &board, FastMove *dst) {
             int n = 0;
             if (board.n_moves == 0) return 0;
-            int active_square = board.move_history.top().square;
-            int out_of_play = out_of_play_mask(board);
-            int stm = board.n_moves % 2;
+            int active_square = active_board_index(board);
+            // `& 1` rather than `% 2`: n_moves is never negative, and signed
+            // remainder costs four extra instructions per use.
+            int stm = board.n_moves & 1;
             auto add_from_mb = [&](int mb) {
-                int mine = board.mini_boards[mb].markers[stm];
-                int occupied = board.mini_boards[mb].markers[0]
-                             | board.mini_boards[mb].markers[1];
-                int wins = fast_win_moves[mine] & ~occupied & 511;
+                // fast_win_moves never marks a square the mover already holds,
+                // so masking out the opponent's stones is the whole occupancy
+                // test and the 9-bit clamp is a no-op.
+                int wins = fast_win_moves[board.mini_boards[mb].markers[stm]]
+                         & ~board.mini_boards[mb].markers[stm ^ 1];
                 while (wins) {
                     int sq = __builtin_ctz(wins);
                     wins &= wins - 1;
                     dst[n++] = pack_fast_move(mb, sq);
                 }
             };
-            if ((out_of_play & (1 << active_square)) == 0) {
+            if (active_square < 9) {
                 add_from_mb(active_square);
             } else {
-                int live = (~out_of_play) & 511;
+                int live = (~out_of_play_mask(board)) & 511;
                 while (live) {
                     int mb = __builtin_ctz(live);
                     live &= live - 1;
@@ -1763,62 +2080,40 @@ class CrossfishDev {
 
         template <typename Board>
         bool is_fast_capture(Board &board, FastMove move) {
-            int stm = board.n_moves % 2;
-            int mb = move >> 4;
-            int sq = move & 15;
-            int mine = board.mini_boards[mb].markers[stm];
-            return (fast_win_moves[mine] & (1 << sq)) != 0;
+            int stm = board.n_moves & 1;
+            int mine = board.mini_boards[move >> 4].markers[stm];
+            return (fast_win_moves[mine] & (1 << (move & 15))) != 0;
         }
 
         template <typename Board>
         bool has_immediate_global_win(Board &board, int targets) {
             int stm = board.n_moves & 1;
             if (fast_has_win[board.mini_board_states[stm ^ 1]]) return false;
-            int out_of_play = out_of_play_mask(board);
-            int live = (~out_of_play) & 511;
-            targets &= live;
-            if (targets == 0) return false;
-            if (board.n_moves > 0 && !board.prev_move_was_pass) {
-                int active = board.move_history.top().square;
-                if (live & (1 << active)) {
-                    targets &= 1 << active;
-                }
+            // hce_tiar_maps only ever holds bits for live miniboards, so the
+            // out-of-play intersection it used to be combined with is implied
+            // and the mask no longer has to be loaded or inverted here.
+            targets &= hce_tiar_maps[stm];
+            int active = active_board_index(board);
+            if (active < 9) {
+                targets &= 1 << active;
             }
-            while (targets) {
-                int mb = __builtin_ctz(targets);
-                targets &= targets - 1;
-                int occupied = board.mini_boards[mb].markers[0]
-                             | board.mini_boards[mb].markers[1];
-                if (fast_win_moves[board.mini_boards[mb].markers[stm]]
-                    & ~occupied & 511) {
-                    return true;
-                }
-            }
-            return false;
+            return targets != 0;
         }
 
         template <typename Board>
         bool has_forced_global_win_after_reply(Board &board, int player) {
-            if ((board.n_moves & 1) == player
-                || fast_has_win[board.mini_board_states[player]]) {
+            if ((board.n_moves & 1) == player) {
                 return false;
             }
-            int targets = fast_win_moves[board.mini_board_states[player]];
-            int out_of_play = out_of_play_mask(board);
-            targets &= (~out_of_play) & 511;
-            int winning_targets = 0;
-            int remaining = targets;
-            while (remaining) {
-                int mb = __builtin_ctz(remaining);
-                remaining &= remaining - 1;
-                int occupied = board.mini_boards[mb].markers[0]
-                             | board.mini_boards[mb].markers[1];
-                if (fast_win_moves[board.mini_boards[mb].markers[player]]
-                    & ~occupied & 511) {
-                    winning_targets |= 1 << mb;
-                }
-            }
+            // fast_win_moves_open is zero exactly when `player` already owns a
+            // macro line, folding the old fast_has_win guard into this lookup,
+            // and hce_tiar_maps is already confined to live miniboards. This is
+            // the hot path: 97.5% of calls leave with no winning target.
+            int winning_targets =
+                fast_win_moves_open[board.mini_board_states[player]]
+                & hce_tiar_maps[player];
             if (winning_targets == 0) return false;
+            int out_of_play = out_of_play_mask(board);
 
             int opponent = player ^ 1;
             bool any_reply = false;
@@ -1876,12 +2171,10 @@ class CrossfishDev {
                 return (empty & ~safe) != 0;
             };
 
-            if (board.n_moves > 0 && !board.prev_move_was_pass) {
-                int active = board.move_history.top().square;
-                if ((out_of_play & (1 << active)) == 0) {
-                    if (miniboard_refutes(active)) return false;
-                    return any_reply;
-                }
+            int active = active_board_index(board);
+            if (active < 9) {
+                if (miniboard_refutes(active)) return false;
+                return any_reply;
             }
             int live = (~out_of_play) & 511;
             while (live) {
@@ -1892,15 +2185,31 @@ class CrossfishDev {
             return any_reply;
         }
 
+        // One 32-bit ordering key per move: ((BIAS - score) << 8) | packed move.
+        // Ascending key order == descending score, ties broken by the smaller
+        // packed move. Both move generators emit (mini_board, square) in
+        // increasing order and the hash-move rotation only deletes one element,
+        // so "smaller packed move" is always "smaller original index": sorting
+        // these keys ascending reproduces the stable insertion sort's exact
+        // permutation. Keys are unique, so any total-order sort works.
+        static constexpr int MOVE_KEY_BIAS = 1 << 20;
+        // Keys with score < 0, i.e. (BIAS - score) > BIAS, all exceed this.
+        static constexpr int MOVE_KEY_ZERO = (MOVE_KEY_BIAS << 8) | 255;
+        static int pack_move_key(int score, FastMove move) {
+            return ((MOVE_KEY_BIAS - score) << 8) | move;
+        }
+        static FastMove move_from_key(int key) {
+            return (FastMove)(key & 255);
+        }
         template <typename Board>
-        void get_fast_move_scores(FastMove* moves, int n, Board &board, int &ply,
-                                  int* scores, bool qs = false) {
+        void get_fast_move_scores(FastMove* moves, int n, Board &board, int ply,
+                                  int* keys, bool qs = false) {
             if (n <= 1) {
-                if (n == 1) scores[0] = 0;
+                if (n == 1) keys[0] = pack_move_key(0, moves[0]);
                 return;
             }
             int out_of_play = out_of_play_mask(board);
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             FastMove cm = NO_FAST_MOVE;
             if (board.n_moves > 0) {
                 Move prev = board.move_history.top();
@@ -1926,14 +2235,15 @@ class CrossfishDev {
                         800 * fast_has_win[board.mini_board_states[stm] | (1 << mb)];
                 }
                 int capture = (capture_mask >> sq) & 1;
-                scores[i] =
+                keys[i] = pack_move_key(
                     25 * killer_moves[ply][sq]
                     + 40 * (cm == move)
                     + capture * (global_win_bonus + 100 * !qs)
                     + 75 * ((block_mask >> sq) & 1)
                     + 50 * ((tiar_mask >> sq) & 1)
                     - 250 * ((out_of_play >> sq) & 1)
-                    + history_table[stm][mb][sq] / 20;
+                    + history_table[stm][mb][sq] / 20,
+                    move);
             }
         }
 
@@ -1941,9 +2251,9 @@ class CrossfishDev {
         int fill_captures_lut(Board &board, Move* dst) {
             int n = 0;
             if (board.n_moves == 0) return 0;
-            int active_square = board.move_history.top().square;
+            int active_square = active_board_index(board);
             int out_of_play = out_of_play_mask(board);
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             auto add_from_mb = [&](int mb) {
                 int mine = board.mini_boards[mb].markers[stm];
                 int occupied = board.mini_boards[mb].markers[0]
@@ -1955,7 +2265,7 @@ class CrossfishDev {
                     dst[n++] = Move{mb, s};
                 }
             };
-            if ((out_of_play & (1 << active_square)) == 0) {
+            if (active_square < 9) {
                 add_from_mb(active_square);
             } else {
                 for (int i = 0; i < 9; i++) {
@@ -1967,7 +2277,7 @@ class CrossfishDev {
 
         template <typename Board>
         bool is_capture_avx(Board &board, Move &move) {
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             int mine = board.mini_boards[move.mini_board].markers[stm];
             return (fast_win_moves[mine] & (1 << move.square)) != 0;
         }
@@ -1982,7 +2292,7 @@ class CrossfishDev {
         template <typename Board>
         bool creates_two_in_a_row(Board &board, Move &move) {
             int idx = cached_mini_key(board, move.mini_board);
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             return (mini_tiar_sq[idx][stm] & (1 << move.square)) != 0;
         }
 
@@ -1994,7 +2304,7 @@ class CrossfishDev {
                 return;
             }
             int out_of_play = out_of_play_mask(board);
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             Move cm{99, 99};
             if (board.n_moves > 0) {
                 Move prev = board.move_history.top();
@@ -2102,7 +2412,7 @@ class CrossfishDev {
         // Live miniboard LUT indices are written to idx_out.
         void eval_parts(GlobalBoard &board, int16_t *idx_out, int &n_out, int &base_out) {
             init_mini_lut();
-            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+            int stm_sign = ((board.n_moves & 1) == 0) ? 1 : -1;
             int out_of_play = out_of_play_mask(board);
             int p0_two_in_a_row_map = 0;
             int p1_two_in_a_row_map = 0;
@@ -2145,22 +2455,18 @@ class CrossfishDev {
                                  int p0_two_in_a_row_map,
                                  int p1_two_in_a_row_map) {
             int extra = 0;
-            if (board.n_moves > 0) {
-                int out_of_play = out_of_play_mask(board);
-                if (board.prev_move_was_pass || ((out_of_play & (1 << board.move_history.top().square)) != 0)) {
-                    extra += FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
-                }
+            if (board.n_moves > 0 && active_board_index(board) == 9) {
+                extra += FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
             }
             int live = (~out_of_play_mask(board)) & 511;
-            int p0_capture_boards =
-                fast_win_moves[board.mini_board_states[0]]
-                & p0_two_in_a_row_map & live;
-            int p1_capture_boards =
-                fast_win_moves[board.mini_board_states[1]]
-                & p1_two_in_a_row_map & live;
+            // Only the side that is not to move is tested, so build that one
+            // mask rather than both.
+            const int other = (board.n_moves & 1) ^ 1;
+            const int other_map =
+                other ? p1_two_in_a_row_map : p0_two_in_a_row_map;
             bool opponent_has_latent_capture =
-                (board.n_moves & 1) ? (p0_capture_boards != 0)
-                                    : (p1_capture_boards != 0);
+                (fast_win_moves[board.mini_board_states[other]]
+                 & other_map & live) != 0;
             if (opponent_has_latent_capture) {
                 extra += OPP_LATENT_CAPTURE_BONUS;
             }
@@ -2189,10 +2495,7 @@ class CrossfishDev {
         }
 
         template <typename Board>
-        int finish_hce(Board &board, int local,
-                       int p0_two_in_a_row_map,
-                       int p1_two_in_a_row_map) {
-            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+        int evaluate_hce_global(Board &board) {
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
             const int corners = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 8);
@@ -2206,6 +2509,17 @@ class CrossfishDev {
             global += eval_weights[3]
                 * ((int)fast_threat_count[(p0_miniboards << 9) | p1_miniboards]
                    - (int)fast_threat_count[(p1_miniboards << 9) | p0_miniboards]);
+            return global;
+        }
+
+        template <typename Board>
+        int finish_hce_with_global(Board &board, int local,
+                                   int p0_two_in_a_row_map,
+                                   int p1_two_in_a_row_map,
+                                   int global) {
+            int stm_sign = ((board.n_moves & 1) == 0) ? 1 : -1;
+            int p0_miniboards = board.mini_board_states[0];
+            int p1_miniboards = board.mini_board_states[1];
             global += eval_weights[5]
                 * ((int)fast_threat_count[
                        ((p0_miniboards | p0_two_in_a_row_map) << 9) | p1_miniboards]
@@ -2214,6 +2528,15 @@ class CrossfishDev {
             return stm_sign * (global + local) + eval_weights[9]
                  + eval_extra_from_maps(
                        board, p0_two_in_a_row_map, p1_two_in_a_row_map);
+        }
+
+        template <typename Board>
+        int finish_hce(Board &board, int local,
+                       int p0_two_in_a_row_map,
+                       int p1_two_in_a_row_map) {
+            return finish_hce_with_global(
+                board, local, p0_two_in_a_row_map, p1_two_in_a_row_map,
+                evaluate_hce_global(board));
         }
 
         template <typename Board>
@@ -2242,8 +2565,14 @@ class CrossfishDev {
             if (!hce_acc_ready) {
                 return evaluate_hce(board);
             }
-            return finish_hce(board, hce_local_score, hce_tiar_maps[0],
-                              hce_tiar_maps[1]);
+            // hce_global_score is maintained on every miniboard decision, so
+            // the four popcounts, four multiplies and two 256 KiB threat-table
+            // reads of evaluate_hce_global run once per decided move instead of
+            // once per evaluated node (about 168k times instead of 1.2M in a
+            // 2.1M-node search).
+            return finish_hce_with_global(
+                board, hce_local_score, hce_tiar_maps[0],
+                hce_tiar_maps[1], hce_global_score);
         }
 
         int evaluate(GlobalBoard &board) {
