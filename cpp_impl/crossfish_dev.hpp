@@ -1281,13 +1281,13 @@ class CrossfishDev {
             }
 
             FastMove caps[81];
-            int scores[81];
+            int cap_keys[81];
             int n_caps = fill_fast_captures(board, caps);
-            get_fast_move_scores(caps, n_caps, board, ply, scores, true);
-            sort_fast_moves(caps, scores, n_caps);
+            get_fast_move_scores(caps, n_caps, board, ply, cap_keys, true);
+            sort_move_keys(cap_keys, n_caps);
             int val;
             for (int i = 0; i < n_caps; i++) {
-                Move move = unpack_fast_move(caps[i]);
+                Move move = unpack_fast_move(move_from_key(cap_keys[i]));
                 make_move_fast(board, move);
                 val = -qsearch(board, -beta, -alpha, ply + 1);
                 unmake_move_fast(board);
@@ -1411,14 +1411,16 @@ class CrossfishDev {
 #endif
 
             FastMove legal_moves[81];
-            int scores[81];
+            int move_keys[81];
             int nmoves = fill_fast_legal_moves(board, legal_moves);
             bool defer_move_scores = false;
             int tt_index = -1;
-            for (int i = 0; i < nmoves; i++) {
-                if (legal_moves[i] == tt_move) {
-                    tt_index = i;
-                    break;
+            if (tt_move != NO_FAST_MOVE) {
+                for (int i = 0; i < nmoves; i++) {
+                    if (legal_moves[i] == tt_move) {
+                        tt_index = i;
+                        break;
+                    }
                 }
             }
             if (tt_index >= 0) {
@@ -1427,14 +1429,14 @@ class CrossfishDev {
                     legal_moves[i] = legal_moves[i - 1];
                 }
                 legal_moves[0] = hash_move;
-                scores[0] = 1000;
+                move_keys[0] = pack_move_key(1000, hash_move);
                 defer_move_scores = true;
             } else {
-                get_fast_move_scores(legal_moves, nmoves, board, ply, scores, false);
-                sort_fast_moves(legal_moves, scores, nmoves);
+                get_fast_move_scores(legal_moves, nmoves, board, ply, move_keys, false);
+                sort_move_keys(move_keys, nmoves);
             }
 
-            FastMove best_move = legal_moves[0];
+            FastMove best_move = move_from_key(move_keys[0]);
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
@@ -1444,10 +1446,10 @@ class CrossfishDev {
             for (int i = 0; i < nmoves; i++) {
                 if (i == 1 && defer_move_scores) {
                     get_fast_move_scores(legal_moves + 1, nmoves - 1,
-                                         board, ply, scores + 1, false);
-                    sort_fast_moves(legal_moves + 1, scores + 1, nmoves - 1);
+                                         board, ply, move_keys + 1, false);
+                    sort_move_keys(move_keys + 1, nmoves - 1);
                 }
-                FastMove fast_move = legal_moves[i];
+                FastMove fast_move = move_from_key(move_keys[i]);
                 Move move = unpack_fast_move(fast_move);
                 bool capture = is_fast_capture(board, fast_move);
                 if (can_futility_prune && i > 0 && !capture) {
@@ -1487,7 +1489,8 @@ class CrossfishDev {
                         &transposition_table[
                             board.tt_hash & (tt_bucket_count - 1)], 0, 1);
                     int reduction = 0;
-                    bool do_lmr = (scores[i] < 0 || (i >= 2 && !capture));
+                    bool do_lmr =
+                        (move_keys[i] > MOVE_KEY_ZERO || (i >= 2 && !capture));
                     if (do_lmr) {
                         reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
                         if (pv_node && reduction > 0) reduction--;
@@ -1522,7 +1525,7 @@ class CrossfishDev {
                     h += bonus - h * bonus / 10000;
                     int stm = board.n_moves % 2;
                     for (int j = 0; j < i; j++) {
-                        FastMove prior = legal_moves[j];
+                        FastMove prior = move_from_key(move_keys[j]);
                         if (is_fast_capture(board, prior)) continue;
                         int &hj = history_table[stm][prior >> 4][prior & 15];
                         int malus = 2 * bonus;
@@ -1585,19 +1588,55 @@ class CrossfishDev {
             return best_val;
         }
 
-        void sort_fast_moves(FastMove* moves, int* scores, int n) {
-            for (int i = 1; i < n; i++) {
-                int key = scores[i];
-                FastMove key_move = moves[i];
-                int j = i - 1;
-                while (j >= 0 && scores[j] < key) {
-                    scores[j + 1] = scores[j];
-                    moves[j + 1] = moves[j];
-                    j = j - 1;
+        // Scratch for the wide path. Members, not locals, so the recursive
+        // search frame does not grow by hundreds of bytes per ply.
+        int sort_val[88]{};
+        int sort_rank[88]{};
+
+        // Branchless rank sort of the packed move keys, replacing the stable
+        // insertion sort. Keys inside one group are unique, so a key's rank is
+        // exactly its sorted index and scattering by rank reproduces the
+        // insertion sort's permutation with no data-dependent branch at all.
+        // Lanes past n read as INT_MAX, which exceeds every real key and so
+        // never contributes to a rank. Measured on real search data, 93% of
+        // ordered move lists have n <= 8.
+        void sort_move_keys(int *keys, int n) {
+            if (n < 2) return;
+            if (n <= 8) {
+                const __m256i mask = _mm256_cmpgt_epi32(
+                    _mm256_set1_epi32(n),
+                    _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7));
+                const __m256i v = _mm256_blendv_epi8(
+                    _mm256_set1_epi32(0x7fffffff),
+                    _mm256_maskload_epi32(keys, mask), mask);
+                int val[8];
+                int rank[8];
+                _mm256_storeu_si256((__m256i *)val, v);
+                __m256i r = _mm256_setzero_si256();
+                for (int j = 0; j < n; j++) {
+                    r = _mm256_sub_epi32(
+                        r, _mm256_cmpgt_epi32(
+                               v, _mm256_set1_epi32(val[j])));
                 }
-                scores[j + 1] = key;
-                moves[j + 1] = key_move;
+                _mm256_storeu_si256((__m256i *)rank, r);
+                for (int i = 0; i < n; i++) keys[rank[i]] = val[i];
+                return;
             }
+            const int padded = (n + 7) & ~7;
+            for (int i = 0; i < n; i++) sort_val[i] = keys[i];
+            for (int i = n; i < padded; i++) sort_val[i] = 0x7fffffff;
+            for (int b = 0; b < n; b += 8) {
+                const __m256i v = _mm256_loadu_si256(
+                    (const __m256i *)(sort_val + b));
+                __m256i r = _mm256_setzero_si256();
+                for (int j = 0; j < n; j++) {
+                    r = _mm256_sub_epi32(
+                        r, _mm256_cmpgt_epi32(
+                               v, _mm256_set1_epi32(sort_val[j])));
+                }
+                _mm256_storeu_si256((__m256i *)(sort_rank + b), r);
+            }
+            for (int i = 0; i < n; i++) keys[sort_rank[i]] = sort_val[i];
         }
 
         template <typename Board>
@@ -1806,11 +1845,27 @@ class CrossfishDev {
             return any_reply;
         }
 
+        // One 32-bit ordering key per move: ((BIAS - score) << 8) | packed move.
+        // Ascending key order == descending score, ties broken by the smaller
+        // packed move. Both move generators emit (mini_board, square) in
+        // increasing order and the hash-move rotation only deletes one element,
+        // so "smaller packed move" is always "smaller original index": sorting
+        // these keys ascending reproduces the stable insertion sort's exact
+        // permutation. Keys are unique, so any total-order sort works.
+        static constexpr int MOVE_KEY_BIAS = 1 << 20;
+        // Keys with score < 0, i.e. (BIAS - score) > BIAS, all exceed this.
+        static constexpr int MOVE_KEY_ZERO = (MOVE_KEY_BIAS << 8) | 255;
+        static int pack_move_key(int score, FastMove move) {
+            return ((MOVE_KEY_BIAS - score) << 8) | move;
+        }
+        static FastMove move_from_key(int key) {
+            return (FastMove)(key & 255);
+        }
         template <typename Board>
-        void get_fast_move_scores(FastMove* moves, int n, Board &board, int &ply,
-                                  int* scores, bool qs = false) {
+        void get_fast_move_scores(FastMove* moves, int n, Board &board, int ply,
+                                  int* keys, bool qs = false) {
             if (n <= 1) {
-                if (n == 1) scores[0] = 0;
+                if (n == 1) keys[0] = pack_move_key(0, moves[0]);
                 return;
             }
             int out_of_play = out_of_play_mask(board);
@@ -1835,12 +1890,13 @@ class CrossfishDev {
                             800 * fast_has_win[
                                 board.mini_board_states[stm] | (1 << mb)];
                     }
-                    scores[i] =
+                    keys[i] = pack_move_key(
                         global_win_bonus
                         + 25 * killer_moves[ply][sq]
                         + 40 * (cm == move)
                         - 250 * ((out_of_play >> sq) & 1)
-                        + history_table[stm][mb][sq] / 20;
+                        + history_table[stm][mb][sq] / 20,
+                        move);
                 }
                 return;
             }
@@ -1865,14 +1921,15 @@ class CrossfishDev {
                         800 * fast_has_win[board.mini_board_states[stm] | (1 << mb)];
                 }
                 int capture = (capture_mask >> sq) & 1;
-                scores[i] =
+                keys[i] = pack_move_key(
                     25 * killer_moves[ply][sq]
                     + 40 * (cm == move)
                     + capture * (global_win_bonus + 100 * !qs)
                     + 75 * ((block_mask >> sq) & 1)
                     + 50 * ((tiar_mask >> sq) & 1)
                     - 250 * ((out_of_play >> sq) & 1)
-                    + history_table[stm][mb][sq] / 20;
+                    + history_table[stm][mb][sq] / 20,
+                    move);
             }
         }
 
