@@ -8,10 +8,27 @@
 //
 //   equiv <positions> <depth> [seed]  identical score AND node count required
 //   nodes <positions> <depth> [seed]  total nodes and wall time per engine
+//   sat <games> <plies> <depth>       persistent-TT walk, deterministic nodes
+//   walk <games> <plies> <ms>         persistent-TT walk at a real move budget
 //
 // `equiv` exits nonzero on the first divergence. `nodes` interleaves the two
 // engines per position (A,B then B,A on alternate positions) so cache-warming
 // order cannot favour either side.
+//
+// `nodes` and `equiv` build a fresh engine per position, so the transposition
+// table starts empty and a single fixed-depth search never comes close to
+// filling its 262,144 entries. That makes them blind to anything about table
+// capacity or replacement. `sat` and `walk` instead replay one scripted move
+// sequence through a SINGLE engine instance, exactly as a real game does, so
+// the table saturates the way it does on CodinGame (measured there: ~39%
+// occupancy after the first move, 100% by move 9). Both engines see an
+// identical position sequence.
+//
+// `sat` is the deterministic capacity screen: fixed depth, so node counts are
+// reproducible and immune to machine load. `walk` is the strength-shaped one:
+// a real per-move millisecond budget, reporting mean completed root depth,
+// which is the quantity that actually converts into Elo. `walk` is timing
+// based and therefore needs a quiet machine.
 
 #include <algorithm>
 #include <array>
@@ -184,11 +201,170 @@ int run_nodes(int count, int depth, uint64_t seed) {
     return 0;
 }
 
+// One scripted game: a legal move sequence from the start position. Both
+// engines are asked to think at every position in the same sequence, so the
+// comparison is paired and the sequence itself is engine-independent.
+std::vector<Move> sample_game(int plies, uint64_t seed) {
+    std::mt19937_64 rng(seed);
+    std::vector<Move> moves;
+    GlobalBoard board;
+    Move buf[81];
+    for (int ply = 0; ply < plies; ply++) {
+        if (board.checkWinner() != -1) break;
+        const int n = board.fillLegalMoves(buf);
+        if (n <= 0) break;
+        const Move m = buf[rng() % (uint64_t)n];
+        moves.push_back(m);
+        board.makeMove(m);
+    }
+    return moves;
+}
+
+struct WalkStat {
+    long long nodes = 0;
+    long long depth_sum = 0;
+    int searches = 0;
+    double seconds = 0;
+};
+
+// Fixed depth, one engine instance for the whole game: the table fills up and
+// stays full, and node counts stay deterministic.
+template <typename Engine>
+WalkStat walk_fixed(const std::vector<Move> &script, int depth) {
+    auto engine = std::make_unique<Engine>();
+    WalkStat s;
+    GlobalBoard board;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (const Move &m : script) {
+        if (board.checkWinner() != -1) break;
+        GlobalBoard probe_board = board;
+        int score = 0;
+        if (engine->search_fixed_depth(probe_board, depth, score)) {
+            s.nodes += engine->nodes;
+            s.searches++;
+        }
+        board.makeMove(m);
+    }
+    s.seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+            .count();
+    return s;
+}
+
+// Real move budget, one engine instance for the whole game. completed_root_depth
+// is the iteration the engine actually finished, which is the quantity a
+// speed or capacity win has to convert into.
+template <typename Engine>
+WalkStat walk_timed(const std::vector<Move> &script, int ms) {
+    auto engine = std::make_unique<Engine>();
+    WalkStat s;
+    GlobalBoard board;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (const Move &m : script) {
+        if (board.checkWinner() != -1) break;
+        engine->getMove(board, std::chrono::milliseconds(ms));
+        s.nodes += engine->nodes;
+        s.depth_sum += engine->completed_root_depth;
+        s.searches++;
+        board.makeMove(m);
+    }
+    s.seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+            .count();
+    return s;
+}
+
+int run_sat(int games, int plies, int depth) {
+    WalkStat prev, dev;
+    for (int g = 0; g < games; g++) {
+        const auto script = sample_game(plies, 555000ull + (uint64_t)g);
+        WalkStat p, d;
+        if (g % 2 == 0) {
+            p = walk_fixed<CrossfishPrev>(script, depth);
+            d = walk_fixed<CrossfishDev>(script, depth);
+        } else {
+            d = walk_fixed<CrossfishDev>(script, depth);
+            p = walk_fixed<CrossfishPrev>(script, depth);
+        }
+        prev.nodes += p.nodes;
+        prev.searches += p.searches;
+        prev.seconds += p.seconds;
+        dev.nodes += d.nodes;
+        dev.searches += d.searches;
+        dev.seconds += d.seconds;
+    }
+    if (prev.nodes == 0) {
+        std::cerr << "no searches completed" << std::endl;
+        return 2;
+    }
+    std::cout.setf(std::ios::fixed);
+    std::cout.precision(3);
+    std::cout << "sat games=" << games << " plies=" << plies
+              << " depth=" << depth
+              << "\n  prev nodes=" << prev.nodes
+              << " searches=" << prev.searches << " secs=" << prev.seconds
+              << " nps=" << (long long)(prev.nodes / prev.seconds)
+              << "\n  dev  nodes=" << dev.nodes
+              << " searches=" << dev.searches << " secs=" << dev.seconds
+              << " nps=" << (long long)(dev.nodes / dev.seconds)
+              << "\n  node ratio dev/prev=" << (100.0 * dev.nodes / prev.nodes)
+              << "%  time ratio dev/prev="
+              << (100.0 * dev.seconds / prev.seconds) << "%" << std::endl;
+    if (prev.searches != dev.searches) {
+        std::cout << "  WARNING: different search counts, sequences diverged"
+                  << std::endl;
+    }
+    return 0;
+}
+
+int run_walk(int games, int plies, int ms) {
+    WalkStat prev, dev;
+    for (int g = 0; g < games; g++) {
+        const auto script = sample_game(plies, 555000ull + (uint64_t)g);
+        WalkStat p, d;
+        if (g % 2 == 0) {
+            p = walk_timed<CrossfishPrev>(script, ms);
+            d = walk_timed<CrossfishDev>(script, ms);
+        } else {
+            d = walk_timed<CrossfishDev>(script, ms);
+            p = walk_timed<CrossfishPrev>(script, ms);
+        }
+        prev.nodes += p.nodes;
+        prev.depth_sum += p.depth_sum;
+        prev.searches += p.searches;
+        prev.seconds += p.seconds;
+        dev.nodes += d.nodes;
+        dev.depth_sum += d.depth_sum;
+        dev.searches += d.searches;
+        dev.seconds += d.seconds;
+    }
+    if (prev.searches == 0 || dev.searches == 0) {
+        std::cerr << "no searches completed" << std::endl;
+        return 2;
+    }
+    const double prev_depth = (double)prev.depth_sum / prev.searches;
+    const double dev_depth = (double)dev.depth_sum / dev.searches;
+    std::cout.setf(std::ios::fixed);
+    std::cout.precision(4);
+    std::cout << "walk games=" << games << " plies=" << plies << " ms=" << ms
+              << "\n  prev nodes=" << prev.nodes
+              << " mean_depth=" << prev_depth
+              << " nps=" << (long long)(prev.nodes / prev.seconds)
+              << "\n  dev  nodes=" << dev.nodes
+              << " mean_depth=" << dev_depth
+              << " nps=" << (long long)(dev.nodes / dev.seconds)
+              << "\n  mean depth delta dev-prev=" << (dev_depth - prev_depth)
+              << "  node ratio dev/prev=" << (100.0 * dev.nodes / prev.nodes)
+              << "%  searches=" << prev.searches << "/" << dev.searches
+              << std::endl;
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
     if (argc < 4) {
-        std::cerr << "usage: bench_ab equiv|nodes <positions> <depth> [seed]"
+        std::cerr << "usage: bench_ab equiv <n> <depth> [seed] / nodes <n> <depth> [seed] / sat <games> <plies> <depth> / walk <games> <plies> <ms>\n       legacy: equiv|nodes <positions> <depth> [seed]"
                   << std::endl;
         return 2;
     }
@@ -201,6 +377,16 @@ int main(int argc, char **argv) {
     }
     if (std::strcmp(argv[1], "equiv") == 0) return run_equiv(count, depth, seed);
     if (std::strcmp(argv[1], "nodes") == 0) return run_nodes(count, depth, seed);
+    // For sat/walk the positional arguments are <games> <plies> and the
+    // fourth is the depth or millisecond budget rather than a seed.
+    if (std::strcmp(argv[1], "sat") == 0) {
+        const int arg = (argc >= 5) ? std::atoi(argv[4]) : 10;
+        return run_sat(count, depth, arg);
+    }
+    if (std::strcmp(argv[1], "walk") == 0) {
+        const int arg = (argc >= 5) ? std::atoi(argv[4]) : 90;
+        return run_walk(count, depth, arg);
+    }
     std::cerr << "unknown mode: " << argv[1] << std::endl;
     return 2;
 }
