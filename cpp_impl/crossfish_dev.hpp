@@ -9,8 +9,11 @@
 #include <mutex>
 #include <vector>
 
-// Frozen round-eight winner on 2026-09-14: D16/H8 local MiniNet,
-// compact macro residual, and exact macro-state correction history.
+// Round-nine experiment base, frozen 2026-09-22: identical to
+// crossfish_prev.hpp apart from this comment and the class name. Edit only
+// this file while testing. D16/H8 local MiniNet, compact macro residual,
+// exact macro-state correction history, and the tree-identical hot-path
+// rewrite that passed the round-nine gate at +18.81 +/- 10.18 Elo.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
