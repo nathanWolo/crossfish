@@ -14,7 +14,7 @@ ROOT := $(abspath ..)
 PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,python3)
 BIN := $(SRC_DIR)/bin
 
-.PHONY: all test test-cpp test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect clean
+.PHONY: all test bench test-cpp test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect clean
 
 all: test
 
@@ -39,8 +39,19 @@ $(BIN)/cg_input: cg_input.cpp | $(BIN)
 $(BIN)/cg_legend: cg_legend_hce.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ cg_legend_hce.cpp
 
+$(BIN)/bench_ab: bench_ab.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ bench_ab.cpp
+
 test-cpp: $(BIN)/unit_tests
 	$(BIN)/unit_tests
+
+# Deterministic Dev-vs-Prev screen. `equiv` proves a speed-only candidate
+# computes the same tree (identical scores AND node counts); `nodes` reports
+# node counts and wall time. Unlike `test_bots depth N` this builds a fresh
+# engine per position, so results do not depend on carried-over TT state.
+bench: $(BIN)/bench_ab
+	$(BIN)/bench_ab equiv 80 8 777
+	$(BIN)/bench_ab nodes 120 8 4242
 
 test-python:
 	cd $(ROOT) && $(PYTHON) -m unittest python_impl.test_rules -v
