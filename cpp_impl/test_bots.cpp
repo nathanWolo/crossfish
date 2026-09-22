@@ -42,9 +42,13 @@ static double g_sprt_elo1 = 5;
 static double g_sprt_llr_bound = 3;
 static int g_sprt_max_games = 0;
 static unsigned int g_sprt_threads = 0;
+static bool g_sprt_pair_model = true;
+static bool g_sprt_allow_book_wrap = false;
 static int g_sprt_resume_wins = 0;
 static int g_sprt_resume_draws = 0;
 static int g_sprt_resume_losses = 0;
+static std::array<int, 5> g_sprt_resume_pentanomial{};
+static bool g_sprt_resume_pentanomial_set = false;
 static int g_sprt_game_offset = -1;
 #pragma GCC optimize("O3")
 #pragma GCC optimization("Ofast,unroll-loops")
@@ -174,6 +178,9 @@ class HumanPlayer {
 };
 
 std::array<int, 3> global_total = {0, 0, 0}; //wins, draws, losses
+// Opening-pair score from Dev's perspective:
+// LL, LD+DL, LW+DD+WL, DW+WD, WW.
+std::array<int, 5> global_pentanomial = {0, 0, 0, 0, 0};
 std::mutex global_mutex;
 std::atomic<int> completed_tasks(0);
 std::atomic<int> prev_timeout_losses{0};
@@ -220,7 +227,7 @@ std::pair<double, double> wdlToElo(double w, double d, double l) {
     return {elo, dlo};
 }
 
-double sprt(int wins, int draws, int losses) {
+double sprt_trinomial(int wins, int draws, int losses) {
     if (wins == 0 || losses == 0 || draws == 0) {
         return 0;
     }
@@ -234,6 +241,127 @@ double sprt(int wins, int draws, int losses) {
     return (double)wins * log(probabilities1[0] / probabilities0[0]) 
         + (double)draws * log(probabilities1[1] / probabilities0[1])
         + (double)losses * log(probabilities1[2] / probabilities0[2]); 
+}
+
+static double logistic_score(double elo) {
+    return 1.0 / (1.0 + std::pow(10.0, -elo / 400.0));
+}
+
+static std::array<double, 5> pentanomial_mle_expected(
+    const std::array<int, 5> &results,
+    double expected_score) {
+    std::array<double, 5> counts{};
+    std::array<double, 5> probabilities{};
+    std::array<double, 5> deltas{};
+    double total = 0;
+    for (size_t i = 0; i < results.size(); i++) {
+        // Match Fishtest's small prior for an unobserved outcome bin.
+        counts[i] = results[i] ? (double)results[i] : 1e-3;
+        total += counts[i];
+    }
+    double min_delta = std::numeric_limits<double>::infinity();
+    double max_delta = -std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < results.size(); i++) {
+        probabilities[i] = counts[i] / total;
+        deltas[i] = i / 4.0 - expected_score;
+        min_delta = std::min(min_delta, deltas[i]);
+        max_delta = std::max(max_delta, deltas[i]);
+    }
+    if (!(min_delta < 0 && max_delta > 0)) {
+        std::cerr << "invalid pentanomial expectation "
+                  << expected_score << std::endl;
+        std::abort();
+    }
+    double lower = -1.0 / max_delta;
+    double upper = -1.0 / min_delta;
+    const double lower_nudge =
+        1e-12 * std::max(1.0, std::abs(lower));
+    const double upper_nudge =
+        1e-12 * std::max(1.0, std::abs(upper));
+    lower += lower_nudge;
+    upper -= upper_nudge;
+    auto secular = [&](double x) {
+        double value = 0;
+        for (size_t i = 0; i < results.size(); i++) {
+            value += probabilities[i] * deltas[i]
+                / (1.0 + x * deltas[i]);
+        }
+        return value;
+    };
+    // The secular function is strictly decreasing on this interval.
+    for (int iteration = 0; iteration < 200; iteration++) {
+        double middle = (lower + upper) * 0.5;
+        if (secular(middle) > 0) {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    double root = (lower + upper) * 0.5;
+    std::array<double, 5> mle{};
+    for (size_t i = 0; i < results.size(); i++) {
+        mle[i] = probabilities[i]
+            / (1.0 + root * deltas[i]);
+    }
+    return mle;
+}
+
+static double sprt_pentanomial(
+    const std::array<int, 5> &results,
+    double elo0,
+    double elo1) {
+    int pairs = std::accumulate(results.begin(), results.end(), 0);
+    if (pairs == 0) return 0;
+    std::array<double, 5> mle0 =
+        pentanomial_mle_expected(results, logistic_score(elo0));
+    std::array<double, 5> mle1 =
+        pentanomial_mle_expected(results, logistic_score(elo1));
+    double llr = 0;
+    for (size_t i = 0; i < results.size(); i++) {
+        double count = results[i] ? (double)results[i] : 1e-3;
+        llr += count * std::log(mle1[i] / mle0[i]);
+    }
+    return llr;
+}
+
+static double current_sprt_llr() {
+    return g_sprt_pair_model
+        ? sprt_pentanomial(
+              global_pentanomial, g_sprt_elo0, g_sprt_elo1)
+        : sprt_trinomial(
+              global_total[0], global_total[1], global_total[2]);
+}
+
+static EloResult calc_pentanomial_elo(
+    const std::array<int, 5> &results) {
+    int pairs = std::accumulate(results.begin(), results.end(), 0);
+    if (pairs == 0) return {0, 0};
+    double games = 2.0 * pairs;
+    double score_sum = 0;
+    for (size_t i = 0; i < results.size(); i++) {
+        score_sum += results[i] * (i / 2.0);
+    }
+    double mean = score_sum / games;
+    double pair_mean = 2.0 * mean;
+    double variance = 0;
+    for (size_t i = 0; i < results.size(); i++) {
+        double delta = i / 2.0 - pair_mean;
+        variance += results[i] * delta * delta;
+    }
+    variance /= games;
+    double standard_error = std::sqrt(variance / games);
+    double lower_score =
+        mean + norm_ppf(0.025) * standard_error;
+    double upper_score =
+        mean + norm_ppf(0.975) * standard_error;
+    auto score_to_elo = [](double score) {
+        score = std::max(1e-9, std::min(1.0 - 1e-9, score));
+        return -400.0 * std::log10(1.0 / score - 1.0);
+    };
+    double elo = score_to_elo(mean);
+    double ci =
+        (score_to_elo(upper_score) - score_to_elo(lower_score)) / 2.0;
+    return {elo, ci};
 }
 
 // Deterministic openings. Each game index derives its own generator, so a run
@@ -611,8 +739,16 @@ void play_game(int idx){
 
     GlobalBoard board;
     if (!g_sprt_openings.empty()) {
-        size_t traversal_index =
-            (size_t)idx % g_sprt_opening_order.size();
+        size_t traversal_index = (size_t)idx;
+        if (g_sprt_allow_book_wrap) {
+            traversal_index %= g_sprt_opening_order.size();
+        }
+        if (traversal_index >= g_sprt_opening_order.size()) {
+            std::cerr << "opening book exhausted at pair " << idx
+                      << " of " << g_sprt_opening_order.size()
+                      << std::endl;
+            std::abort();
+        }
         size_t opening_index =
             g_sprt_opening_order[traversal_index];
         const OpeningLine &line =
@@ -657,6 +793,8 @@ void play_game(int idx){
         }
     }
     GlobalBoard startpos = GlobalBoard(board);
+    std::array<int, 3> pair_wdl = {0, 0, 0};
+    int pair_score_index = 0;
     //play two games, alternating who goes first
     for (int i = 0; i < 2; i++) {
         const int bot1_player = i;
@@ -688,22 +826,26 @@ void play_game(int idx){
                 board.makeMove(best_move);
             }
         }
-        //update global total
+        // Update this opening pair after both colors have been played.
         int winner =
             forced_winner >= 0 ? forced_winner : board.checkWinner();
-        {
-            std::lock_guard<std::mutex> lock(global_mutex);
-            if (winner  == bot1_player) {
-                global_total[2]++; //loss
-            }
-            else if (winner  == bot2_player) {
-                global_total[0]++;  //win
-            }
-            else {
-                global_total[1]++; //draw
-            }
+        if (winner == bot1_player) {
+            pair_wdl[2]++; // loss
+        } else if (winner == bot2_player) {
+            pair_wdl[0]++; // win
+            pair_score_index += 2;
+        } else {
+            pair_wdl[1]++; // draw
+            pair_score_index += 1;
         }
         board = GlobalBoard(startpos);
+    }
+    {
+        std::lock_guard<std::mutex> lock(global_mutex);
+        for (size_t i = 0; i < global_total.size(); i++) {
+            global_total[i] += pair_wdl[i];
+        }
+        global_pentanomial[pair_score_index]++;
     }
 }
 
@@ -772,11 +914,27 @@ static void verify_opening_order() {
         || make_opening_order(1, 1) != std::vector<size_t>{0}
         || opening_order_fingerprint(
                make_opening_order(10000, 3237998146u))
-               != 8698397342672575767ULL) {
+               != 8698397342672575767ULL
+        || opening_order_fingerprint(
+               make_opening_order(50000, 3237998146u))
+               != 5306913481027657611ULL) {
         std::cerr << "opening traversal permutation mismatch" << std::endl;
         std::exit(1);
     }
     std::cout << "opening traversal permutation: OK" << std::endl;
+}
+
+static void verify_pentanomial_sprt() {
+    const std::array<int, 5> reference = {
+        10789, 19328, 33806, 19402, 10543
+    };
+    // Pinned against official-stockfish/fishtest LLRcalc.py.
+    double llr = sprt_pentanomial(reference, -3, 1);
+    if (std::abs(llr - 2.1310678117942596) > 1e-9) {
+        std::cerr << "pentanomial SPRT mismatch: " << llr << std::endl;
+        std::exit(1);
+    }
+    std::cout << "pentanomial SPRT: OK" << std::endl;
 }
 
 static void verify_mini_lut() {
@@ -1493,8 +1651,12 @@ struct NnueRankPos {
 // Label every non-terminal child of the same root. Training on score
 // differences within each group removes root-specific score calibration and
 // directly targets the move ordering induced by the leaf evaluator.
-static void dump_nnue_rank(int depth, int n_roots, const char *path) {
-    std::string play_path = find_data_file("nnue_pos.bin");
+static void dump_nnue_rank(
+    int depth, int n_roots, const char *path,
+    const char *source_override = nullptr) {
+    std::string play_path = source_override
+        ? std::string(source_override)
+        : find_data_file("nnue_pos.bin");
     if (play_path.empty()) play_path = find_data_file("datasets/nnue_pos.bin");
     std::vector<NnueDumpState> states;
     if (play_path.empty() || !read_nnue_dump_states(play_path, states)) {
@@ -1502,12 +1664,14 @@ static void dump_nnue_rank(int depth, int n_roots, const char *path) {
         std::exit(1);
     }
     subsample_dump_states(states, (size_t)std::max(1, n_roots), 20260912u);
+    CpuTopology topology = detect_cpu_topology();
     const unsigned int n_threads =
-        std::max(1u, std::thread::hardware_concurrency());
+        topology.physical ? topology.physical
+                          : std::max(1u, std::thread::hardware_concurrency());
     std::cout << "rank dump depth=" << depth << " roots=" << states.size()
               << " from " << play_path << " on " << n_threads
               << " threads -> " << path << std::endl;
-    CrossfishDev::init_mini_lut();
+    CrossfishPrev::init_mini_lut();
 
     std::vector<NnueRankPos> data;
     data.reserve(states.size() * 10);
@@ -1518,7 +1682,7 @@ static void dump_nnue_rank(int depth, int n_roots, const char *path) {
     std::atomic<size_t> skipped_terminal{0};
     std::atomic<size_t> skipped_bad{0};
     auto worker = [&]() {
-        CrossfishDev bot;
+        CrossfishPrev bot;
         NnueNet enc;
         GlobalBoard board;
         Move moves[81];
@@ -2842,6 +3006,97 @@ static bool save_opening_book(
     return out.good();
 }
 
+static bool same_opening_meta(
+    const OpeningBookMeta &a,
+    const OpeningBookMeta &b) {
+    return a.format_version == b.format_version
+        && a.seed == b.seed
+        && a.balance_limit == b.balance_limit
+        && a.move_margin == b.move_margin
+        && a.guide_depth == b.guide_depth
+        && a.shallow_depth == b.shallow_depth
+        && a.prefilter_depth == b.prefilter_depth
+        && a.score_depth == b.score_depth
+        && a.min_ply == b.min_ply
+        && a.max_ply == b.max_ply
+        && a.prefilter_limit == b.prefilter_limit;
+}
+
+static bool save_opening_generation_checkpoint(
+    const std::string &path,
+    const std::vector<OpeningLine> &lines,
+    const OpeningBookMeta &meta,
+    int requested,
+    uint32_t next_candidate) {
+    const std::string book_path = path + ".partial";
+    const std::string book_tmp = book_path + ".tmp";
+    const std::string state_path = path + ".next";
+    const std::string state_tmp = state_path + ".tmp";
+    if (!save_opening_book(book_tmp, lines, meta)) {
+        std::cerr << "failed to write opening checkpoint "
+                  << book_tmp << std::endl;
+        return false;
+    }
+    if (std::rename(book_tmp.c_str(), book_path.c_str()) != 0) {
+        std::perror("failed to install opening checkpoint");
+        return false;
+    }
+    {
+        std::ofstream out(state_tmp);
+        if (!out) return false;
+        out << "CFBGEN1 " << requested << ' '
+            << next_candidate << '\n';
+        if (!out.good()) return false;
+    }
+    if (std::rename(state_tmp.c_str(), state_path.c_str()) != 0) {
+        std::perror("failed to install opening checkpoint cursor");
+        return false;
+    }
+    return true;
+}
+
+static bool load_opening_generation_checkpoint(
+    const std::string &path,
+    const OpeningBookMeta &expected_meta,
+    int requested,
+    std::vector<OpeningLine> &lines,
+    uint32_t &next_candidate) {
+    const std::string book_path = path + ".partial";
+    const std::string state_path = path + ".next";
+    std::ifstream state(state_path);
+    if (!state) return false;
+    std::string magic;
+    int stored_requested = 0;
+    uint32_t stored_next = 0;
+    if (!(state >> magic >> stored_requested >> stored_next)
+        || magic != "CFBGEN1"
+        || stored_requested != requested) {
+        std::cerr << "ignoring incompatible opening checkpoint state "
+                  << state_path << std::endl;
+        return false;
+    }
+    if (!load_opening_book(book_path, true)) {
+        std::cerr << "ignoring invalid opening checkpoint book "
+                  << book_path << std::endl;
+        return false;
+    }
+    if (!same_opening_meta(g_sprt_opening_meta, expected_meta)
+        || g_sprt_openings.size() > (size_t)requested) {
+        std::cerr << "ignoring incompatible opening checkpoint book "
+                  << book_path << std::endl;
+        g_sprt_openings.clear();
+        g_sprt_opening_order.clear();
+        g_sprt_opening_source.clear();
+        return false;
+    }
+    lines = g_sprt_openings;
+    next_candidate = stored_next;
+    g_sprt_openings.clear();
+    g_sprt_opening_order.clear();
+    g_sprt_opening_source.clear();
+    return true;
+}
+
 static void report_opening_book(
     const std::vector<OpeningLine> &lines,
     const OpeningBookMeta &meta,
@@ -3145,6 +3400,18 @@ static int generate_opening_book(
     const int n_ply_buckets = max_ply - min_ply + 1;
     if (requested < n_ply_buckets) requested = n_ply_buckets;
     threads = std::max(1u, threads);
+    OpeningBookMeta meta;
+    meta.format_version = 2;
+    meta.seed = seed;
+    meta.balance_limit = balance_limit;
+    meta.move_margin = move_margin;
+    meta.guide_depth = 0;  // full static HCE + D16 + macro evaluator
+    meta.shallow_depth = shallow_depth;
+    meta.prefilter_depth = prefilter_depth;
+    meta.prefilter_limit = prefilter_limit;
+    meta.score_depth = score_depth;
+    meta.min_ply = min_ply;
+    meta.max_ply = max_ply;
     {
         CrossfishPrev warmup;
         CrossfishPrev::init_mini_lut();
@@ -3160,6 +3427,28 @@ static int generate_opening_book(
     accepted.reserve(requested);
     std::set<std::string> seen_states;
     uint32_t next_candidate = 0;
+    if (load_opening_generation_checkpoint(
+            path, meta, requested, accepted, next_candidate)) {
+        NnueNet checkpoint_encoder;
+        char encoded[93];
+        for (const OpeningLine &line : accepted) {
+            if (line.n_moves <= OPENING_BOOK_MAX_PLIES) {
+                accepted_by_ply[line.n_moves]++;
+            }
+            GlobalBoard board;
+            if (!replay_opening(line, board)) {
+                std::cerr << "illegal line in opening checkpoint"
+                          << std::endl;
+                return 1;
+            }
+            checkpoint_encoder.encode_state(board, encoded);
+            seen_states.emplace(encoded, sizeof(encoded));
+        }
+        std::cout << "book generation resume: accepted="
+                  << accepted.size() << '/' << requested
+                  << " next_candidate=" << next_candidate
+                  << std::endl;
+    }
     const int batch_size = std::max(32u, threads * 8u);
     const uint32_t max_candidates =
         (uint32_t)std::max(100000, requested * 150);
@@ -3291,6 +3580,10 @@ static int generate_opening_book(
                       << " deep_searches=" << deep_searches
                       << " deep_passes=" << deep_passes
                       << std::endl;
+            if (!save_opening_generation_checkpoint(
+                    path, accepted, meta, requested, next_candidate)) {
+                return 1;
+            }
         }
     }
     if ((int)accepted.size() != requested) {
@@ -3299,24 +3592,27 @@ static int generate_opening_book(
         return 1;
     }
 
-    OpeningBookMeta meta;
-    meta.format_version = 2;
-    meta.seed = seed;
-    meta.balance_limit = balance_limit;
-    meta.move_margin = move_margin;
-    meta.guide_depth = 0;  // full static HCE + D16 + macro evaluator
-    meta.shallow_depth = shallow_depth;
-    meta.prefilter_depth = prefilter_depth;
-    meta.prefilter_limit = prefilter_limit;
-    meta.score_depth = score_depth;
-    meta.min_ply = min_ply;
-    meta.max_ply = max_ply;
     if (!save_opening_book(path, accepted, meta)) {
         std::cerr << "failed to write opening book " << path << std::endl;
         return 1;
     }
+    std::remove((path + ".partial").c_str());
+    std::remove((path + ".next").c_str());
     report_opening_book(accepted, meta, path);
     return 0;
+}
+
+static bool parse_pentanomial_counts(
+    const char *text,
+    std::array<int, 5> &counts) {
+    char trailing = 0;
+    int parsed = std::sscanf(
+        text, "%d,%d,%d,%d,%d%c",
+        &counts[0], &counts[1], &counts[2], &counts[3], &counts[4],
+        &trailing);
+    if (parsed != 5) return false;
+    return std::all_of(
+        counts.begin(), counts.end(), [](int value) { return value >= 0; });
 }
 
 int main(int argc, char** argv) {
@@ -3324,7 +3620,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[2], "generate") == 0) {
             std::string path =
                 argc >= 4 ? argv[3] : "cpp_impl/opening_book.bin";
-            int count = argc >= 5 ? std::max(1, std::atoi(argv[4])) : 10000;
+            int count = argc >= 5 ? std::max(1, std::atoi(argv[4])) : 50000;
             CpuTopology topology = detect_cpu_topology();
             unsigned int threads =
                 topology.physical > 1 ? topology.physical - 1 : 1;
@@ -3428,10 +3724,12 @@ int main(int argc, char** argv) {
             int depth = 5;
             int n_roots = 10000;
             const char *path = "datasets/nnue_rank.bin";
+            const char *source = nullptr;
             if (argc >= 4) depth = std::atoi(argv[3]);
             if (argc >= 5) n_roots = std::atoi(argv[4]);
             if (argc >= 6) path = argv[5];
-            dump_nnue_rank(depth, n_roots, path);
+            if (argc >= 7) source = argv[6];
+            dump_nnue_rank(depth, n_roots, path, source);
             return 0;
         }
         int n_games = 8000;
@@ -3555,6 +3853,7 @@ int main(int argc, char** argv) {
     verify_fill_movegen();
     verify_referee_timeout();
     verify_opening_order();
+    verify_pentanomial_sprt();
     verify_mini_lut();
     verify_utttai_state();
     verify_eval_linear();
@@ -3611,6 +3910,12 @@ int main(int argc, char** argv) {
     if (const char *s = std::getenv("SPRT_MAX_GAMES")) {
         g_sprt_max_games = std::max(0, std::atoi(s));
     }
+    if (const char *s = std::getenv("SPRT_PAIR_MODEL")) {
+        g_sprt_pair_model = std::atoi(s) != 0;
+    }
+    if (const char *s = std::getenv("SPRT_ALLOW_BOOK_WRAP")) {
+        g_sprt_allow_book_wrap = std::atoi(s) != 0;
+    }
     if (const char *s = std::getenv("SPRT_BOOK")) {
         g_sprt_book = std::atoi(s) != 0;
     }
@@ -3628,6 +3933,15 @@ int main(int argc, char** argv) {
     }
     if (const char *s = std::getenv("SPRT_RESUME_LOSSES")) {
         g_sprt_resume_losses = std::max(0, std::atoi(s));
+    }
+    if (const char *s = std::getenv("SPRT_RESUME_PENTA")) {
+        if (!parse_pentanomial_counts(s, g_sprt_resume_pentanomial)) {
+            std::cerr
+                << "SPRT_RESUME_PENTA must be five nonnegative"
+                << " comma-separated counts" << std::endl;
+            return 1;
+        }
+        g_sprt_resume_pentanomial_set = true;
     }
     if (const char *s = std::getenv("SPRT_GAME_OFFSET")) {
         g_sprt_game_offset = std::max(0, std::atoi(s));
@@ -3661,12 +3975,30 @@ int main(int argc, char** argv) {
     }
     const int resumed_games =
         g_sprt_resume_wins + g_sprt_resume_draws + g_sprt_resume_losses;
-    if (g_sprt_game_offset < 0) {
-        if (resumed_games & 1) {
-            std::cerr << "SPRT resume total must be even (one opening produces two games)"
-                      << std::endl;
+    if (resumed_games & 1) {
+        std::cerr
+            << "SPRT resume total must be even"
+            << " (one opening produces two games)" << std::endl;
+        return 1;
+    }
+    int resumed_pairs = 0;
+    if (g_sprt_resume_pentanomial_set) {
+        resumed_pairs = std::accumulate(
+            g_sprt_resume_pentanomial.begin(),
+            g_sprt_resume_pentanomial.end(), 0);
+        if (resumed_pairs * 2 != resumed_games) {
+            std::cerr
+                << "SPRT_RESUME_PENTA does not match resumed W/D/L"
+                << std::endl;
             return 1;
         }
+    } else if (g_sprt_pair_model && resumed_games != 0) {
+        std::cerr
+            << "paired SPRT resume requires SPRT_RESUME_PENTA="
+            << "LL,LD,MID,DW,WW" << std::endl;
+        return 1;
+    }
+    if (g_sprt_game_offset < 0) {
         g_sprt_game_offset = resumed_games / 2;
     }
     global_total = {
@@ -3674,6 +4006,7 @@ int main(int argc, char** argv) {
         g_sprt_resume_draws,
         g_sprt_resume_losses
     };
+    global_pentanomial = g_sprt_resume_pentanomial;
     if (!nnue_init_runtime()) {
         return 1;
     }
@@ -3681,6 +4014,9 @@ int main(int argc, char** argv) {
               << " H0=" << g_sprt_elo0
               << " H1=" << g_sprt_elo1
               << " bound=" << g_sprt_llr_bound
+              << " model="
+              << (g_sprt_pair_model ? "pentanomial-pairs"
+                                    : "trinomial-games")
               << " referee_timeout="
               << (g_fixed_search_depth > 0
                       ? std::string("off")
@@ -3695,6 +4031,10 @@ int main(int argc, char** argv) {
                              ? "center-enum-4ply"
                              : (g_sprt_book ? "seeded-4to8"
                                             : "random-4to8")));
+    if (!g_sprt_openings.empty()) {
+        std::cout << " book_wrap="
+                  << (g_sprt_allow_book_wrap ? "explicit" : "disabled");
+    }
     if (g_nnue_bin_path[0]) {
         std::cout << " nnue_bin=" << g_nnue_bin_path;
     }
@@ -3722,7 +4062,7 @@ int main(int argc, char** argv) {
               << topology.logical << " logical available"
               << (g_sprt_threads ? ", override" : ", one core reserved")
               << ")" << std::endl;
-    double llr = sprt(global_total[0], global_total[1], global_total[2]);
+    double llr = current_sprt_llr();
 
     //benchmark NPS from startpos for Prev and Dev
     CrossfishPrev prev;
@@ -3741,23 +4081,59 @@ int main(int argc, char** argv) {
                   << " W=" << global_total[0]
                   << " D=" << global_total[1]
                   << " L=" << global_total[2]
+                  << " Penta="
+                  << global_pentanomial[0] << ','
+                  << global_pentanomial[1] << ','
+                  << global_pentanomial[2] << ','
+                  << global_pentanomial[3] << ','
+                  << global_pentanomial[4]
                   << " next opening=" << game_idx
                   << " LLR=" << llr << std::endl;
     }
+    bool book_exhausted = false;
     while (std::abs(llr) < g_sprt_llr_bound
            && (g_sprt_max_games == 0 || total_games < g_sprt_max_games)) {
+        unsigned int jobs = n_threads;
+        if (g_sprt_max_games != 0) {
+            int pairs_left =
+                std::max(0, (g_sprt_max_games - total_games) / 2);
+            jobs = std::min<unsigned int>(
+                jobs, (unsigned int)pairs_left);
+        }
+        if (!g_sprt_openings.empty() && !g_sprt_allow_book_wrap) {
+            size_t openings_left =
+                game_idx < (int)g_sprt_opening_order.size()
+                    ? g_sprt_opening_order.size() - (size_t)game_idx
+                    : 0;
+            jobs = std::min<unsigned int>(
+                jobs, (unsigned int)openings_left);
+            if (jobs == 0) {
+                book_exhausted = true;
+                break;
+            }
+        }
+        if (jobs == 0) break;
         std::vector<std::future<void>> futures;
-        for (unsigned int i = 0; i < n_threads; ++i) {
+        for (unsigned int i = 0; i < jobs; ++i) {
             futures.push_back(std::async(std::launch::async, play_game, game_idx++));
         }
         for (auto& f : futures) {
             f.get();
         }
         total_games = global_total[0] + global_total[1] + global_total[2];
-        EloResult elo = calc_elo_diff(global_total[0], global_total[2], global_total[1]);
-        llr = sprt(global_total[0], global_total[1], global_total[2]);
+        EloResult elo = g_sprt_pair_model
+            ? calc_pentanomial_elo(global_pentanomial)
+            : calc_elo_diff(
+                  global_total[0], global_total[2], global_total[1]);
+        llr = current_sprt_llr();
         std::cout << "N: " << total_games << " W: " << global_total[0]
                 << " D: " << global_total[1] << " L: " << global_total[2]
+                << " Penta="
+                << global_pentanomial[0] << ','
+                << global_pentanomial[1] << ','
+                << global_pentanomial[2] << ','
+                << global_pentanomial[3] << ','
+                << global_pentanomial[4]
                 << " Elo diff: " << elo.elo_diff << " +/- " << elo.ci
                 << " LLR: " << llr
                 << " timeouts Prev=" << prev_timeout_losses.load()
@@ -3773,6 +4149,13 @@ int main(int argc, char** argv) {
     } else if (llr <= -g_sprt_llr_bound) {
         std::cout << "SPRT FAIL: H0 " << g_sprt_elo0
                   << " Elo favored over H1 " << g_sprt_elo1 << std::endl;
+    } else if (book_exhausted) {
+        int tested_pairs = std::accumulate(
+            global_pentanomial.begin(), global_pentanomial.end(), 0);
+        std::cout
+            << "SPRT INCONCLUSIVE: opening book exhausted after "
+            << total_games << " games / " << tested_pairs
+            << " unique opening pairs" << std::endl;
     } else {
         std::cout << "SPRT INCONCLUSIVE at " << total_games << " games" << std::endl;
     }

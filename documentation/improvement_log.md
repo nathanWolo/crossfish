@@ -1482,3 +1482,177 @@ With setup excluded correctly, a 500-game external-process comparison at
 90 ms completed with zero timeout losses for both source forms. Maximum
 responses were 90.32 ms for readable `codingame_nnue.cpp` and 90.27 ms for
 the generated `cg_input.cpp`.
+
+---
+
+## 43. Pair-level SPRT and a 50,000-position benchmark (15 September 2026)
+
+Round 9 began with several small search changes that looked promising in
+short screens. The first candidate taken to a real H0=0/H1=+5 decision was a
+larger late-move-reduction base of 65. Its early 700-game screen estimated
+about +14 Elo, but the uninterrupted official run reversed:
+
+```text
+N 9884  W 2782 / D 4230 / L 2872
+-3.16 +/- 5.18 Elo
+LLR -3.04331: FAIL H1=+5 against H0=0
+Timeout losses: Prev 0 / Dev 0
+```
+
+This was a useful warning against freezing changes from fixed-size screens.
+The engine is mature enough that a plausible +5 Elo effect can require many
+thousands of games, and short estimates can point in the wrong direction.
+
+The next long run tested aspiration width 20 against width 40. It reached the
+end of the original opening corpus without an SPRT decision:
+
+```text
+N 19992  W 5730 / D 8759 / L 5503
++3.95 +/- 3.61 Elo
+LLR +2.29267
+Timeout losses: Prev 0 / Dev 0
+```
+
+Those are the last clean figures before a full traversal. The old book held
+10,000 positions and therefore only 20,000 color-swapped games. The harness
+then silently reused positions with modulo indexing. Repetition does not
+necessarily bias the Elo point estimate, but treating repeated roots as
+independent overstates confidence and invalidates the LLR. Post-20,000 data
+from that run were discarded, and aspiration width 20 remains promising but
+unresolved until rerun on the replacement corpus.
+
+The replacement-corpus rerun used the official 90 ms search budget, the
+100 ms referee deadline, pair-level pentanomial SPRT, and unique positions
+from the 50,000-position book. At the user's requested stopping point it had
+still not produced a clear result:
+
+```text
+N 23142  W 6676 / D 9973 / L 6493
+Penta 809 / 2756 / 4299 / 2857 / 850
++2.75 +/- 3.26 Elo
+LLR +0.448 for H0=0 / H1=+5
+Timeout losses: Prev 0 / Dev 0
+```
+
+This is an inconclusive result, not a pass. Aspiration width 40 therefore
+remains the accepted baseline; width 20 was not frozen into the engine.
+
+The testing infrastructure was hardened before spending more CPU:
+
+- the default SPRT now uses pair-level pentanomial outcomes rather than
+  per-game trinomial outcomes;
+- the generalized-logistic LLR and pair-aware Elo interval are pinned against
+  a known Stockfish Fishtest reference vector;
+- the book never wraps silently and reports an inconclusive result on
+  exhaustion;
+- paired resume requires W/D/L, all five pentanomial bins, and the next
+  opening-pair offset;
+- generation writes atomic book-prefix and cursor checkpoints and resumes
+  deterministically;
+- the verifier retains both historical and current traversal fingerprints.
+
+The replacement artifact was generated against frozen baseline `88c57b4`
+with the same reasonable-move sampling, depth-12 prefilter, and authoritative
+depth-16 `abs(score) <= 300` gate:
+
+```text
+Positions: 50,000
+Unique paired-game capacity: 100,000 games
+File size: 800,032 bytes
+SHA-256: 1863013821e446ae2aab3b132a86863af64bcb83d815c2516c84a366809dfae5
+Mean absolute stored score: 159.826
+Absolute-score p50 / p90 / p99 / max: 165 / 275 / 298 / 300
+Traversal fingerprint: 5306913481027657611
+```
+
+A 500-position depth-16 replay reproduced every stored score exactly. A
+140-position depth-20 sample kept 106 positions inside +/-300 and 136 inside
++/-500, with mean absolute score 207.61. This closely matches the original
+book's deeper audit and preserves the intended fairness tradeoff.
+
+Finally, a fixed 1,000-game Prev-versus-Prev smoke used the new book,
+pentanomial model, official 90 ms search budget, seven physical workers, and
+the external 100 ms deadline:
+
+```text
+W 281 / D 456 / L 263
+Penta 31 / 122 / 180 / 132 / 35
++6.25 +/- 15.50 Elo
+LLR +0.300 for H0=0 / H1=+5
+Timeout losses: Prev 0 / Dev 0
+Maximum response: Prev 90.18 ms / Dev 90.12 ms
+```
+
+The identical-engine result is compatible with zero and confirms that the
+expanded book, paired model, and no-wrap scheduler are ready for the pending
+decision runs. After the inconclusive width-20 rerun documented above,
+simplified qsearch capture ordering was tested next. A passing change is
+frozen before the next candidate is measured, so small accepted gains
+accumulate against an honest incremental baseline.
+
+The simplified qsearch ordering had looked positive in short screens, but
+the official replacement-book run reversed and reached a formal decision:
+
+```text
+N 7812  W 2144 / D 3468 / L 2200
+Penta 291 / 962 / 1421 / 976 / 256
+-2.49 +/- 5.60 Elo
+LLR -3.05837: FAIL H1=+5 against H0=0
+Timeout losses: Prev 0 / Dev 0
+Maximum response: Prev 91.15 ms / Dev 96.47 ms
+```
+
+The full qsearch capture ordering therefore remains the accepted default.
+Incremental TT-hash restoration was the next isolated candidate. It avoids
+reversing every Zobrist component during unmake by saving the complete key
+before each move and restoring it from the move stack. Despite an initially
+encouraging throughput probe, the official run found no meaningful strength
+gain:
+
+```text
+N 16884  W 4770 / D 7355 / L 4759
+Penta 607 / 2017 / 3160 / 2074 / 584
++0.23 +/- 3.80 Elo
+LLR -3.03183: FAIL H1=+5 against H0=0
+Timeout losses: Prev 1 / Dev 1
+Maximum response: Prev 106.42 ms / Dev 105.90 ms
+```
+
+The timeout losses were symmetric host jitter. Hash recomputation on unmake
+therefore remains the accepted default. A three-way transposition-table
+bucket, packed into the same 32-byte / 4 MiB table footprint, is the next
+isolated candidate.
+
+That follow-up compressed each entry to ten bytes: a 46-bit hash signature,
+18-bit signed score, seven-bit move, two-bit bound flag, and seven-bit depth.
+This fits three entries plus padding in each existing 32-byte bucket, raising
+associativity by 50% without increasing the 4 MiB table. Both the normal and
+packed variants passed all 27 unit tests, including score extremes and packed
+metadata round trips.
+
+The extra capacity did not translate into stable strength. Fixed 700-game
+book screens finished:
+
+```text
+20 ms: -2.98 +/- 19.81 Elo, timeouts Prev 0 / Dev 0
+90 ms: +0.00 +/- 18.93 Elo, timeouts Prev 0 / Dev 0
+```
+
+The official-time startup probe was also about 3% slower for the packed
+variant because two of the three ten-byte entries are not naturally aligned.
+With two independent screens centered on zero and no throughput gain, the
+candidate did not justify a long SPRT. The full-hash two-way 32-byte bucket
+remains the accepted default.
+
+A second TT policy experiment protected an existing same-key entry when a
+new non-exact result was at least five plies shallower. Exact results still
+replaced, matching the broad shape of depth-preferred policies used by larger
+engines. It also failed both fixed-size screens:
+
+```text
+20 ms: -6.95 +/- 19.47 Elo, timeouts Prev 0 / Dev 0
+90 ms: -2.48 +/- 19.35 Elo, timeouts Prev 0 / Dev 0
+```
+
+The unconditional same-key replacement policy therefore remains the
+accepted default.

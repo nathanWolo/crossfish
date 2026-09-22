@@ -53,7 +53,7 @@ roundrobin: compile-cg compile-legend
 	cd $(ROOT) && python3 roundrobin.py --games 10000 --ms 20 --out /tmp/roundrobin.txt
 
 opening-book: $(BIN)/test_bots
-	$(BIN)/test_bots book generate $(SRC_DIR)/opening_book.bin 10000
+	$(BIN)/test_bots book generate $(SRC_DIR)/opening_book.bin 50000
 
 book-inspect: $(BIN)/test_bots
 	$(BIN)/test_bots book inspect $(SRC_DIR)/opening_book.bin

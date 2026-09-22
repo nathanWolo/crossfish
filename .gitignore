@@ -115,3 +115,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Local build artifacts
+a.out
+gmon.out
+cpp_impl/unit_tests
