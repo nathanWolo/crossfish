@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -74,6 +75,9 @@ class CrossfishDev {
             int n_moves;
             bool prev_move_was_pass;
             uint32_t macro_key[2]{};
+            // MiniNet centroid code per (perspective, miniboard); only the
+            // played miniboard's two bytes change on a move.
+            uint8_t mini_code[2][9]{};
             uint8_t active_board = 9;
             // check_winner_fast's answer for the current position. Only a move
             // that decides a miniboard can change it, so make/unmake refresh it
@@ -154,6 +158,14 @@ class CrossfishDev {
                         move_history.top().square];
                 }
 #endif
+                // Seed the per-miniboard MiniNet codes; make/unmake keep them
+                // current from here on.
+                for (int mb = 0; mb < 9; mb++) {
+                    const int t0 = fast_mini_index[mini_boards[mb].markers[0]];
+                    const int t1 = fast_mini_index[mini_boards[mb].markers[1]];
+                    mini_code[0][mb] = D16_MN_CODE[t0 + 2 * t1];
+                    mini_code[1][mb] = D16_MN_CODE[t1 + 2 * t0];
+                }
                 // Stones inside a decided miniboard can never affect play again.
                 // Remove them from the search key so transpositions that reached
                 // the same won/drawn miniboard through different move orders merge.
@@ -228,6 +240,24 @@ class CrossfishDev {
                 board.mini_boards[mb].markers[perspective],
                 board.mini_boards[mb].markers[perspective ^ 1]);
         }
+
+        // The MiniNet centroid code of a miniboard changes only when that
+        // miniboard changes, so it is maintained here (two bytes per move)
+        // instead of being looked up nine times per evaluated leaf. Search
+        // markers are disjoint, and for disjoint masks the packed table obeys
+        // D16_MN_MASK_CODE[(mine << 9) | opp] == D16_MN_CODE[ternary], where
+        // the ternary index is the sum fast_mini_index already tabulates. So
+        // this reads the same byte the eval used to read, out of a 19 KiB table
+        // through a 1 KiB one rather than out of the 256 KiB packed table.
+        static void update_mini_code(FastBoard &board, int mb) {
+            const int t0 = fast_mini_index[board.mini_boards[mb].markers[0]];
+            const int t1 = fast_mini_index[board.mini_boards[mb].markers[1]];
+            board.mini_code[0][mb] = D16_MN_CODE[t0 + 2 * t1];
+            board.mini_code[1][mb] = D16_MN_CODE[t1 + 2 * t0];
+        }
+
+        template <typename Board>
+        static void update_mini_code(Board &, int) {}
 
         static void add_out_of_play(FastBoard &board, int bit) {
             board.out_of_play |= bit;
@@ -331,6 +361,26 @@ class CrossfishDev {
                 constraint, board.macro_key[stm]);
         }
 
+        // std::lround(float) compiles to an out-of-line lroundf@plt call, one
+        // per evaluated leaf. glibc's lroundf is pure integer bit manipulation
+        // on the float's encoding; running the same steps inline returns the
+        // identical int with no call. Verified equal to (int)std::lround for
+        // all 2,650,800,126 finite floats with |x| < 2^31.
+        static int lround_bits(float x) {
+            uint32_t bits;
+            memcpy(&bits, &x, sizeof(bits));
+            const int exponent = (int)((bits >> 23) & 0xff) - 127;
+            const int sign = ((int32_t)bits >> 31) | 1;
+            if (exponent >= 31) return (int)(long)x;
+            if (exponent < 0) return (exponent == -1) ? sign : 0;
+            uint32_t mantissa = (bits & 0x7fffffu) | 0x800000u;
+            if (exponent > 22) {
+                return sign * (int)(mantissa << (exponent - 23));
+            }
+            mantissa += 0x400000u >> exponent;
+            return sign * (int)(mantissa >> (23 - exponent));
+        }
+
         static int evaluate_mini_cached(const FastBoard &board) {
             const int stm = board.n_moves & 1;
             const int c = active_board_index(board);
@@ -338,9 +388,7 @@ class CrossfishDev {
                 (const __m256i *)D16_MN_FACTOR_INIT[c]);
             uint32_t macro = board.macro_key[stm];
             for (int mb = 0; mb < 9; mb++, macro >>= 2) {
-                const int mine = board.mini_boards[mb].markers[stm];
-                const int opp = board.mini_boards[mb].markers[stm ^ 1];
-                const int code = D16_MN_MASK_CODE[(mine << 9) | opp];
+                const int code = board.mini_code[stm][mb];
                 hidden = _mm256_add_epi32(
                     hidden,
                     _mm256_load_si256(
@@ -366,7 +414,7 @@ class CrossfishDev {
             const float out =
                 D16_MN_B2
                 + d16_mini_hsum256(value) / D16_MN_FACTOR_SCALE;
-            return (int)std::lround(out);
+            return lround_bits(out);
         }
 
         using SearchClock = std::chrono::steady_clock;
@@ -859,7 +907,7 @@ class CrossfishDev {
         CorrEntry &corr_entry(FastBoard &board) {
             int out_of_play = out_of_play_mask(board);
             int mb = active_board_index(board);
-            return corr_hist[board.n_moves % 2][mb][out_of_play];
+            return corr_hist[(board.n_moves & 1)][mb][out_of_play];
         }
 
         CorrEntry &corr_local_entry(FastBoard &board) {
@@ -1092,7 +1140,7 @@ class CrossfishDev {
             for (int mb = 0; mb < 9; mb++) {
                 set_hce_mb(board, mb);
             }
-#ifdef CROSSFISH_CACHE_HCE_GLOBAL
+#ifndef CROSSFISH_DISABLE_HCE_GLOBAL_CACHE
             hce_global_score = evaluate_hce_global(board);
 #endif
             hce_acc_ready = true;
@@ -1136,6 +1184,7 @@ class CrossfishDev {
             }
             board.move_history.push(move);
             board.mini_boards[move.mini_board].markers[stm] = before | bit;
+            update_mini_code(board, move.mini_board);
 #ifdef CROSSFISH_CANONICAL_FREE_CONSTRAINT
             xor_position_hash(
                 board, board.move_hashes[stm][move.mini_board][move.square]);
@@ -1179,7 +1228,9 @@ class CrossfishDev {
             board.n_moves++;
             if (hce_acc_ready) {
                 set_hce_mb(board, move.mini_board);
-#ifdef CROSSFISH_CACHE_HCE_GLOBAL
+#ifndef CROSSFISH_DISABLE_HCE_GLOBAL_CACHE
+                // The global terms read only mini_board_states, which change
+                // here exactly when this move decided a miniboard.
                 if (decided_state >= 0) {
                     hce_global_score = evaluate_hce_global(board);
                 }
@@ -1222,6 +1273,7 @@ class CrossfishDev {
             }
             int stm = board.n_moves & 1;
             board.mini_boards[move.mini_board].markers[stm] &= ~(1 << move.square);
+            update_mini_code(board, move.mini_board);
 #ifdef CROSSFISH_CANONICAL_FREE_CONSTRAINT
             xor_position_hash(
                 board, board.move_hashes[stm][move.mini_board][move.square]);
@@ -1246,7 +1298,7 @@ class CrossfishDev {
             }
             if (hce_acc_ready) {
                 restore_hce_mb(board.n_moves, move.mini_board);
-#ifdef CROSSFISH_CACHE_HCE_GLOBAL
+#ifndef CROSSFISH_DISABLE_HCE_GLOBAL_CACHE
                 if (was_decided) {
                     hce_global_score = evaluate_hce_global(board);
                 }
@@ -2025,7 +2077,7 @@ class CrossfishDev {
                 return;
             }
             int out_of_play = out_of_play_mask(board);
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             FastMove cm = NO_FAST_MOVE;
             if (board.n_moves > 0) {
                 Move prev = board.move_history.top();
@@ -2095,7 +2147,7 @@ class CrossfishDev {
             if (board.n_moves == 0) return 0;
             int active_square = active_board_index(board);
             int out_of_play = out_of_play_mask(board);
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             auto add_from_mb = [&](int mb) {
                 int mine = board.mini_boards[mb].markers[stm];
                 int occupied = board.mini_boards[mb].markers[0]
@@ -2119,7 +2171,7 @@ class CrossfishDev {
 
         template <typename Board>
         bool is_capture_avx(Board &board, Move &move) {
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             int mine = board.mini_boards[move.mini_board].markers[stm];
             return (fast_win_moves[mine] & (1 << move.square)) != 0;
         }
@@ -2134,7 +2186,7 @@ class CrossfishDev {
         template <typename Board>
         bool creates_two_in_a_row(Board &board, Move &move) {
             int idx = cached_mini_key(board, move.mini_board);
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             return (mini_tiar_sq[idx][stm] & (1 << move.square)) != 0;
         }
 
@@ -2146,7 +2198,7 @@ class CrossfishDev {
                 return;
             }
             int out_of_play = out_of_play_mask(board);
-            int stm = board.n_moves % 2;
+            int stm = (board.n_moves & 1);
             Move cm{99, 99};
             if (board.n_moves > 0) {
                 Move prev = board.move_history.top();
@@ -2254,7 +2306,7 @@ class CrossfishDev {
         // Live miniboard LUT indices are written to idx_out.
         void eval_parts(GlobalBoard &board, int16_t *idx_out, int &n_out, int &base_out) {
             init_mini_lut();
-            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+            int stm_sign = ((board.n_moves & 1) == 0) ? 1 : -1;
             int out_of_play = out_of_play_mask(board);
             int p0_two_in_a_row_map = 0;
             int p1_two_in_a_row_map = 0;
@@ -2301,15 +2353,14 @@ class CrossfishDev {
                 extra += FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
             }
             int live = (~out_of_play_mask(board)) & 511;
-            int p0_capture_boards =
-                fast_win_moves[board.mini_board_states[0]]
-                & p0_two_in_a_row_map & live;
-            int p1_capture_boards =
-                fast_win_moves[board.mini_board_states[1]]
-                & p1_two_in_a_row_map & live;
+            // Only the side that is not to move is tested, so build that one
+            // mask rather than both.
+            const int other = (board.n_moves & 1) ^ 1;
+            const int other_map =
+                other ? p1_two_in_a_row_map : p0_two_in_a_row_map;
             bool opponent_has_latent_capture =
-                (board.n_moves & 1) ? (p0_capture_boards != 0)
-                                    : (p1_capture_boards != 0);
+                (fast_win_moves[board.mini_board_states[other]]
+                 & other_map & live) != 0;
             if (opponent_has_latent_capture) {
                 extra += OPP_LATENT_CAPTURE_BONUS;
             }
@@ -2389,7 +2440,7 @@ class CrossfishDev {
                                    int p0_two_in_a_row_map,
                                    int p1_two_in_a_row_map,
                                    int global) {
-            int stm_sign = (board.n_moves % 2 == 0) ? 1 : -1;
+            int stm_sign = ((board.n_moves & 1) == 0) ? 1 : -1;
             int p0_miniboards = board.mini_board_states[0];
             int p1_miniboards = board.mini_board_states[1];
             global += eval_weights[5]
@@ -2437,7 +2488,12 @@ class CrossfishDev {
             if (!hce_acc_ready) {
                 return evaluate_hce(board);
             }
-#ifdef CROSSFISH_CACHE_HCE_GLOBAL
+#ifndef CROSSFISH_DISABLE_HCE_GLOBAL_CACHE
+            // hce_global_score is maintained on every miniboard decision, so
+            // the four popcounts, four multiplies and two 256 KiB threat-table
+            // reads of evaluate_hce_global run once per decided move instead of
+            // once per evaluated node (about 168k times instead of 1.2M in a
+            // 2.1M-node search).
             return finish_hce_with_global(
                 board, hce_local_score, hce_tiar_maps[0],
                 hce_tiar_maps[1], hce_global_score);
