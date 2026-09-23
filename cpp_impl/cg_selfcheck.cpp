@@ -5,8 +5,10 @@
 // edit that nothing in `make test` checks for behavioural equivalence. This
 // driver pins that down: it renames the CG file's main() away, includes it
 // whole, and drives the CG engine's own search_fixed_depth over a
-// deterministic position set, printing a checksum over the selected move, the
-// score and the node count of every search.
+// deterministic position set, printing a checksum over the score and the
+// node count of every search.
+// It also decodes the opening book and prints the table's entry count and
+// checksum, which must match play_book_check on the local build.
 //
 // Build it BEFORE a port and again AFTER. For a port of a tree-identical
 // change the two checksums must match exactly. Nothing here is compiled into
@@ -24,7 +26,21 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <random>
+#include <vector>
+
+// FNV-1a over the decoded book table in key order, so builds can be compared.
+inline uint64_t play_book_table_checksum() {
+    std::vector<std::pair<uint64_t, uint8_t>> rows(PB_TABLE.begin(), PB_TABLE.end());
+    std::sort(rows.begin(), rows.end());
+    uint64_t h = 1469598103934665603ull;
+    for (auto &r : rows) {
+        for (int i = 0; i < 8; i++) { h ^= (r.first >> (8 * i)) & 0xff; h *= 1099511628211ull; }
+        h ^= r.second; h *= 1099511628211ull;
+    }
+    return h;
+}
 
 namespace {
 
@@ -90,5 +106,9 @@ int main(int argc, char **argv) {
     std::printf("cg_selfcheck positions=%d depth=%d nodes=%lld checksum=%llu\n",
                 searched, depth, total_nodes,
                 (unsigned long long)checksum);
+    bool book_ok = pb_init<GlobalBoard, Move>();
+    std::printf("cg_selfcheck book=%s entries=%zu table_checksum=%llu\n",
+                book_ok ? "ok" : "FAILED", PB_TABLE.size(),
+                (unsigned long long)play_book_table_checksum());
     return 0;
 }

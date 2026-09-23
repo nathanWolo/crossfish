@@ -196,6 +196,7 @@ faster.
 | Different leaf / different net / different HCE weights | `depth 4` | optional 20 ms, then **90 ms** | Official 90 ms pass. Depth-only is not enough. |
 | Same eval, faster implementation (LUTs, MiniNet projection, AVX) | `make -C cpp_impl bench` must print **IDENTICAL** | optional 20 ms, then **90 ms** | Official 90 ms pass. If `bench` reports any node-count difference, the "speedup" changed the eval and the SPRT would be measuring something else. |
 | Search (LMR, TT, move order, pruning) | optional 20 ms | **90 ms** | Official 90 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
+| Gameplay opening book (`play_book_data.hpp`) | `make -C cpp_impl play-book` (pack + check) | `play-book-match` from the start position, plus a paired run against a different engine | The official SPRT starts from its own 50,000 openings and never reaches the book; see `documentation/play_book.md`. |
 
 Do not skip `make test` because a gate passed.
 
@@ -309,6 +310,23 @@ implementation, and validation procedure.
 
 `--no-rename` is whitespace-only (no identifier shortening). When regenerating the submission from a net, `tools/nnue_emit_mininet_cg.py` minifies by default; pass `--no-minify` to keep the readable file.
 
+## Opening book
+
+The CodinGame bot plays its first moves from a full-coverage opening book,
+`cpp_impl/play_book_data.hpp`: every opponent reply is covered for our first 5
+moves after the center-center opening when moving first, and our first 4
+moves when moving second. Book moves come from 2-second searches, against the
+90 ms the bot otherwise has. It is 20,883 positions in 4,656 characters,
+stored without keys as move indices along a fixed walk of the book.
+
+It measured **+18.8 ± 9.1 Elo** head-to-head over 4,500 games from the start
+position (LLR 3.67, H0=0 / H1=+5) and about +20 in paired runs against the
+round-six engine, which it was not built from. It covers every game to the
+designed depth regardless of the opponent. A book
+grown from the lines our own engine plays looked better at home (+38) but fell
+out of book immediately against a different engine. Design, measurements and
+the regeneration procedure are in `documentation/play_book.md`.
+
 ## Latest strength result
 
 On 2026-09-22, a tree-identical hot-path rewrite passed the official 90 ms
@@ -334,7 +352,7 @@ code and global HCE term are cached. Because it is speed-only, the gate was
 node-count identity first (`make -C cpp_impl bench`) and then the 90 ms SPRT.
 
 Paste `cpp_impl/cg_input.cpp` (96,887 characters at round nine; 65,731 after
-the CJK14 payload repack, 34,269 below the limit).
+the CJK14 payload repack; 74,043 with the opening book, 25,957 below the limit).
 Static storage grew 4,368 bytes; the 4 MiB transposition table and 5 MiB macro
 table are unchanged. The CodinGame port is pinned to the pre-port engine by
 `cpp_impl/cg_selfcheck.cpp`, which checksums fixed-depth scores and node

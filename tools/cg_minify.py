@@ -69,6 +69,7 @@ STD_METHODS = frozenset(
     insert erase clear resize reserve emplace emplace_back
     push_back pop_back fill peek put write read
     good eof fail rdstate
+    find first second
     """.split()
 )
 

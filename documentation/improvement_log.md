@@ -1833,3 +1833,44 @@ counted bytes the paste would be rejected at submit time; the counting rule
 comes from a forum user's testing, not official documentation, and should
 be confirmed by a real paste. And `wc -c` no longer reports the capped
 quantity; the minifier's printed count does.
+
+---
+
+## 46. A full-coverage opening book (23 September 2026)
+
+The CJK14 repack left 34,269 characters of headroom, enough for an opening
+book. At 90 ms the engine reaches depth 11-12 in the early game; a 3-second
+search reaches about 18, and the two chose different moves in 47% of early
+positions (a 3 s vs 6 s control agreed 85% of the time, so the gap is real).
+The question was how to turn that into Elo against opponents we cannot see.
+
+**Selective books did not transfer.** A pilot that followed only likely
+opponent replies (within a margin of the best, by a depth-12 ranking) left
+book after about three moves: engine replies are hard to predict, and the
+engine's own 90 ms choice was the depth-12 top reply only 29% of the time. A
+book grown on-policy from self-play covered 6.8 and 8.0 moves per game and
+measured +38.5 ± 11.0 against our own engine, but only because it had learned
+that opponent's lines: against the round-six engine it fell out of book after
+2-3 moves and was worth about 0 (paired, 1,000 openings).
+
+**Full coverage did.** Covering every opponent reply through our 5th move
+after the center opening (moving first) and our 4th move (moving second) is
+20,883 positions after symmetry and transposition merging. Against the
+round-six engine it gave exactly 5 and 4 book moves in every game and a paired
+book value of +21.3. A 3,000-game head-to-head against the current engine,
+which it was not fit to, measured +19.6 ± 11.1 (1281-607-1112); a 1,500-game
+extension on the packed, shipped book added +17.2 ± 15.7. Pooled: +18.8 ± 9.1
+over 4,500 games, LLR 3.67 (H0=0, H1=+5), a pass. A second paired round-six run
+with a new seed gave +19.5.
+
+The book stores no keys. The packer and the bot drive one shared walk over the
+book, so the payload is only each move's index among the legal moves, in mixed
+radix: 4,656 characters, 3% above the information content. The bot decodes it
+in about 5 ms of the first turn, still runs its 90 ms search in book (warming
+its tables, as tested), and only plays a book move that is legal. The whole
+feature costs 8,312 characters; 25,957 remain.
+
+The official SPRT cannot gate this: its games start from the 50,000 SPRT
+openings, where a start-position book never applies. Book changes are gated
+by start-position matches (`make -C cpp_impl play-book-match`) and a paired
+run against a different engine. See `documentation/play_book.md`.

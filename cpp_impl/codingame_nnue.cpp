@@ -431,6 +431,8 @@ class GlobalBoard {
 // Packed evaluation headers are kept separate for normal builds and inlined by cg_minify.
 #include "mini_eval_d16.hpp"
 #include "macro_eval.hpp"
+// Full-coverage opening book; see documentation/play_book.md.
+#include "play_book.hpp"
 
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 static int g_fixed_search_depth = 0;
@@ -2617,6 +2619,7 @@ std::array<int, 3> aggregate_results(std::vector<std::future<std::array<int, 3>>
 static int run_match() {
     CrossfishDev engine;
     GlobalBoard board;
+    pb_init<GlobalBoard, Move>();
     std::string cmd;
     std::cout << std::unitbuf;
     while (std::cin >> cmd) {
@@ -2635,6 +2638,8 @@ static int run_match() {
             std::cin >> ms;
             if (ms < 1) ms = 20;
             Move best = engine.getMove(board, std::chrono::milliseconds(ms));
+            Move book_move;
+            if (pb_lookup(board, book_move)) best = book_move;
             board.makeMove(best);
             std::cout << (int)best.mini_board << " " << (int)best.square << std::endl;
         }
@@ -2663,6 +2668,14 @@ int main(int argc, char** argv)
             int col;
             std::cin >> row >> col; std::cin.ignore();
         }
+        // Decoding the book takes a few milliseconds of the 1000 ms first turn.
+        if (!PB_READY) {
+            static bool book_tried = false;
+            if (!book_tried) {
+                book_tried = true;
+                pb_init<GlobalBoard, Move>();
+            }
+        }
         if (opponent_row != -1) {
             Move opponent_move = grid_coord_to_move(opponent_row, opponent_col);
             board.makeMove(opponent_move);
@@ -2680,12 +2693,21 @@ int main(int argc, char** argv)
             board.makeMove({4, 4});
         }
         else {
+            // The search still runs in book: it warms the persistent tables for
+            // the moves after the book ends, and it is what the book was tested with.
             Move best_move = crossfish.getMove(
                 board, std::chrono::milliseconds(CODINGAME_MOVE_MS));
+            Move book_move;
+            bool from_book = pb_lookup(board, book_move);
+            if (from_book) best_move = book_move;
             board.makeMove(best_move);
             std::array<int, 2> grid_coord = move_to_grid_coord(best_move);
-            std::cout << grid_coord[0] << " " << grid_coord[1] << " D" << crossfish.depth << " E" << crossfish.root_score <<
-            " N" << crossfish.nodes << std::endl;
+            if (from_book) {
+                std::cout << grid_coord[0] << " " << grid_coord[1] << " BOOK" << std::endl;
+            } else {
+                std::cout << grid_coord[0] << " " << grid_coord[1] << " D" << crossfish.depth << " E" << crossfish.root_score <<
+                " N" << crossfish.nodes << std::endl;
+            }
         }
     }
 }

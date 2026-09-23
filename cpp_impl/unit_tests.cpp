@@ -18,6 +18,7 @@
 #define CROSSFISH_DEV_HEADER "crossfish_dev.hpp"
 #endif
 #include CROSSFISH_DEV_HEADER
+#include "play_book.hpp"
 
 // Frozen startpos perft, matched against the independent Python oracle
 // in python_impl/test_rules.py (same UTTT send-to / finished-board rules).
@@ -889,6 +890,68 @@ static void test_d16_fast_matches_scalar(TestCtx &ctx) {
     CHECK(max_macro <= MACRO_CLIP);
 }
 
+static uint64_t play_book_child_hash(GlobalBoard b, Move m) {
+    b.makeMove(m);
+    int t;
+    return pb_canonical(b, t);
+}
+
+static void test_play_book(TestCtx &ctx) {
+    CHECK((pb_init<GlobalBoard, Move>()));
+    CHECK_EQ((int)PB_TABLE.size(), PLAY_BOOK_ENTRIES);
+    // Pinned like the network payload hashes: regenerating the book changes it.
+    std::vector<std::pair<uint64_t, uint8_t>> rows(PB_TABLE.begin(), PB_TABLE.end());
+    std::sort(rows.begin(), rows.end());
+    uint64_t h = 1469598103934665603ull;
+    for (auto &r : rows) {
+        for (int i = 0; i < 8; i++) { h ^= (r.first >> (8 * i)) & 0xff; h *= 1099511628211ull; }
+        h ^= r.second;
+        h *= 1099511628211ull;
+    }
+    CHECK_EQ(h, 13306226950085881189ull);
+
+    // Full coverage: against arbitrary replies the book supplies exactly the
+    // designed number of legal moves, and every lookup agrees across all 8
+    // orientations of the position.
+    std::mt19937 rng(20260923);
+    Move buf[81];
+    for (int g = 0; g < 400; g++) {
+        bool book_first = g % 2 == 0;
+        GlobalBoard b;
+        std::vector<int> hist;
+        if (book_first) { b.makeMove(Move{4, 4}); hist.push_back(40); }
+        int used = 0;
+        while (b.checkWinner() == -1 && b.n_moves < 16) {
+            bool mine = (b.n_moves % 2) == (book_first ? 0 : 1);
+            int n = b.fillLegalMoves(buf);
+            Move m = buf[rng() % n];
+            if (mine) {
+                Move bm;
+                if (!pb_lookup(b, bm)) break;
+                bool legal = false;
+                for (int i = 0; i < n; i++) legal |= buf[i].mini_board == bm.mini_board && buf[i].square == bm.square;
+                CHECK(legal);
+                uint64_t want = play_book_child_hash(b, bm);
+                for (int t = 1; t < 8; t++) {
+                    GlobalBoard tb;
+                    for (int packed : hist) {
+                        int q = pb_map_move(t, packed, false);
+                        tb.makeMove(Move{q / 9, q % 9});
+                    }
+                    Move tm;
+                    CHECK(pb_lookup(tb, tm));
+                    CHECK_EQ(play_book_child_hash(tb, tm), want);
+                }
+                m = bm;
+                used++;
+            }
+            b.makeMove(m);
+            hist.push_back(m.mini_board * 9 + m.square);
+        }
+        CHECK_EQ(used, book_first ? PLAY_BOOK_DEPTH_FIRST : PLAY_BOOK_DEPTH_SECOND);
+    }
+}
+
 static void test_cjk14_decoder(TestCtx &ctx) {
     unsigned char decoded[16]{};
     // Bytes 0..9 from tools/nnue_cjk14.py, with a wrap newline to skip.
@@ -1021,6 +1084,7 @@ int main() {
         {"mini_fast_matches_scalar", test_mini_fast_matches_scalar},
         {"d16_fast_matches_scalar", test_d16_fast_matches_scalar},
         {"cjk14_decoder", test_cjk14_decoder},
+        {"play_book", test_play_book},
         {"lut_capture_block_tiar", test_lut_capture_block_tiar},
     };
 

@@ -2,8 +2,9 @@
 
 `cpp_impl/opening_book.bin` is a frozen set of 50,000 legal Ultimate
 Tic-Tac-Toe positions used by the Dev-versus-Prev SPRT harness. It is a test
-book, not a gameplay opening book: neither the CodinGame bot nor the local
-engine follows book moves during a real game.
+book, not a gameplay opening book: the local engine never follows it. The
+CodinGame bot's gameplay book is a separate artifact,
+`cpp_impl/play_book_data.hpp`, described in [play_book.md](play_book.md).
 
 The artifact has three jobs:
 

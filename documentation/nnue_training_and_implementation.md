@@ -908,7 +908,7 @@ python3 -c "s=open('cpp_impl/cg_input.cpp',encoding='utf-8').read(); print(len(s
 `tools/cg_minify.py --inline-local` recursively expands the local generated
 headers into `codingame_nnue.cpp`, then strips and renames the combined source.
 
-The current `cg_input.cpp` is 65,731 UTF-16 code units, leaving 34,269 below
+The current `cg_input.cpp` is 74,043 UTF-16 code units, leaving 25,957 below
 the 100,000-unit limit. `wc -c` reports bytes, which overstate the count
 because each payload character is three UTF-8 bytes; the minifier prints the
 unit count. The lossless CJK14 payload encoding keeps both evaluator payloads

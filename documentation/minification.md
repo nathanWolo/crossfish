@@ -441,10 +441,10 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 119694 (bundled 162084)
--> cpp_impl/cg_input.cpp 65731
-saved 96353
-cap 34269 left
+cpp_impl/codingame_nnue.cpp 120661 (bundled 176508)
+-> cpp_impl/cg_input.cpp 74043
+saved 102465
+cap 25957 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
@@ -459,7 +459,9 @@ bytes. The CLI exits with failure when output is 100,000 units or larger.
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
 3,113. Replacing ASCII85 with CJK14 cut the two payloads from 57,414 to
-26,247 characters, bringing the submission to 65,731 with 34,269 left.
+26,247 characters, bringing the submission to 65,731 with 34,269 left. The
+gameplay opening book ([play_book.md](play_book.md)) then added 8,312,
+for 74,043 with 25,957 left.
 
 ## 11. Reproducible generation procedure
 
