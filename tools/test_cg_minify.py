@@ -484,6 +484,34 @@ class TestMainCli(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("100k", err.getvalue())
 
+    def test_cap_counts_utf16_units(self):
+        self.assertEqual(m.utf16_units("abc"), 3)
+        self.assertEqual(m.utf16_units(chr(0x4E00) * 5), 5)
+        self.assertEqual(m.utf16_units(chr(0x1F600)), 2)
+
+    def test_bmp_payload_counts_one_unit_per_character(self):
+        src = self.dir / "cjk.cpp"
+        dest = self.dir / "cjk.min.cpp"
+        src.write_text('const char* s=R"~(' + chr(0x4E00) * 90000 + ')~";\n', encoding="utf-8")
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv", ["cg_minify.py", str(src), "-o", str(dest)]):
+            with mock.patch("sys.stdout", buf):
+                m.main()
+        self.assertEqual(dest.read_text(encoding="utf-8").count(chr(0x4E00)), 90000)
+        self.assertIn(f"cap {100000 - m.utf16_units(dest.read_text(encoding='utf-8'))} left", buf.getvalue())
+
+    def test_astral_characters_count_double_toward_cap(self):
+        # 60,000 code points but 120,000 UTF-16 units: over CodinGame's cap.
+        src = self.dir / "astral.cpp"
+        dest = self.dir / "astral.min.cpp"
+        src.write_text('const char* s="' + chr(0x1F600) * 60000 + '";\n', encoding="utf-8")
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv", ["cg_minify.py", str(src), "-o", str(dest)]):
+            with mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", err):
+                with self.assertRaises(SystemExit) as cm:
+                    m.main()
+        self.assertEqual(cm.exception.code, 1)
+
     def test_run_as_main(self):
         src = self.dir / "in.cpp"
         dest = self.dir / "out.cpp"

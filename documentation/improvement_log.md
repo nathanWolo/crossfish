@@ -1796,3 +1796,40 @@ reclaim candidates if a future change needs room. Separately, the shipped
 `CODINGAME_MOVE_MS = 90` replies at 90.1-90.6 ms against a 100 ms referee, so
 there is only about 10 ms of scheduling slack; that is an argument against
 raising it, not for.
+
+---
+
+## 45. Pack network weights at 14 bits per character (23 September 2026)
+
+Round nine left 3,113 characters of submission headroom, and 57,414 of the
+96,887 characters were the two network payloads in ASCII85 (6.4 bits per
+character). CodinGame counts the cap in UTF-16 code units, not bytes (a
+forum user established this by testing), so any character from the Basic
+Multilingual Plane outside the surrogate range costs one unit however many
+UTF-8 bytes it takes.
+
+The payloads now map 14-bit groups onto U+4E00..U+8DFF, the first 16,384 CJK
+Unified Ideographs. That block has no combining marks, separators, invisible
+or bidi characters, or normalization decompositions, which is why the alphabet
+stops at 14 bits rather than reaching for 15. The decoder reads the UTF-8
+bytes of an ordinary narrow literal.
+
+| | ASCII85 | CJK14 |
+| --- | ---: | ---: |
+| D16 payload characters | 53,569 | 24,489 |
+| Macro payload characters | 3,845 | 1,758 |
+| `cg_input.cpp` (UTF-16 units) | 96,887 | 65,731 |
+| Headroom | 3,113 | 34,269 |
+
+This is a representation change only. Both payloads decode to the same bytes
+as before (42,855 and 3,076 bytes, FNV-1a `e35e987c17a453cf` and
+`626e29f3a8d65679`, pinned by the unit tests), `cg_selfcheck` reproduces the
+round-nine checksums on both the readable source and a minified bundle at
+depths 7, 9 and 11, and first-turn initialization is unchanged at about
+167 ms. No SPRT is needed or meaningful.
+
+Two caveats. The file is now 118,225 UTF-8 bytes, so if CodinGame ever
+counted bytes the paste would be rejected at submit time; the counting rule
+comes from a forum user's testing, not official documentation, and should
+be confirmed by a real paste. And `wc -c` no longer reports the capped
+quantity; the minifier's printed count does.

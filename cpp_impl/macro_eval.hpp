@@ -8,46 +8,35 @@
 #include <cstring>
 #include <immintrin.h>
 
-static const char MACRO_PACK_B85[] = R"~(
-L\;3Cj?Eo8IGkZ$!\Apf(+4o&Kin%5TAKc:n4F?Zh\&JoWm`'*,.n=Lb#A_`iG"06gZB/7H(Q0Df&p_\fS6oOd0I1s"1bkUl?`3?
-f<WI]_9U?A6V>D7-M,&<9s]^@2-cTd`,rQ*eQ.aIkZl+k>X6+ie*m`1`s5U.S`\>8Xi&Q%KiHF7n#?B(8NWP0_7ApJ8?1O^=Y31Z
-58K)@[0Vl14S7+<+hE<B8j/b2^p[+T-`gFa=iYqU4GaiiJRfP45gL1]q"H\_Ga_.:3f"rqcT`JeGNf5p'$PsB=0]0L:oG/Gaf_SY
-f"+Ddd4bSc]>^s<:,n*F)bug:6l)3+cqTkBs3eBl"N>IJY@+]PLr?+)FT=9a`^^"p,(t-Ue1R9,j)&2?7QtlY"",ojp!HT$[RTpT
-a9W6j4GO?\el*!me$qWXf/3!4W\4^pNF*O<!h[S"5'Tr?V>\ZS$dB$o797@BS)*MJ:5@"Xo*Nu5L]ouX^g?TI.KAqR21"c-]o3rI
-#eb%>ps',\c@l;8Zb(4ll4^Zl3QnhHXQK,ikKKj?Yr$5]2UQica4rekibk8NZ1"j2J,-4^cR#[.=$$K"PnBlWPqpOu["Q<3g,m>>
-dL59Q?];n=<@P/f"o#IAD/c:7'A18g/cHGL@Rg4.Z1ZDXQik[MQ(?18SP-3&@*`FM"u4oKEe_rV;k9RG'5o9bR"GX[6KZY1kRmF%
-.R.K0Y`##9$X1&)*hXZB^TIGuM:htqSR)pnoBCh?`>jNFEk9]44[V"h$T8G[fa@sLImtBneW%j<<a6-N$&*uG#364Zg!pX"kbJ8G
-6!oF4?EArI*fGh=V@Xt;TV`I?+C`)M)k<E_0BY>]6QUM<OSljY#:#-keI]2TT(<Z47<L[X<BN<.1r"Z.PI<Qhp"hdHZ][Ge?(-\f
-na6TH!2)csU.e(n;T`dk$]iQKfQu_s,bd<8"$kMT#W2fOmHn`+U-)Glc5+R=qSF1<j4kS?5,&u_c@Zp"=.5(6+o<6GB58MS?n?W?
-E&.F.+%nFWYtc6).Np-*Y4.?8<A/^8OqWnmk,SErEQ]oL,V(F^TMd5TbGqYZ0nI?\pJWf_?q`2h/m1Y13R0<F5ll#Bgo`<HBNJ?Q
-eqV/[#]iL&PEJI'i.!CHWVStJp2NJdEFM@&NjX7#V#SfWH_X+t_dZ2'FqL<35e3j[jY)f`)XB[T?5AA`Vrc7?"UCYcS!B:*H![F8
-9_?WGO"enq:Lhbei/','1)%)\GtQo.*E1n3T^X5CrcOjLK@H=*J-X<6%&K$$9J!S9/rq<p[m1\EEIs^sr<D.Fe.^_*.rO30khP;d
-MP0,t@^P8`;I&9KW4!ea[XJ=p!IugirrV(D:r=GCBU\'KnbF9CYT>sDZNL9EO6JjC9P?&n[NPO_>K<j0mmJJ<=T/-333'$o#eUO3
--/8enU=lff1MD<R`t+r]dX*7UBPIrB;18s@8-9,a$G%BGA;MHpXO\R\;_*no'f>Qs0qTjZ2)-aLe8iVq#<F>#OQum4b1Re#L0O=9
-T=a[.IU:,]C<O4S4i8U4)cQXL0`:d_Wu:fMX#+/!T-0[ioGnFX?CM>=Fid"e/;'J/7L&e,J[P<h1jJ?&F@Vidg[dhLLO:bk=-T/i
-NCX[KSQldo7LTnr>*ojfeRr\aCtKFgR"#f:2fF8`#4!_S@$3Z>`siYJL4([@oL`mbaR4VqBc<2ObnqkF&OU!C)rY2@121(2qKWpo
-F:c=*_VA_=[^]h`a,i5HoB[>]#G.'o_hqs?C$:/bm2EgW%\5RG[F%$%)Y4e47;p.1r,otD153_5:f8l2OfYRuh1!s@h#5eh_if"*
-G:fRU:QhG<Yd)&1H@2)GlFs75s6+JhX#=HRIiP.JAK\h)`4Eb"aE>>71BUXnJ6u/:mO6u.4ojQWZpP>>7WQkl0-gP7>uJDP1kb>6
-.MkcApkB9pmWIm3LtTtfhF#.Gi>BEtb#lJGdo50jq_AUHq*3+imI87aCfWL2bGVMX8j$*?8P$]aXI_jIY`K8Z8esD&JnJ9'qhMPn
-eY[o50:IC+:*"Gl`;2%#OKBkGoeWJ\Y%3a3CE*IDn;mf?l)_V8faiqT/,ucgQK0@.I^fMI?qCPha0>_5+6Ri6`DCeFSCVsOj'obh
-DPTb<`j(+]_[;#^f`VaNQs_C1=muthRZV\X[BKm&#F7fpn'he5JggmjVMHWecNIptKdCEKm^HlGa??]B#HBjN4;`=ZC\N%h=\EbN
-CBib6_&43/ZO1<\Sja4-#D,!%:O[?#SGuO(fmMVlk%d%FqlDkGmsmJdr#ROYfAr2_]<44^c7D(EUU,cmWG"l>"&:F7!TuL1d0(LW
-Zn@V0mQucHO1h%!9bU%5!->E].r)?*0a4etnPi#p,>JH[Rd@/m/M+'@&peC]-C8+,kK"4N@u[e1qYKm#7\L"&p;h,<[^'g<\BA2F
-cdr%Z/VO*f4c'2)-PVn4U/\qD#GV_nWUpWb)Ym]*[0US7j&,hA`SpJS14f!]crn-!bX5c(5)WQ0le,u<k$4^toED&+_P<pB;_'lE
-pSeNbD2Z0E^j<f3J1Ui=VsUn.YK>_=r!9%4J.L)ETu[R*AoRmgW2J@baU#2gkel%=&>7ZAi!7n#`6J6HI%M`ObY$n]XVp+arMpOH
->IC:mLTtDW[TqHN3&4K#NSGgGd81Il>$3l%jFa$h?7B0q33lZ%lT\+Z>WuE.F3In*;:UrI3h;#@]&O2cb?s<rDia%sqM]1)<u0?&
-Vn60LCS2,'*[VFbH\^TH.ZK8"N[BUu+ub@o:r4s&O=X'i-0^&tkG*XE@naqW%*+Mr`C'_l%?lU`G5VM..M#0:7\e>E?gZgda5W%C
-)h/%-D/9BlA@D`YED(#^[juD_Z:G\GaZL6QE`PcJ!SF]oYNGMo;,%20U86neio+c?R9iM%.etm:h''#=BH\!T762&J9CNN[U94nk
-f?Jk4'?q1W[(m>AGQj)COuGhGLnlOfRbSKAft&1jCbUE+8t1gVWMQ0%hf_B'pRsF[2D6o'?]["YFVVC$WTh16DdbT@Gk<i/SkM:6
-;U6gZCj\mle5/*?eg!&gPOlN)6!QT?a%/E]9n4ZZU1?5L5KPlNjU!t6!dotnlA-h(IYC'RD&u#0bou.6re1D?_i`)-a3Z\0L<[Ct
-Pc?(H%<CProR>L[!]pEL1ogDf%`8(X\"`c85po1=\[*YJ`Y/Qmc5R#)+[umVdbpG-qq/<m>2f4k3-V@<H"A<ePg^&WA[M*F6j/aj
-]thr[KsAri<XR/=Y"S(HXHU7]-u7O&R)%<>m;(t%Q54YYl$cDpG.Gpb+QksUV9?G8bJ*5V\EOdFLU(L+V?"uXCZECKg^:*sq+M[A
-2G>pC0MYQ^)'C6@g:@tb4XpM"$c*%a7>g]O;JZ'D)fmdNH[6Dn9eI8LQCS"BUt+HgU/0Q.4]C6%k9l!LFdQmYb$9N_Ncf8)'.WQ<
-VY`hKb55g;i<n4$']rOa6WRm9&Rt>s**1u_Gn`Y4b_QtL:p:YMfGG@>pBG3F[C2_nT$nguE]bG[bdpQcLGG13``gU&V/[0b5,Gs/
-,1N5M$h$m-+>l9tE1`B2K/ON4pJ;YmOV/Hs%HnNn2aDdW[5Ssil:i-_[?GOF![[0JDPfK^a4M.oS#@l)6kF`3Di8SN)Cp]]!hJVl
-CO/4]hk**KhSM@jnB)$QHp??$[WY0W5K6..@6R.I%]^:1-)/Dq@GjGf04MB+'e7nQ/S.F=/1jI\.97-LJdeJ?'qV0bDU5.D#+iau
-Z*qE_ld5Vq+0P,u/q$5U#$$XKC:]Kmr7[c-V=KC-!O'5Q-]1G\%3Rc!bD_?Fe=NDM[tg]n1Oc(6+L@lZL7PA1Q@5C@r^NTsK4*e+
-9HEIb`V:Cgl?T,>KF/L2;GaG[%G]u/>O:B8<H.1f)OClM
+static const char MACRO_PACK_CJK[] = R"~(
+濽滤冐贈帟氐蜀倬溏罢氠超搽燹赼剀訒漴兼恈綪笱贀炼儐媥師仡桢燽綘慀汧翴兛畨綶噫焃弇簰主瓛仪沽訍泋嘾繳竬伍壇縉紼勽害炏煕聫俄欮樍捚巁
+蠗婣蝱仁巴贀笃唇捏矞楇亭维樈捓廀觪渌匤覟帰榞脁嚪薰厒茢贿厢戋戢廁崽嬼了袃繒燙蜃亶扯聺罢豙翟戃耤擁湙佬匃崕繾嵳椅蚚忯熨溇俏巇稗涤刿
+劳嘫譞羵織墁椇垮砰歫眢賑娀懻紖紿憎嚛詭岙縑佩甃幍珰巽壟丄罝刊讂臀瀱塌俔丵帱牰伄炄殰歂衳代楘娔曹腀仉腄凗彐席牯挃嘈兰凈樳他拃娍峠跀
+菍崌储紊縣揱焀傟聐凧潇亥赳樀紴壀录穌偯毮縓發笃脉莐嚀拻什於稂痿翀孞紌僶娜繂姖缃蛎俰櫨戇侳糜槾癎蘿屲襜咳瓳縹諊洆缴棐六只跇蔏姮垺樿
+穻裬俿螭縳聚脁攻亰村咘貕媲訋怓僀蒎詳赈姨綗蛌崅挩稰也泛佭権凡嵣匿奿潄侉哺綬浜褂昃臰坙蔷亝惬娆儽瑀侌毌俊哐縔蟚仼慯堐枈娟佂螴娎湇臀
+墏葔僂妜巂莫滼沠噐槺藴貉葀臹荸怿諺昛褔檃緜禭壴譃嫏溳昵俙僁戗謘槁荣櫣蝙樎繂晘壼哤児殝扁俨眀爔卾嘿斫嚃詺妈巩漂嬂溦印怆壼贛甧凲趜蝁
+廇疔偃調币耸竿挐篐埯婓佅歎舕拰衁嬯蘴偎萻繽毣紆膒崰揙砯俱要爀傁叁皓剼卋填繂蛼蔇智蟰恊囧伃帶娐滔呀襻擌咈評繳潬礇裂哐簽繭倾皆般蠌敂
+揦盄劇褜庙蒱茉測沰攃姻丟惍别匸楂墈恤墻纋幕惷紆怓燰汪移乱胋娒庬竁瘔炜售碬縌昜椇蕓婰搄纻伮摑爣甸繂幀攬啲簯繚卵甇撆罰庇嬝傓犒刮俼終
+硾爴嗙罄幜搤挆岵洐桏赃乻盒刜安坁殄柤匂螩幹惹嬄棫幐握栥侧蝳言戞流瓥杤句沨幓嵌褂崰臰勶嵃仠灋訓噎萿汒篜乵懠縨崂愇豵痰昽恧侀俳娀肖巁
+愋奓誺崥繭舁攅羂田淐楽俔勷舒箻汁蠷層吪滧帘祎朅恜蜐梋晿侶涀訐吀終跀篴千儡庚垮會翹嗰椁蛷侳伀娘趤貿愚僫賘滽綖詺苻組坰掏藮贸碪觰烰奂
+坷五墋枱繌蒈僿唏盰欧窓佨梃別司孂怀纄嘪蠡帙嚒匂竖嚐匲簽丕嬽姣呼癀孌惴兑胈币膢眆廫丐檭牵了擽戉賯肾涗窔侫妻帏樲朄楓賰儏臫享呾訊竑況
+痈埔凐欎繗瞰紅菉廰惈屳但便娘哗蟀嬞岼发喜帶贴愆啼姰捹恫侍怄爩荰恂徃伤坪昐庵摶缅竘匐瞇詑倷槠樐榬矁昤燔夜嬒庡痒蜋艊棐檎蠇佩咤訜艠盁
+剐萜副潠繌璕複衹吰敁儋係蔙樛棡燁翤兴姏稙庁蟩唇冊曰撞瀋俭咰樐衴虂筴憤噫脘庑擼挃詵罐儨攙乐抋戙咲磀蕟筴关诖帰蜧包蔭盐拹墉侰穰爇矲晁
+袯碜凿癲幪腦嬅贜癐摒儇仄粰娌濗俀嫀荜吁浑嵻炍贀谀虰奄娻但檴娒誐仂敔秬仒勯繊潴绷蚆冰泧斳予葲訝蜏偁虆娤唩曁年茾伇褲児涓贵俭訲爖罘藁
+胩裫謨評庒抌圆窞彐礉丱佊厎娘垝棁賡襋赖璁縋螧贁尝欰婏皳亐祉稟拎瓀禙圼侬樄庼圀挋瞬綰殐谧丫跫稙榐珁涮乄垁圆庱褐嬈淧毐橕信侜莞戞宊赁
+榩剬唚羂幰纨嬇朄児瞆亩偙訄利硅艁筬乴嘞摅繻譀茊倩侐硨溡像会娘投盁覭蒌唠议繁袣笀記氰撿毟余惜樖稛濁繆徼壌塦繧牑儈喂岐勷蟋侜跔訝珳毁
+螚膴姮稻庻蘃笋訞娐签恕侻禎般蚰詂盬蚌咥癉繀苢茈俧岐笐幹傴妥戞蜊埁燯枼匴慇繀唻唄祪穰愐擃俱挑訒嬸哂璻壜労窮繄疦茈璗昐籼湃佣煬稟秫菀
+徨幜姛噮庭礦謊蛋斐竽槴购漿燳萤佀埅坴傉拀縁蠰茂矴児侯獹侵倛刞孇赀罸浓諊俲帴厛贃婃昐懨筥俫葚戞杲狀謁桌儊熤縔肳甇薩像蓘糿什沰娈亴僁
+矻楜咿埠繿亊夂丏芰栜渨赦橀稚炟检聂夬喣凘幄堍漇渇萐橌藵佼痉爜缫煁祆氤嗶礑繖襚挂喱材祥腡伸媕戨蕰獁艔伬卩朹繹嘹蜁氩数冋坣仫巓樅绹櫀
+櫳双升掕縎矘椂裣儐窵趑佯燹稟砱磀揅筜咞襛繚蠀茈氦刐疸涉伪煢娈蚚埀嚍蚜佃倱縤僄综珩滰屺尋乣愱觠脞恀网且丶憈縝緐嬀砏惏艪嵂豟襸槬涊婀
+哟繜厵稅繙奰攅罋桰楲篁亲怅娜狰懁檕犜切暲繫豯攅彍估株憗俢虛爉獹壁墾愼啴澰繚們圉区劐犿久傢禃刭洶佁勳弴壓专庞乘蔆怷彰暊庭傚蔄戭瓨歂
+椌嘔匪榍繪桙蔇浶廰浺勓伶姍娕豀翁歅楼傧瞿繛萓洅蛴嬰柤绵偒臊爦翱姁茔兼啘焵繤贻褅作嶐穴滽偍渊截垐虁已憄喔场幀痈茇碈埰旨挅佭喐爜芇牁
+趡帤夎忊幱謃挆响結杊皛伍檹戟忻桁于縔囒磺縃稯礂薢賰划欟侹竉臼晌品膆繼劅同繴簉椇觘筰掮嗟丸毪樗玔琿猴绌厖苴縑义愆诀臐晛唽佖傳舚蜯祁
+礤覴亡秚幦娍欇筫衰坡柚跩涓舧棧嵁嘹致増妺帲觮甂蛩厰晻垖趦临姶綏县蔂碻跥娙縍狃崄繎拰侒亗仚粅刣芨偂僰幬圖壳緔璿焄楳媰斷癕偍妆利桴乂
+眵氣袉巜嶏挽諻甧澐啙澧今攠燸蟕紿勊紤傛襆干綶欇漊萏潎来佃掚威压腀唕簄俤扄平嚁愅庰匰殁湗俷侙樛據湀疴而又訟繳妤褆唲现橥礳侥橄訓袖证
+嚵埴丯絏繈兓脅纟猰昳晝僷戅舩剈敂兺佔囝乽幭慱猋硍呐祙宿伂坺訆袘襂翶佤塮瘬庑伇缅綋樰徢簫伂畺稆篨跁藧臬啻倻繼媠焅訿蒰楧期伿羑樖勹呂
+冪罄嚖烆繘氄唄絢箰归祧伭村舢纵塂塕潄堈媥巅柪嫽糏睏繩褑亱箯討絃谿嗫紓誹譇幁獘茅確爐淍硼趥誡舐咾賀埢犄刴渼干蛈笇択皰奸沋丳涨稂僎狀
+澧梴偙讟縿牪唂兠蝐勁薱仅谆訞矦烀漂潬卉庬布毎嬁槬蛐南冥业珃娰
 )~";
 
 alignas(32) static float MACRO_BASE[16];
@@ -74,8 +63,8 @@ static int macro_finish_hidden(__m256 h0, __m256 h1) {
 static bool macro_load_packed() {
     if (MACRO_READY) return true;
     static unsigned char buf[4096];
-    int count = d16_mini_b85_decode(
-        MACRO_PACK_B85, buf, (int)sizeof(buf));
+    int count = d16_mini_cjk_decode(
+        MACRO_PACK_CJK, buf, (int)sizeof(buf));
     const int need = (16 + 10 * 16 + 9 * 4 * 16 + 16 + 1) * 4;
     if (count < need) return false;
     int off = 0;

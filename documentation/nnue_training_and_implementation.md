@@ -572,15 +572,15 @@ The generated payload contains:
 - super, location, constraint, and active embeddings;
 - W1, b1, W2, and b2.
 
-It is ASCII85 encoded into `cpp_impl/mini_eval_d16.hpp`. ASCII85 represents
-four payload bytes with five source characters, versus Base64's four source
-characters for three bytes. The generated header therefore stores exactly the
-same float and code bytes with less source expansion. The macro payload uses
-the same decoder.
+It is CJK14 encoded into `cpp_impl/mini_eval_d16.hpp`: each 14 bits of
+payload become one character in U+4E00..U+8DFF. CodinGame counts UTF-16 code
+units and each of those characters is one unit, so the header stores 14
+payload bits per counted character, against 6.4 for the ASCII85 encoding it
+replaced. The macro payload uses the same decoder. See
+[minification.md](minification.md) section 4 for the encoding details.
 
-The raw C++ string uses `~` as its delimiter. That character is outside the
-emitter's ASCII85 alphabet (`!` through `u`), so payload text cannot
-accidentally terminate the literal. At startup the header decodes the payload
+The raw C++ string uses `~` as its delimiter. Every payload character is
+non-ASCII, so payload text cannot accidentally terminate the literal. At startup the header decodes the payload
 into static storage and builds runtime tables.
 
 ### 7.3 Mask-to-code lookup
@@ -902,16 +902,18 @@ After generating both evaluator headers:
 make -C cpp_impl test
 make -C cpp_impl verify
 make -C cpp_impl cg-input
-wc -c cpp_impl/cg_input.cpp
+python3 -c "s=open('cpp_impl/cg_input.cpp',encoding='utf-8').read(); print(len(s.encode('utf-16-le'))//2)"
 ```
 
 `tools/cg_minify.py --inline-local` recursively expands the local generated
 headers into `codingame_nnue.cpp`, then strips and renames the combined source.
 
-The current `cg_input.cpp` is 93,272 characters, leaving 6,728 characters
-below the 100,000-character limit. The lossless ASCII85 payload conversion
-keeps both evaluator payloads compact; their decoded data remains byte-for-byte
-identical to the accepted round-seven networks.
+The current `cg_input.cpp` is 65,731 UTF-16 code units, leaving 34,269 below
+the 100,000-unit limit. `wc -c` reports bytes, which overstate the count
+because each payload character is three UTF-8 bytes; the minifier prints the
+unit count. The lossless CJK14 payload encoding keeps both evaluator payloads
+compact; their decoded data remains byte-for-byte identical to the accepted
+round-seven networks.
 
 Always compile both the readable and minified sources. Packing bugs can preserve
 Python validation metrics while producing a broken submission.

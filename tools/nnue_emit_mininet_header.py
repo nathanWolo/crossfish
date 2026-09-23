@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 import nnue_emit_mininet_cg as legacy
-from nnue_ascii85 import encode_ascii85, wrap_ascii85
+from nnue_cjk14 import CJK14_DECODER, encode_cjk14, wrap_cjk14
 
 
 def load_cfm2(path: Path):
@@ -256,35 +256,11 @@ static int evaluate_mini_fast(const Board &b) {
 }
 '''
 
-ASCII85_DECODER = r'''static int mini_b85_decode(
-    const char *s, unsigned char *out, int out_max) {
-    int n = 0;
-    while (*s) {
-        uint32_t value = 0;
-        int digits = 0;
-        while (digits < 5 && *s) {
-            unsigned char c = (unsigned char)*s++;
-            if (c < '!' || c > 'u') continue;
-            value = value * 85 + c - '!';
-            digits++;
-        }
-        if (digits < 2) break;
-        int bytes = digits - 1;
-        while (digits++ < 5) value = value * 85 + 84;
-        for (int i = 0; i < bytes; i++) {
-            if (n >= out_max) return -1;
-            out[n++] = (unsigned char)(value >> (24 - 8 * i));
-        }
-    }
-    return n;
-}
-'''
-
 
 def emit_header(
     template_path: Path,
     output_path: Path,
-    packed_b85: str,
+    packed_text: str,
     d: int,
     h: int,
     symbol_tag: str | None = None,
@@ -297,8 +273,8 @@ def emit_header(
     marker = 'static const char MINI_PACK_B64[] = R"MNUE(\n'
     start = source.index(marker) + len(marker)
     end = source.index('\n)MNUE";', start)
-    source = source[:start] + packed_b85 + source[end:]
-    source = source.replace("MINI_PACK_B64", "MINI_PACK_B85")
+    source = source[:start] + packed_text + source[end:]
+    source = source.replace("MINI_PACK_B64", "MINI_PACK_CJK")
     source = source.replace('R"MNUE(', 'R"~(', 1)
     source = source.replace(')MNUE"', ')~"', 1)
 
@@ -308,10 +284,10 @@ def emit_header(
     )
     source = (
         source[:decoder_start]
-        + ASCII85_DECODER.rstrip()
+        + CJK14_DECODER.rstrip()
         + source[decoder_end:]
     )
-    source = source.replace("mini_b64_decode", "mini_b85_decode")
+    source = source.replace("mini_b64_decode", "mini_cjk_decode")
     source = source.replace(
         "// Packed MiniNet (D=8 H=4, 256-centroid emb) shared by Dev/Prev SPRT\n"
         "// and matching codingame_nnue.cpp. HCE+mini at qsearch; HCE for RFP.\n"
@@ -376,11 +352,11 @@ def emit_header(
             f"symbol tag must be an identifier fragment, got {function_tag!r}"
         )
     runtime_tag = function_tag.upper()
-    source = source.replace("MINI_PACK_B85", f"{runtime_tag}_MINI_PACK_B85")
+    source = source.replace("MINI_PACK_CJK", f"{runtime_tag}_MINI_PACK_CJK")
     source = re.sub(r"\bMN_", f"{runtime_tag}_MN_", source)
     for name in (
         "mini_board_constraint",
-        "mini_b85_decode",
+        "mini_cjk_decode",
         "mini_mask_index",
         "mini_build_fast_tables",
         "mini_load_packed",
@@ -479,8 +455,8 @@ def main() -> None:
         w2,
         b2,
     )
-    packed_b85 = wrap_ascii85(encode_ascii85(blob))
-    emit_header(args.template, args.out, packed_b85, d, h, args.tag)
+    packed_text = wrap_cjk14(encode_cjk14(blob))
+    emit_header(args.template, args.out, packed_text, d, h, args.tag)
     error = emb - reconstructed
     print(
         f"wrote {args.out} chars={args.out.stat().st_size} "

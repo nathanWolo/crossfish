@@ -889,14 +889,23 @@ static void test_d16_fast_matches_scalar(TestCtx &ctx) {
     CHECK(max_macro <= MACRO_CLIP);
 }
 
-static void test_ascii85_decoder(TestCtx &ctx) {
+static void test_cjk14_decoder(TestCtx &ctx) {
     unsigned char decoded[16]{};
-    int count = d16_mini_b85_decode(
-        R"(!!*-'"9eu7#RL)", decoded, (int)sizeof(decoded));
+    // Bytes 0..9 from tools/nnue_cjk14.py, with a wrap newline to skip.
+    int count = d16_mini_cjk_decode(
+        "\u4e00\u5e20\u5a10\n\u5306\u4fc2\u4e90", decoded, (int)sizeof(decoded));
     CHECK_EQ(count, 10);
     for (int i = 0; i < count; i++) {
         CHECK_EQ((int)decoded[i], i);
     }
+    // Top of the alphabet: seven 0xFF bytes.
+    count = d16_mini_cjk_decode(
+        "\u8dff\u8dff\u8dff\u8dff", decoded, (int)sizeof(decoded));
+    CHECK_EQ(count, 7);
+    for (int i = 0; i < count; i++) {
+        CHECK_EQ((int)decoded[i], 255);
+    }
+    CHECK_EQ(d16_mini_cjk_decode("\u8dff\u8dff", decoded, 2), -1);
 
     auto fnv1a = [](const unsigned char *data, int size) {
         uint64_t hash = 0xcbf29ce484222325ULL;
@@ -907,12 +916,12 @@ static void test_ascii85_decoder(TestCtx &ctx) {
         return hash;
     };
     std::vector<unsigned char> payload(65536);
-    count = d16_mini_b85_decode(
-        D16_MINI_PACK_B85, payload.data(), (int)payload.size());
+    count = d16_mini_cjk_decode(
+        D16_MINI_PACK_CJK, payload.data(), (int)payload.size());
     CHECK_EQ(count, 42855);
     CHECK_EQ(fnv1a(payload.data(), count), 0xe35e987c17a453cfULL);
-    count = d16_mini_b85_decode(
-        MACRO_PACK_B85, payload.data(), (int)payload.size());
+    count = d16_mini_cjk_decode(
+        MACRO_PACK_CJK, payload.data(), (int)payload.size());
     CHECK_EQ(count, 3076);
     CHECK_EQ(fnv1a(payload.data(), count), 0x626e29f3a8d65679ULL);
 }
@@ -1011,7 +1020,7 @@ int main() {
         {"mini_avx_matches_scalar", test_mini_avx_matches_scalar},
         {"mini_fast_matches_scalar", test_mini_fast_matches_scalar},
         {"d16_fast_matches_scalar", test_d16_fast_matches_scalar},
-        {"ascii85_decoder", test_ascii85_decoder},
+        {"cjk14_decoder", test_cjk14_decoder},
         {"lut_capture_block_tiar", test_lut_capture_block_tiar},
     };
 
