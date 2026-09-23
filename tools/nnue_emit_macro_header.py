@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from nnue_ascii85 import encode_ascii85, wrap_ascii85
+from nnue_cjk14 import encode_cjk14, wrap_cjk14
 
 
 def main() -> None:
@@ -62,7 +62,7 @@ def main() -> None:
     )
     blob = b"".join(value.tobytes() for value in arrays)
     blob += struct.pack("<f", float(scaled_bias))
-    packed_b85 = wrap_ascii85(encode_ascii85(blob))
+    packed_text = wrap_cjk14(encode_cjk14(blob))
 
     text = f'''#pragma once
 // Compact super-board/constraint residual head. The checkpoint's embeddings
@@ -74,8 +74,8 @@ def main() -> None:
 #include <cstring>
 #include <immintrin.h>
 
-static const char MACRO_PACK_B85[] = R"~(
-{packed_b85}
+static const char MACRO_PACK_CJK[] = R"~(
+{packed_text}
 )~";
 
 alignas(32) static float MACRO_BASE[16];
@@ -102,8 +102,8 @@ static int macro_finish_hidden(__m256 h0, __m256 h1) {{
 static bool macro_load_packed() {{
     if (MACRO_READY) return true;
     static unsigned char buf[4096];
-    int count = d16_mini_b85_decode(
-        MACRO_PACK_B85, buf, (int)sizeof(buf));
+    int count = d16_mini_cjk_decode(
+        MACRO_PACK_CJK, buf, (int)sizeof(buf));
     const int need = (16 + 10 * 16 + 9 * 4 * 16 + 16 + 1) * 4;
     if (count < need) return false;
     int off = 0;

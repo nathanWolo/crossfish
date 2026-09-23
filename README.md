@@ -286,7 +286,10 @@ CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags 
 
 ## CodinGame file and minifier
 
-CodinGame's source cap is **100,000 characters**. Paste
+CodinGame's source cap is **100,000 characters**, counted as UTF-16 code
+units. The network weights are packed at 14 bits per character using CJK
+ideographs (see `documentation/minification.md`), so the file is larger in
+bytes than in counted characters; trust the minifier's count, not `wc -c`. Paste
 **`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
 headers are intentionally kept separate for review.
 
@@ -330,15 +333,16 @@ one table, movegen emits eight squares per store, and the MiniNet centroid
 code and global HCE term are cached. Because it is speed-only, the gate was
 node-count identity first (`make -C cpp_impl bench`) and then the 90 ms SPRT.
 
-Paste `cpp_impl/cg_input.cpp` (96,887 characters, 3,113 below the limit).
+Paste `cpp_impl/cg_input.cpp` (96,887 characters at round nine; 65,731 after
+the CJK14 payload repack, 34,269 below the limit).
 Static storage grew 4,368 bytes; the 4 MiB transposition table and 5 MiB macro
 table are unchanged. The CodinGame port is pinned to the pre-port engine by
 `cpp_impl/cg_selfcheck.cpp`, which checksums fixed-depth scores and node
 counts; it matched at fifteen depth/position configurations from depth 5 to 16,
 including against the minified bundle.
 
-Two constraints are now tight. Submission headroom is 3,113 characters, and
-the shipped `CODINGAME_MOVE_MS = 90` replies at 90.1-90.6 ms against the
+Submission headroom is no longer tight after the CJK14 repack. Time is: the
+shipped `CODINGAME_MOVE_MS = 90` replies at 90.1-90.6 ms against the
 100 ms referee, leaving about 10 ms of scheduling slack.
 
 On 2026-09-13, the timeout-hardened round-seven stack passed the official

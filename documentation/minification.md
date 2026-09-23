@@ -43,7 +43,7 @@ evaluator inputs, then regenerate it.
 | `cpp_impl/macro_eval.hpp` | Generated macro-context residual and exact runtime lookup table builder. |
 | `tools/nnue_emit_mininet_header.py` | Converts an accepted D16/H8 checkpoint into `mini_eval_d16.hpp`. |
 | `tools/nnue_emit_macro_header.py` | Converts an accepted macro checkpoint into `macro_eval.hpp`. |
-| `tools/nnue_ascii85.py` | Deterministic binary-to-source encoder shared by the emitters. |
+| `tools/nnue_cjk14.py` | Deterministic 14-bits-per-character payload encoder and decoder shared by the emitters. |
 | `tools/cg_minify.py` | Bundles local headers, tokenizes C++, shortens identifiers, and emits one compact source file. |
 | `cpp_impl/cg_input.cpp` | Final generated file to paste into CodinGame. |
 
@@ -127,11 +127,11 @@ The exact binary layout is:
 
 `tools/nnue_emit_mininet_header.py` performs the clustering, preserves the
 empty-board behavior with an output-bias adjustment, packs this layout, and
-emits `D16_MINI_PACK_B85`.
+emits `D16_MINI_PACK_CJK`.
 
 At startup, `d16_mini_load_packed()`:
 
-1. decodes the ASCII85 text into a temporary byte buffer;
+1. decodes the CJK14 text into a temporary byte buffer;
 2. copies each field into its typed static array;
 3. builds the 18-bit mask-to-centroid-code table;
 4. preprojects constant first-layer terms;
@@ -157,7 +157,7 @@ Its binary layout is:
 | Output bias | 1 | little-endian `float32` | 4 |
 | **Total** |  |  | **3,076** |
 
-The generated header reuses the D16 ASCII85 decoder. On first load it expands
+The generated header reuses the D16 CJK14 decoder. On first load it expands
 the network into:
 
 ```text
@@ -169,67 +169,86 @@ contains the exact clipped network result for every constraint/key pair. It
 occupies roughly 5 MiB at runtime, but only the 3,076-byte model payload and
 table-building code appear in the source.
 
-## 4. ASCII85 payload encoding
+## 4. CJK14 payload encoding
 
-Both current evaluator payloads use the deterministic encoder in
-`tools/nnue_ascii85.py`.
+Both evaluator payloads use the deterministic encoder in
+`tools/nnue_cjk14.py`.
 
-### 4.1 Encoding algorithm
+### 4.1 Why not ASCII
 
-For each group of up to four input bytes:
-
-1. pad the final group with zero bytes for arithmetic;
-2. interpret the four-byte group as one big-endian 32-bit integer;
-3. repeatedly divide by 85 to obtain five base-85 digits;
-4. encode each digit as ASCII `digit + 33`, producing the alphabet `!` through
-   `u`;
-5. for a partial final group, emit only `input_byte_count + 1` digits.
-
-Full groups therefore use five source characters for four payload bytes:
+CodinGame measures the 100,000 cap in UTF-16 code units (a Java string
+length), not bytes. A CodinGame forum user established this by testing,
+reporting a consistent limit only in UTF-16 units, and the official
+documentation says only "100k characters".
+Every character from U+0000 through U+FFFF except surrogates is one unit. An
+alphabet of 2^14 such characters therefore carries 14 payload bits per counted
+character:
 
 ```text
-ASCII85 expansion = 5 / 4 = 1.25x
-Base64 expansion  = 4 / 3 = 1.333...x
+ASCII85  8 bits per 1.25 characters  = 6.4 bits per character
+Base64   8 bits per 1.33 characters  = 6.0 bits per character
+CJK14                                = 14 bits per character
 ```
 
-The optional ASCII85 `z` abbreviation for four zero bytes is deliberately not
-used. A fixed-width alphabet keeps generation deterministic and makes the C++
-decoder smaller.
+The alphabet is U+4E00 through U+8DFF, the first 16,384 CJK Unified
+Ideographs. The block contains no combining marks, line or paragraph
+separators, bidi controls, invisible characters, or characters with Unicode
+normalization decompositions, so an editor or paste box has nothing to
+rewrite. A 15-bit alphabet would have to span other blocks with combining
+marks, which is why the encoding stops at 14 bits.
 
-### 4.2 Raw-string delimiter safety
+The file is UTF-8 on disk. Each payload character is three UTF-8 bytes, so the
+submission is larger in bytes than in counted characters.
+
+### 4.2 Encoding algorithm
+
+1. Treat the payload as one big-endian bit stream.
+2. Emit each 14-bit group as the character `U+4E00 + group`.
+3. Zero-pad the final group.
+
+Decoding yields `floor(14 * characters / 8)` bytes. When the final group
+carries eight or more padding bits that is one zero byte more than the input.
+Both loaders size their reads from the known layout (`count < need` fails,
+extra bytes are ignored), so the padding is harmless. The current payloads pad
+by fewer than eight bits and decode to exactly their input length.
+
+### 4.3 Raw-string delimiter safety
 
 The generated arrays use a C++ raw string with `~` as the delimiter:
 
 ```cpp
-static const char D16_MINI_PACK_B85[] = R"~(
+static const char D16_MINI_PACK_CJK[] = R"~(
 ...payload...
 )~";
 ```
 
-`~` is outside the emitted `!`-through-`u` alphabet. The payload can therefore
-never contain the terminating sequence `)~"`. This is a structural guarantee,
-not a probabilistic delimiter choice.
+Payload characters are all non-ASCII, so the payload can never contain the
+terminating sequence `)~"`. This is a structural guarantee.
 
-### 4.3 Decoder behavior
+### 4.4 Decoder behavior
 
-`d16_mini_b85_decode()`:
+`d16_mini_cjk_decode()` reads the UTF-8 bytes of the ordinary narrow literal:
 
-- ignores characters outside `!` through `u`, including formatting newlines;
-- accumulates five digits into one 32-bit value;
-- pads a final short group with digit 84, as required by ASCII85;
-- emits `digit_count - 1` bytes for that final group;
+- skips every byte that does not start a three-byte UTF-8 sequence, including
+  formatting newlines;
+- reassembles each code point and subtracts U+4E00;
+- shifts 14 bits into an accumulator and emits a byte whenever eight are
+  available;
 - checks the destination capacity and returns `-1` on overflow.
 
-The ASCII85 conversion is transport-only. Decoding restores the exact original
-byte sequence, including the little-endian `float32` representation expected
-by the AVX2 x86 runtime.
+The encoding is transport-only. Decoding restores the exact original byte
+sequence, including the little-endian `float32` representation expected by the
+AVX2 x86 runtime. `tools/nnue_cjk14.py` also holds the decoder source the
+emitters write into generated headers, and a Python mirror used by its tests.
 
 The committed tests pin the current payloads to:
 
-| Payload | Bytes | FNV-1a 64 |
-| --- | ---: | --- |
-| D16 local evaluator | 42,855 | `e35e987c17a453cf` |
-| Macro residual | 3,076 | `626e29f3a8d65679` |
+| Payload | Bytes | Characters | FNV-1a 64 |
+| --- | ---: | ---: | --- |
+| D16 local evaluator | 42,855 | 24,489 | `e35e987c17a453cf` |
+| Macro residual | 3,076 | 1,758 | `626e29f3a8d65679` |
+
+These are the same bytes and hashes the ASCII85 encoding decoded to.
 
 ## 5. Local-header bundling
 
@@ -297,7 +316,7 @@ be semantically significant.
 
 ### 6.1 Raw payload compaction
 
-Generated headers wrap ASCII85 at 100 columns for readable diffs. When the
+Generated headers wrap the payload at 64 characters for readable diffs. When the
 tokenizer encounters a raw string, it locates the raw delimiter and closing
 sequence, treats the entire literal as one token, and removes carriage returns
 and newlines from the literal body.
@@ -422,23 +441,25 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 102956 (bundled 176729)
--> cpp_impl/cg_input.cpp 93272
-saved 83457
-cap 6728 left
+cpp_impl/codingame_nnue.cpp 119694 (bundled 162084)
+-> cpp_impl/cg_input.cpp 65731
+saved 96353
+cap 34269 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
 translation unit, not with the readable top-level source.
 
-All current source text is ASCII, so Python's character count and `wc -c`
-agree. The CLI conservatively exits with failure when output is 100,000
-characters or larger.
+Sizes are UTF-16 code units, which is what CodinGame counts. Everything
+outside the two payload literals is ASCII, and every payload character is one
+UTF-16 unit, so the unit count equals Python's `len`. It does not equal
+`wc -c`: each payload character is three UTF-8 bytes, and the file is 118,225
+bytes. The CLI exits with failure when output is 100,000 units or larger.
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
-submission to 92,759 characters. Subsequent engine and match-harness logic
-brings the current payload to 93,272 characters, still leaving 6,728
-characters of headroom.
+submission to 92,759 characters. Round nine brought it to 96,887, leaving
+3,113. Replacing ASCII85 with CJK14 cut the two payloads from 57,414 to
+26,247 characters, bringing the submission to 65,731 with 34,269 left.
 
 ## 11. Reproducible generation procedure
 
@@ -543,8 +564,9 @@ Coverage relevant to this pipeline includes:
 - reserved-name and identifier-renaming behavior;
 - punctuation spacing and preprocessor reconstruction;
 - CLI output and the 100,000-character failure gate;
-- ASCII85 randomized round trips and all final-group lengths;
-- a known C++ ASCII85 decoder vector;
+- CJK14 randomized round trips, all final-group lengths, and the one-unit-per-character property;
+- known C++ CJK14 decoder vectors and the overflow return;
+- UTF-16 unit counting for the cap, including astral characters counting double;
 - exact D16 and macro payload lengths and hashes;
 - scalar versus optimized evaluator paths;
 - NNUE incremental-state refresh consistency.
@@ -603,7 +625,7 @@ physical core so process scheduling does not manufacture timeout regressions.
 
 Minification reduces source size, not runtime initialization work. Profile:
 
-- ASCII85 decoding;
+- CJK14 decoding;
 - D16 fast-table construction;
 - macro lookup-table construction;
 - opening warm-up search.

@@ -424,6 +424,15 @@ def minify_cpp(src: str, rename: bool = True) -> str:
     return stringify(tokens)
 
 
+# CodinGame measures the cap in UTF-16 code units (a Java String length), so a
+# character outside the Basic Multilingual Plane costs two.
+CG_CAP_UTF16_UNITS = 100_000
+
+
+def utf16_units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Minify a C++ CodinGame submission")
     ap.add_argument("src")
@@ -447,12 +456,13 @@ def main() -> None:
     dest = args.out or args.src
     with open(dest, "w", encoding="utf-8", newline="\n") as f:
         f.write(out)
+    units = utf16_units(out)
     print(
         f"{args.src} {input_len} (bundled {len(src)}) -> "
-        f"{dest} {len(out)}  saved {len(src) - len(out)}  "
-        f"cap {100000 - len(out)} left"
+        f"{dest} {units}  saved {utf16_units(src) - units}  "
+        f"cap {CG_CAP_UTF16_UNITS - units} left"
     )
-    if len(out) >= 100000:
+    if units >= CG_CAP_UTF16_UNITS:
         print("WARNING: still over 100k", file=sys.stderr)
         sys.exit(1)
 
