@@ -1,6 +1,6 @@
 # SPRT opening book
 
-`cpp_impl/opening_book.bin` is a frozen set of 10,000 legal Ultimate
+`cpp_impl/opening_book.bin` is a frozen set of 50,000 legal Ultimate
 Tic-Tac-Toe positions used by the Dev-versus-Prev SPRT harness. It is a test
 book, not a gameplay opening book: neither the CodinGame bot nor the local
 engine follows book moves during a real game.
@@ -14,7 +14,15 @@ The artifact has three jobs:
 
 Every opening is paired. The harness starts one game with Dev as the first
 player and one with Prev as the first player from the same position. A full
-10,000-position traversal is therefore 20,000 games.
+50,000-position traversal is therefore 100,000 games.
+
+The earlier 10,000-position book supported only 20,000 unique games. A
+decision-length H0=0/H1=+5 SPRT can run longer than that, especially when the
+true effect is near the indifference midpoint. Reusing the same roots would
+not necessarily move the point estimate, but it would violate the
+independence assumptions behind the reported confidence interval and LLR.
+The harness therefore never wraps a book silently: it reports an inconclusive
+result when all unique pairs are exhausted.
 
 ## Frozen production definition
 
@@ -26,7 +34,7 @@ The generator uses these rules:
 
 | Property | Production value |
 | --- | ---: |
-| Positions | 10,000 |
+| Positions | 50,000 |
 | Opening length | 4 through 10 plies |
 | Minimum coverage | 500 positions at every included ply |
 | RNG seed | `0xC0FFEE42` (`3237998146`) |
@@ -35,20 +43,20 @@ The generator uses these rules:
 | Deep prefilter | depth 12, `abs(score) <= 525` |
 | Authoritative fairness search | depth 16, `abs(score) <= 300` |
 
-The tracked version was generated on 14 September 2026 against merged-main
-baseline `5a509c4` (plus the tooling-only fixed-depth state-initialization
-fix):
+The tracked version was generated on 15 September 2026 against frozen
+`CrossfishPrev` baseline `88c57b4`, which freezes the engine accepted on
+merged main `a7a64e9`:
 
 | Artifact property | Value |
 | --- | --- |
-| File size | 160,032 bytes |
-| SHA-256 | `6bc7556e530ec0e1cd9c395dae16809596503480f2929c2c2ca3ba5f906c509d` |
-| Mean signed score | -13.5385 |
-| Mean absolute score | 161.444 |
-| Absolute-score p50 / p90 / p99 / max | 169 / 275 / 298 / 300 |
-| Positions by ply | 4: 784, 5: 1,854, 6: 1,004, 7: 2,087, 8: 1,190, 9: 1,891, 10: 1,190 |
+| File size | 800,032 bytes |
+| SHA-256 | `1863013821e446ae2aab3b132a86863af64bcb83d815c2516c84a366809dfae5` |
+| Mean signed score | -12.0914 |
+| Mean absolute score | 159.826 |
+| Absolute-score p50 / p90 / p99 / max | 165 / 275 / 298 / 300 |
+| Positions by ply | 4: 3,019, 5: 8,788, 6: 5,326, 7: 10,377, 8: 6,407, 9: 9,868, 10: 6,215 |
 | Distinct first moves | 81 of 81 |
-| First-move frequency | minimum 45, center-center 189, maximum 267 |
+| First-move frequency | minimum 278, center-center 877, maximum 1,243 |
 
 At every opening ply, the generator evaluates every legal child with the
 frozen baseline's complete static evaluator: handcrafted terms, the packed
@@ -101,16 +109,17 @@ book score; depth 4 and depth 12 are only prefilters.
 Depth 20 was also evaluated. On the same sample, depth-16 and depth-20 scores
 had 0.944 Pearson correlation. Of the 61 positions inside the depth-16
 `+/-300` band, 50 also remained inside the depth-20 band. Depth 20 took
-several seconds per root and projected to hours for a 10,000-position
+several seconds per root and projected to many hours for a 50,000-position
 production build. Depth 16 was chosen as the practical frozen gate; depth-20
 audits remain available for samples or future book versions.
 
-After generation, the first 140 production records were independently
-re-searched. At depth 16 all 140 reproduced their stored score exactly. At
-depth 20, 105/140 remained within 300 units and 137/140 remained within 500;
-mean absolute score was 208.30, with p50 193, p90 381, p99 511, and maximum
-550. This is a deterministic audit sample, not a claim that every record
-would satisfy the depth-20 gate.
+After generation, the first 500 production records were independently
+re-searched at depth 16. All 500 searches succeeded, all 500 remained within
+the required band, and every score reproduced its stored value exactly. A
+separate depth-20 audit of the first 140 records kept 106/140 inside 300 units
+and 136/140 inside 500. Its mean absolute score was 207.61, with p50 197, p90
+372, p99 537, and maximum 616. This is a deterministic audit sample, not a
+claim that every record would satisfy the depth-20 gate.
 
 Depth means the engine's normal selective fixed-depth search, including its
 ordinary move ordering, extensions, reductions, pruning, qsearch, and
@@ -144,8 +153,20 @@ an explicit worker count can be supplied directly:
 
 ```bash
 ./cpp_impl/bin/test_bots book generate \
-  cpp_impl/opening_book.bin 10000 7
+  cpp_impl/opening_book.bin 50000 7
 ```
+
+Generation writes atomic progress checkpoints after every normal status
+report:
+
+- `<book>.partial` stores the accepted prefix as a valid book artifact;
+- `<book>.next` stores the requested size and next deterministic candidate
+  identifier.
+
+Running the same generation command again resumes from those files. The
+loader reconstructs the deduplication set and ply counts from the partial
+book. On successful completion the final artifact is written and both
+sidecars are removed.
 
 Audit an existing book at an arbitrary depth. A count of zero means every
 position. The optional final argument writes per-position TSV data:
@@ -183,18 +204,32 @@ For diagnostics, `SPRT_OPENING_BOOK=none` disables the file. The legacy
 `SPRT_BOOK=0` uses unseeded random openings. Those modes are not the long-term
 strength gate.
 
+The default statistical model is a pentanomial SPRT over complete opening
+pairs. From Dev's perspective its five bins are:
+
+1. two losses;
+2. one loss and one draw;
+3. one win and one loss, or two draws;
+4. one win and one draw;
+5. two wins.
+
+The generalized-logistic LLR and pair-aware Elo interval follow the same
+method used by official Stockfish Fishtest. The repository verifier pins a
+known Fishtest reference vector and expected LLR. `SPRT_PAIR_MODEL=0` exists
+only for legacy diagnostics.
+
 `SPRT_GAME_OFFSET` and the resume counters preserve deterministic traversal.
 The records are not consumed in generation order. On load, the harness makes
 a fixed Fisher-Yates permutation using the book seed XOR a versioned constant,
-then selects traversal index `i` modulo the book size. The shuffle is written
-out explicitly rather than delegated to `std::shuffle`, so the same artifact
-has the same order across standard-library implementations. `book inspect`
-prints the traversal seed, a fingerprint, and the first record indices.
-For the tracked artifact, the traversal seed is `2916390839`, the FNV-1a
-fingerprint is `8698397342672575767`, and the first records are
-`9147,6031,9603,8274,9238,1815,2827,9220`. The verify suite pins that
-fingerprint so an accidental order change cannot silently redefine the
-benchmark.
+then selects traversal index `i`. The shuffle is written out explicitly
+rather than delegated to `std::shuffle`, so the same artifact has the same
+order across standard-library implementations. `book inspect` prints the
+traversal seed, a fingerprint, and the first record indices. For the tracked
+artifact, the traversal seed is `2916390839`, the FNV-1a fingerprint is
+`5306913481027657611`, and the first records are
+`36648,32816,26293,43975,24552,29073,34191,17490`. The verify suite pins both
+this fingerprint and the historical 10,000-position fingerprint so an
+accidental order change cannot silently redefine either benchmark.
 
 This distinction matters for short SPRTs. Generation writes positions in
 acceptance order, which may contain subtle local correlations even when broad
@@ -202,7 +237,60 @@ score, ply, and first-move distributions look uniform. Permuted prefixes are
 therefore a more representative sample of the full benchmark. One opening
 still produces two games with colors swapped, so resume totals must be even.
 
-## Comparison with the legacy random opener
+Resuming a paired run requires all aggregate state:
+
+```bash
+SPRT_RESUME_WINS=... \
+SPRT_RESUME_DRAWS=... \
+SPRT_RESUME_LOSSES=... \
+SPRT_RESUME_PENTA=LL,LD,MID,DW,WW \
+SPRT_GAME_OFFSET=<next-opening-pair> \
+make sprt
+```
+
+The pentanomial bins must account for exactly half of resumed W/D/L games or
+the harness exits. Without `SPRT_ALLOW_BOOK_WRAP=1`, scheduling is capped at
+the remaining unique records and book exhaustion is reported as
+inconclusive. Explicit wrapping is reserved for diagnostics and must not be
+used for an official strength decision.
+
+## Replacement-book A/A validation
+
+Before adoption, the 50,000-position artifact completed a 1,000-game
+Prev-versus-Prev smoke test over 500 unique pairs at the official 90 ms search
+budget, seven physical workers, and the external 100 ms referee:
+
+```text
+W 281 / D 456 / L 263
+Penta 31 / 122 / 180 / 132 / 35
++6.25 +/- 15.50 Elo
+LLR +0.300 for H0=0 / H1=+5
+Timeout losses: Prev 0 / Dev 0
+Maximum response: Prev 90.18 ms / Dev 90.12 ms
+```
+
+The identical engines are statistically compatible with zero, the paired
+model remained numerically stable, and the new book introduced no timeout or
+replay failure.
+
+## Superseded 10,000-position artifact
+
+The original production book remains reachable in Git history. Its benchmark
+identity is retained here so old reports can be interpreted:
+
+| Artifact property | Historical value |
+| --- | --- |
+| Generation date | 14 September 2026 |
+| Positions / paired games | 10,000 / 20,000 |
+| File size | 160,032 bytes |
+| SHA-256 | `6bc7556e530ec0e1cd9c395dae16809596503480f2929c2c2ca3ba5f906c509d` |
+| Traversal fingerprint | `8698397342672575767` |
+| First traversal records | `9147,6031,9603,8274,9238,1815,2827,9220` |
+
+It was replaced because official +5 Elo SPRTs can require more than 20,000
+games, not because its individual positions were invalid.
+
+## Historical comparison with the legacy random opener
 
 A controlled fixed-size comparison measured the final Round 8 candidate
 against the same frozen Prev baseline under both opening systems. Both runs
@@ -257,10 +345,11 @@ uses arbitrary 4-8-ply legal moves. The Elo difference can therefore include
 a real interaction between the macro-evaluation change and more realistic,
 later opening positions, not only reduced sampling noise.
 
-Finally, the current harness reports a trinomial per-game SPRT even though
-games are produced in color-swapped pairs. A future pentanomial pair model
-would quantify split-pair correlation more directly. That limitation applies
-to both arms and does not change the clear draw-rate/balance result.
+These numbers were produced by the historical per-game trinomial harness and
+the 10,000-position book. They remain useful evidence about opener quality,
+but should not be mixed directly with new pair-level pentanomial results. The
+current harness fixes that limitation by treating each color-swapped opening
+pair as one observation.
 
 ## Binary format
 

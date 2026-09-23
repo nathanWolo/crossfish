@@ -625,6 +625,14 @@ def train(args):
                 feat[2][idx].long().to(device),
                 parts=parts,
             )
+            if args.relative_empty:
+                empty_value = model(*empty_feat, parts=parts)
+                if parts:
+                    output, mlp = value
+                    empty_output, _ = empty_value
+                    value = output - empty_output, mlp
+                else:
+                    value = value - empty_value
             if not args.output_relu:
                 return value
             if parts:
@@ -702,7 +710,8 @@ def train(args):
                     opt.zero_grad()
                     loss.backward()
                     opt.step()
-                    if args.arch == "mini" and args.residual and args.pin_empty:
+                    if (args.arch == "mini" and args.residual
+                        and args.pin_empty and not args.relative_empty):
                         with torch.no_grad():
                             empty_v = model(*empty_feat)
                             if args.output_relu:
@@ -880,6 +889,15 @@ def main():
     ap.add_argument("--res-l2", type=float, default=0.0, help="L2 on the residual output")
     ap.add_argument("--pin-empty", action="store_true",
                     help="recenter a residual MiniNet to zero on the empty board after every step")
+    ap.add_argument(
+        "--relative-empty",
+        action="store_true",
+        help=(
+            "train the residual as net(position)-net(empty), including the "
+            "empty branch in the gradient; export still folds the subtraction "
+            "into the output bias"
+        ),
+    )
     ap.add_argument("--init-mini",
                     help="initialize MiniNet weights from an existing CFM2 blob")
     ap.add_argument("--crelu-max", type=float, default=4.0, help="sparse arch CReLU clip only")
@@ -899,7 +917,12 @@ def main():
                     help="bake frozen HCE mini LUT + won-board material into additive head")
     ap.add_argument("--mlp-l2", type=float, default=0.0,
                     help="L2 on the MLP head so the additive LUT stays in charge")
-    train(ap.parse_args())
+    args = ap.parse_args()
+    if args.relative_empty and (
+        args.arch != "mini" or not args.residual or args.output_relu
+    ):
+        ap.error("--relative-empty requires --arch mini --residual without --output-relu")
+    train(args)
 
 
 if __name__ == "__main__":

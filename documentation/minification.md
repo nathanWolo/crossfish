@@ -509,8 +509,8 @@ wc -c cpp_impl/cg_input.cpp
 The current expected values are:
 
 ```text
-SHA-256  c5aef709a1d182def56d54d7633fd42ca244aeaccf6488e57789acbe670496ae
-size     93,272 bytes
+SHA-256  9b2a077f3675eb2627d5a1ba946e50cbe178aec74938b3958d50a4810c993070
+size     96,887 bytes
 ```
 
 These values must be updated intentionally whenever the readable engine or

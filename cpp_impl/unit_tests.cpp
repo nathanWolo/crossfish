@@ -774,6 +774,26 @@ static void test_ttentry_layout_matches_store(TestCtx &ctx) {
     CHECK_EQ(e.best_move.square, 5);
 
     CHECK_EQ(sizeof(CrossfishDev::CompactTTEntry), 16u);
+    CHECK_EQ(sizeof(CrossfishDev::CompactTTBucket), 32u);
+    CrossfishDev::CompactTTEntry compact = {
+        0x123456789abcdef0ull, -12345, 77, TT_LOWER, 80
+    };
+    CHECK_EQ(compact.zobrist_hash, 0x123456789abcdef0ull);
+    CHECK_EQ(compact.score, -12345);
+    CHECK_EQ(compact.depth, 77);
+    CHECK_EQ(compact.flag, TT_LOWER);
+    CHECK_EQ(compact.best_move, 80);
+    for (int score : {-99999, -90001, -123, 0, 123, 90001, 99999}) {
+        int stored = CrossfishDev::tt_score_to_store(score, 17);
+        CHECK_EQ(CrossfishDev::tt_score_from_store(stored, 17), score);
+#ifdef CROSSFISH_NORMALIZE_TT_MATES
+        if (score > 90000) CHECK_EQ(stored, score + 17);
+        else if (score < -90000) CHECK_EQ(stored, score - 17);
+        else CHECK_EQ(stored, score);
+#else
+        CHECK_EQ(stored, score);
+#endif
+    }
     for (int mb = 0; mb < 9; mb++) {
         for (int sq = 0; sq < 9; sq++) {
             Move move{mb, sq};

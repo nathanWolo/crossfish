@@ -42,6 +42,7 @@ shipped opening book, and compiles the CodinGame binaries
 | `make test-cpp` | C++ unit tests only (`cpp_impl/unit_tests.cpp`) |
 | `make test-python` | Independent Python board perft / make-undo / winners (`python_impl/test_rules.py`), plus `tools/test_*.py` |
 | `make verify` | The older smoke checks inside `test_bots.cpp`, then exit (no SPRT) |
+| `make -C cpp_impl bench` | Proves a speed-only change is tree-identical: fresh engine per position, identical scores **and** node counts, plus node counts and wall time |
 | `make sprt` | Strength: Dev vs Prev self-play with SPRT at **90 ms** (slow, noisy) |
 | `make book-inspect` | Validate and summarize the shipped 10k-position SPRT opening book |
 | `make opening-book` | Regenerate the depth-16-qualified opening book (slow; normally do not run) |
@@ -193,10 +194,28 @@ faster.
 | Kind of change | First gate | Then | Ship only after |
 | --- | --- | --- | --- |
 | Different leaf / different net / different HCE weights | `depth 4` | optional 20 ms, then **90 ms** | Official 90 ms pass. Depth-only is not enough. |
-| Same eval, faster implementation (LUTs, MiniNet projection, AVX) | optional 20 ms | **90 ms** | Official 90 ms pass. Depth 4 should be ~0 Elo if the rewrite is equivalent. If depth 4 fails, the "speedup" changed the eval. |
+| Same eval, faster implementation (LUTs, MiniNet projection, AVX) | `make -C cpp_impl bench` must print **IDENTICAL** | optional 20 ms, then **90 ms** | Official 90 ms pass. If `bench` reports any node-count difference, the "speedup" changed the eval and the SPRT would be measuring something else. |
 | Search (LMR, TT, move order, pruning) | optional 20 ms | **90 ms** | Official 90 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
 
 Do not skip `make test` because a gate passed.
+
+**`test_bots depth N` is not an equivalence test.** Each worker reuses one
+engine pair across the two games of an opening pair, so it carries
+transposition, history and correction-history state into the second game. A Dev
+that was *provably* tree-identical to Prev measured **-8.44 +/- 23.84 Elo**
+there at N=700. Use `make -C cpp_impl bench`, which builds a fresh engine per
+position and requires identical scores **and** identical node counts; that is
+the only real proof that a speed-only rewrite left the eval alone. Its `walk`
+mode replays a scripted game through one engine at a real move budget and
+reports mean completed root depth, which is the quantity a speed win has to
+convert into: calibration on the round-nine host is **+3.3% nodes = +0.167
+ply**.
+
+A tree-changing candidate cannot be screened by node count at all. Round nine
+measured a 16x transposition table searching 3.9% *more* nodes than the
+shipped one, because the pseudo-singular extension fires on any sufficiently
+deep TT hit, so a higher hit rate buys extra extensions. Fewer nodes is not
+better and more nodes is not worse; only depth-at-equal-time and Elo are.
 
 Kill a run that is clearly not going to a +5 pass: Elo stuck around 0 to +3 after many thousands of games, LLR wandering near 0. Waiting for H0 at 20k games is a waste of the machine. Record the last line and revert.
 
@@ -289,6 +308,39 @@ implementation, and validation procedure.
 
 ## Latest strength result
 
+On 2026-09-22, a tree-identical hot-path rewrite passed the official 90 ms
+SPRT against the round-eight freeze (`88c57b4`) with one of eight physical
+cores reserved, using pentanomial pairs and the 50,000-position book:
+
+```text
+90 ms: N 2366 W 723 D 1048 L 595
+Penta: 69 / 257 / 434 / 323 / 100
+Elo diff: +18.81 +/- 10.18
+LLR: +3.010 (H0=0, H1=+5) — PASS
+Timeouts: Prev=0 Dev=0
+Maximum response: Prev=98.37 ms Dev=98.40 ms
+Prev NPS: 11,881,856  Dev NPS: 14,548,864
+```
+
+The candidate changes no score and no node count: it computes a bit-identical
+search tree 22.4% faster. A branchless AVX2 rank sort over packed move keys
+replaces the two-array insertion sort, the per-node terminal check becomes an
+O(1) cached field, the move/constraint/side Zobrist terms are pre-XORed into
+one table, movegen emits eight squares per store, and the MiniNet centroid
+code and global HCE term are cached. Because it is speed-only, the gate was
+node-count identity first (`make -C cpp_impl bench`) and then the 90 ms SPRT.
+
+Paste `cpp_impl/cg_input.cpp` (96,887 characters, 3,113 below the limit).
+Static storage grew 4,368 bytes; the 4 MiB transposition table and 5 MiB macro
+table are unchanged. The CodinGame port is pinned to the pre-port engine by
+`cpp_impl/cg_selfcheck.cpp`, which checksums fixed-depth scores and node
+counts; it matched at fifteen depth/position configurations from depth 5 to 16,
+including against the minified bundle.
+
+Two constraints are now tight. Submission headroom is 3,113 characters, and
+the shipped `CODINGAME_MOVE_MS = 90` replies at 90.1-90.6 ms against the
+100 ms referee, leaving about 10 ms of scheduling slack.
+
 On 2026-09-13, the timeout-hardened round-seven stack passed the official
 90 ms SPRT against the merged round-six engine
 (`db8bce60e8f88ad4201042484dccc578fb59ecd4`) with one of eight physical cores
@@ -367,6 +419,8 @@ Startpos perft is frozen in both C++ and Python. If one suite's counts change, u
 - `cpp_impl/cg_input.cpp` — bundled/minified paste file for the CodinGame IDE
 - `cpp_impl/crossfish.cpp` — self-contained HCE CG bot (packing source for MiniNet)
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
+- `cpp_impl/bench_ab.cpp` — deterministic Dev-vs-Prev equivalence and node-count screen (`make -C cpp_impl bench`)
+- `cpp_impl/cg_selfcheck.cpp` — pins the CodinGame port to the engine by checksumming fixed-depth scores and node counts
 - `cpp_impl/opening_book.bin` — frozen 10k-position depth-16-qualified SPRT book
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting

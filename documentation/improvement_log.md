@@ -1482,3 +1482,317 @@ With setup excluded correctly, a 500-game external-process comparison at
 90 ms completed with zero timeout losses for both source forms. Maximum
 responses were 90.32 ms for readable `codingame_nnue.cpp` and 90.27 ms for
 the generated `cg_input.cpp`.
+
+---
+
+## 43. Pair-level SPRT and a 50,000-position benchmark (15 September 2026)
+
+Round 9 began with several small search changes that looked promising in
+short screens. The first candidate taken to a real H0=0/H1=+5 decision was a
+larger late-move-reduction base of 65. Its early 700-game screen estimated
+about +14 Elo, but the uninterrupted official run reversed:
+
+```text
+N 9884  W 2782 / D 4230 / L 2872
+-3.16 +/- 5.18 Elo
+LLR -3.04331: FAIL H1=+5 against H0=0
+Timeout losses: Prev 0 / Dev 0
+```
+
+This was a useful warning against freezing changes from fixed-size screens.
+The engine is mature enough that a plausible +5 Elo effect can require many
+thousands of games, and short estimates can point in the wrong direction.
+
+The next long run tested aspiration width 20 against width 40. It reached the
+end of the original opening corpus without an SPRT decision:
+
+```text
+N 19992  W 5730 / D 8759 / L 5503
++3.95 +/- 3.61 Elo
+LLR +2.29267
+Timeout losses: Prev 0 / Dev 0
+```
+
+Those are the last clean figures before a full traversal. The old book held
+10,000 positions and therefore only 20,000 color-swapped games. The harness
+then silently reused positions with modulo indexing. Repetition does not
+necessarily bias the Elo point estimate, but treating repeated roots as
+independent overstates confidence and invalidates the LLR. Post-20,000 data
+from that run were discarded, and aspiration width 20 remains promising but
+unresolved until rerun on the replacement corpus.
+
+The replacement-corpus rerun used the official 90 ms search budget, the
+100 ms referee deadline, pair-level pentanomial SPRT, and unique positions
+from the 50,000-position book. At the user's requested stopping point it had
+still not produced a clear result:
+
+```text
+N 23142  W 6676 / D 9973 / L 6493
+Penta 809 / 2756 / 4299 / 2857 / 850
++2.75 +/- 3.26 Elo
+LLR +0.448 for H0=0 / H1=+5
+Timeout losses: Prev 0 / Dev 0
+```
+
+This is an inconclusive result, not a pass. Aspiration width 40 therefore
+remains the accepted baseline; width 20 was not frozen into the engine.
+
+The testing infrastructure was hardened before spending more CPU:
+
+- the default SPRT now uses pair-level pentanomial outcomes rather than
+  per-game trinomial outcomes;
+- the generalized-logistic LLR and pair-aware Elo interval are pinned against
+  a known Stockfish Fishtest reference vector;
+- the book never wraps silently and reports an inconclusive result on
+  exhaustion;
+- paired resume requires W/D/L, all five pentanomial bins, and the next
+  opening-pair offset;
+- generation writes atomic book-prefix and cursor checkpoints and resumes
+  deterministically;
+- the verifier retains both historical and current traversal fingerprints.
+
+The replacement artifact was generated against frozen baseline `88c57b4`
+with the same reasonable-move sampling, depth-12 prefilter, and authoritative
+depth-16 `abs(score) <= 300` gate:
+
+```text
+Positions: 50,000
+Unique paired-game capacity: 100,000 games
+File size: 800,032 bytes
+SHA-256: 1863013821e446ae2aab3b132a86863af64bcb83d815c2516c84a366809dfae5
+Mean absolute stored score: 159.826
+Absolute-score p50 / p90 / p99 / max: 165 / 275 / 298 / 300
+Traversal fingerprint: 5306913481027657611
+```
+
+A 500-position depth-16 replay reproduced every stored score exactly. A
+140-position depth-20 sample kept 106 positions inside +/-300 and 136 inside
++/-500, with mean absolute score 207.61. This closely matches the original
+book's deeper audit and preserves the intended fairness tradeoff.
+
+Finally, a fixed 1,000-game Prev-versus-Prev smoke used the new book,
+pentanomial model, official 90 ms search budget, seven physical workers, and
+the external 100 ms deadline:
+
+```text
+W 281 / D 456 / L 263
+Penta 31 / 122 / 180 / 132 / 35
++6.25 +/- 15.50 Elo
+LLR +0.300 for H0=0 / H1=+5
+Timeout losses: Prev 0 / Dev 0
+Maximum response: Prev 90.18 ms / Dev 90.12 ms
+```
+
+The identical-engine result is compatible with zero and confirms that the
+expanded book, paired model, and no-wrap scheduler are ready for the pending
+decision runs. After the inconclusive width-20 rerun documented above,
+simplified qsearch capture ordering was tested next. A passing change is
+frozen before the next candidate is measured, so small accepted gains
+accumulate against an honest incremental baseline.
+
+The simplified qsearch ordering had looked positive in short screens, but
+the official replacement-book run reversed and reached a formal decision:
+
+```text
+N 7812  W 2144 / D 3468 / L 2200
+Penta 291 / 962 / 1421 / 976 / 256
+-2.49 +/- 5.60 Elo
+LLR -3.05837: FAIL H1=+5 against H0=0
+Timeout losses: Prev 0 / Dev 0
+Maximum response: Prev 91.15 ms / Dev 96.47 ms
+```
+
+The full qsearch capture ordering therefore remains the accepted default.
+Incremental TT-hash restoration was the next isolated candidate. It avoids
+reversing every Zobrist component during unmake by saving the complete key
+before each move and restoring it from the move stack. Despite an initially
+encouraging throughput probe, the official run found no meaningful strength
+gain:
+
+```text
+N 16884  W 4770 / D 7355 / L 4759
+Penta 607 / 2017 / 3160 / 2074 / 584
++0.23 +/- 3.80 Elo
+LLR -3.03183: FAIL H1=+5 against H0=0
+Timeout losses: Prev 1 / Dev 1
+Maximum response: Prev 106.42 ms / Dev 105.90 ms
+```
+
+The timeout losses were symmetric host jitter. Hash recomputation on unmake
+therefore remains the accepted default. A three-way transposition-table
+bucket, packed into the same 32-byte / 4 MiB table footprint, is the next
+isolated candidate.
+
+That follow-up compressed each entry to ten bytes: a 46-bit hash signature,
+18-bit signed score, seven-bit move, two-bit bound flag, and seven-bit depth.
+This fits three entries plus padding in each existing 32-byte bucket, raising
+associativity by 50% without increasing the 4 MiB table. Both the normal and
+packed variants passed all 27 unit tests, including score extremes and packed
+metadata round trips.
+
+The extra capacity did not translate into stable strength. Fixed 700-game
+book screens finished:
+
+```text
+20 ms: -2.98 +/- 19.81 Elo, timeouts Prev 0 / Dev 0
+90 ms: +0.00 +/- 18.93 Elo, timeouts Prev 0 / Dev 0
+```
+
+The official-time startup probe was also about 3% slower for the packed
+variant because two of the three ten-byte entries are not naturally aligned.
+With two independent screens centered on zero and no throughput gain, the
+candidate did not justify a long SPRT. The full-hash two-way 32-byte bucket
+remains the accepted default.
+
+A second TT policy experiment protected an existing same-key entry when a
+new non-exact result was at least five plies shallower. Exact results still
+replaced, matching the broad shape of depth-preferred policies used by larger
+engines. It also failed both fixed-size screens:
+
+```text
+20 ms: -6.95 +/- 19.47 Elo, timeouts Prev 0 / Dev 0
+90 ms: -2.48 +/- 19.35 Elo, timeouts Prev 0 / Dev 0
+```
+
+The unconditional same-key replacement policy therefore remains the
+accepted default.
+
+---
+
+## 44. A tree-identical hot-path rewrite worth +22% NPS (22 September 2026)
+
+Round nine had produced six candidates and no passes. Every one of them tried
+to change the search tree, and the two that looked most promising on short
+screens reversed on long runs. This round changed nothing about the tree and
+only made it cheaper to compute.
+
+The candidate is a bundle of speed-only changes, which the gate table treats
+as one axis. Each was required to produce a **bit-identical** tree: identical
+scores and identical node counts, not "close".
+
+- Move ordering carried two parallel arrays (`int scores[81]` and
+  `FastMove legal_moves[81]`) through a stable insertion sort whose
+  compare-and-shift inner branch mispredicts on nearly every element. Packing
+  each move into one 32-bit key, `((1<<20 - score) << 8) | packed_move`, makes
+  ascending key order exactly descending score with ties going to the smaller
+  packed move, which is the smaller original index — the same permutation.
+  Keys inside a list are then unique, so a key's rank *is* its sorted index
+  and the sort becomes a branchless AVX2 rank computation plus a scatter. 93%
+  of lists fit in one 8-lane vector.
+- `check_winner_fast` ran a full win/draw scan at the top of every search and
+  qsearch node. A terminal state can only be created or destroyed by a move
+  that decides a miniboard, so the answer is now a cached `FastBoard` field
+  refreshed only inside the existing decided/was_decided branches.
+- The move, destination-constraint and side-to-move Zobrist terms are
+  pre-XORed into one 1,296-byte table, so make and unmake each do one XOR
+  rather than three.
+- Squares 0..7 of a miniboard now leave movegen in one table load, one
+  popcount and one 8-byte store. The move buffer carries `FAST_MOVE_SLACK`
+  bytes of tail room for the wide store.
+- The MiniNet first layer looked up `D16_MN_MASK_CODE[(mine << 9) | opp]` for
+  all nine miniboards on every eval, nine probes into a 256 KiB byte table. A
+  miniboard's centroid code only changes when that miniboard changes, so it is
+  cached per (perspective, miniboard) and the eval reads nine contiguous
+  bytes. This is deliberately **not** the rejected idea of maintaining the
+  full 32-byte hidden accumulator incrementally (-5.87 Elo at N=1,184): only
+  the byte lookup moved, not the vector adds.
+- Smaller items: the global-HCE term cached rather than recomputed, a single
+  latent-capture mask instead of both sides', an inline integer `lround` for
+  the MiniNet head, the macro key set directly from the state index
+  `make_move_fast` already knows, and signed `% 2` replaced by `& 1` where
+  `n_moves` is provably non-negative.
+
+Official 90 ms SPRT against the round-eight freeze, pentanomial pairs, seven
+physical workers, the 50,000-position book:
+
+```text
+N 2366  W 723 / D 1048 / L 595
+Penta 69 / 257 / 434 / 323 / 100
++18.81 +/- 10.18 Elo
+LLR +3.010 (H0=0, H1=+5) — PASS
+Timeout losses: Prev 0 / Dev 0
+Maximum response: Prev 98.37 ms / Dev 98.40 ms
+Prev NPS 11,881,856  Dev NPS 14,548,864 (+22.4%)
+```
+
+### What measurement made possible, and what it killed
+
+`test_bots depth N` is not an equivalence test: each worker reuses one engine
+pair across the two games of an opening pair, so it carries transposition,
+history and correction-history state into the second game. A Dev that was
+*provably* tree-identical to Prev measured **-8.44 +/- 23.84 Elo** there at
+N=700. `cpp_impl/bench_ab.cpp` was added for this round and builds a fresh
+engine per position, which makes score and node count deterministic functions
+of the engine alone. Its `walk` mode replays one scripted move sequence
+through a single engine instance at a real millisecond budget, the way a game
+does, and reports mean completed root depth. Calibration from `walk`: **+3.3%
+nodes is +0.167 ply**, and the bundle as shipped is +22.9% nodes / +0.5 ply.
+
+Two candidates were killed by measurement before they cost any SPRT time.
+
+**Transposition-table capacity.** The table is genuinely saturated in play:
+about 39% occupancy after the first 90 ms move, 94% by move 3, 100% by move 9,
+at 690k-1.0M nodes per move. That is not the same as being the bottleneck.
+Doubling the entry count moves the TT hit rate only from 9.42% to 9.47%, and a
+**16x** table (27% occupancy, so no eviction pressure at all) searches 3.9%
+*more* nodes, because the pseudo-singular extension fires on any `tt_hit` with
+`entry.depth >= depth - 3`, so a higher hit rate buys more extensions than it
+saves in re-search. Node count at fixed depth is therefore not even a valid
+quality proxy for a capacity change. Measured at equal time, doubling the table
+to 8 MiB is **-0.258 ply** and about -10% NPS. An 8-byte-entry / 4-way design
+that would have bought the same capacity for free (and whose natural alignment
+fixes the stated failure cause of section 43's 3-way 10-byte bucket) was
+dropped for the same reason: the capacity is not worth having.
+
+**Lazy move selection.** A stable selection sort that rotates the best
+remaining move to the front of the unsearched suffix provably yields the same
+permutation as the stable insertion sort at every prefix (brute-forced over
+800,000 random arrays), and would let a beta cutoff at move 2 skip ordering
+moves 3..n. It measured **10-12% slower**. Instrumentation showed why: the
+move loop visits 60% of slots on average (4.49 of 7.47 moves, and still 50% at
+40-55-move free-choice nodes), because futility-pruned moves `continue` rather
+than break and the history-malus loop at a cutoff needs the whole ordered
+prefix. Selection only wins below roughly 30% visitation. The branchless sort
+that shipped came out of the instrumentation that disproved the premise.
+
+### Porting to CodinGame
+
+`codingame_nnue.cpp` keeps its own standalone copy of the board and the
+search, and nothing in `make test` checked that a port preserved behaviour;
+the only documented check was playing minified against readable, which cannot
+tell a correct port from a subtly wrong one. `cpp_impl/cg_selfcheck.cpp` now
+closes that: it renames the CG file's `main()` away, includes it whole, and
+drives the CG engine's own `search_fixed_depth` over a deterministic position
+set, printing a checksum over every search's score and node count. For a
+tree-identical change the pre-port and post-port checksums must match exactly.
+
+The port reproduced them at fifteen (positions, depth) configurations spanning
+depths 5 through 16 and roughly 100M nodes, including a run against the
+**minified bundle** itself (the minifier's rename map was recovered from
+`tools/cg_minify.py` to drive `cg_input.cpp`'s renamed engine). Instrumented
+builds additionally asserted, at every node, that each cached value equalled a
+from-scratch recompute — terminal state, `out_of_play`, `active_board`,
+centroid code, macro key, cached MiniNet output, `lround_bits`, and the cached
+global HCE term — with zero failures over ~12M nodes per configuration.
+
+Live 90 ms searches on the shipped binary: turn-one nodes rose from a mean of
+1,104,597 to 1,363,328 (+23.4%) and turn-two from 1,076,096 to 1,321,856
+(+22.8%), matching the +22.4% the SPRT header reported.
+
+Submission size went from 93,272 to **96,887** characters of the 100,000 cap,
+leaving 3,113. Static storage grew by 4,368 bytes (a 1,296-byte combo-hash
+table, a 2 KiB empty-square table, a 1 KiB open-win table); the 4 MiB
+transposition table and 5 MiB macro table are unchanged, and `FastBoard`
+itself got smaller. The sort scratch is a member rather than a local so the
+recursive search frame does not grow. First-turn initialisation uses about
+155 ms of the 1,000 ms allowance, down from 181 ms.
+
+Two things to know before the next change. Headroom is now thin: 3,113
+characters. Dead public API the CG bot never calls (`fill_captures_lut`,
+`is_capture_avx(Board&)`, `is_block_avx`, `creates_two_in_a_row`,
+`get_move_scores`, `eval_extra`, `eval_diffs`, `eval_parts`) and the generic
+no-op template overloads kept for reference parity are non-behavioural
+reclaim candidates if a future change needs room. Separately, the shipped
+`CODINGAME_MOVE_MS = 90` replies at 90.1-90.6 ms against a 100 ms referee, so
+there is only about 10 ms of scheduling slack; that is an argument against
+raising it, not for.
