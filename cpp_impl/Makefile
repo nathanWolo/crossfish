@@ -8,6 +8,12 @@ ARCH_FLAGS ?= -mavx2 -mbmi -mbmi2 -mlzcnt -mpopcnt
 endif
 CXXFLAGS ?= -O3 -std=c++17 $(ARCH_FLAGS) -pthread
 CXXFLAGS += -Wno-unknown-pragmas -Wno-ignored-attributes
+ifeq ($(OS),Windows_NT)
+# The engine object (~1.2 MB) is a stack local in the unit tests and in the
+# CodinGame main(). Windows' default 1 MB stack overflows silently; Linux (and
+# CodinGame) default to 8 MB.
+CXXFLAGS += -Wl,--stack,16777216
+endif
 FILESYSTEM_LIB := $(shell major=`$(CXX) -dumpversion | cut -d. -f1`; test "$$major" -lt 9 && printf '%s' '-lstdc++fs')
 SRC_DIR := $(abspath .)
 ROOT := $(abspath ..)

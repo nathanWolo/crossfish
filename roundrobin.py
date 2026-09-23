@@ -11,9 +11,9 @@ import argparse
 import math
 import os
 import queue
-import select
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from multiprocessing import Process, Queue
@@ -133,6 +133,28 @@ class MatchBot:
             bufsize=1,
             cwd=str(ROOT),
         )
+        # A reader thread rather than select(): select() on pipes is POSIX-only,
+        # and a queue with a timeout gives the same deadline on every OS.
+        self._lines = queue.Queue()
+        threading.Thread(
+            target=self._pump, args=(self.proc.stdout, self._lines), daemon=True
+        ).start()
+
+    @staticmethod
+    def _pump(stream, lines):
+        try:
+            for line in stream:
+                lines.put(line)
+        except (OSError, ValueError):  # stream closed by close()
+            pass
+        lines.put("")  # EOF
+
+    def _readline(self, timeout_s: float):
+        """Next output line, "" at EOF, or None if nothing arrived in time."""
+        try:
+            return self._lines.get(timeout=max(0.0, timeout_s))
+        except queue.Empty:
+            return None
 
     def close(self):
         if self.proc is None:
@@ -160,15 +182,13 @@ class MatchBot:
     def _expect_ready(self, timeout_ms: int = 5000):
         assert self.proc is not None
         assert self.proc.stdout is not None
-        ready, _, _ = select.select(
-            [self.proc.stdout], [], [], timeout_ms / 1000.0
-        )
-        if not ready:
+        line = self._readline(timeout_ms / 1000.0)
+        if line is None:
             self.close()
             raise TimeoutError(
                 f"{self.name} did not finish match setup in {timeout_ms}ms"
             )
-        line = self.proc.stdout.readline().strip()
+        line = line.strip()
         if line != "READY":
             raise RuntimeError(
                 f"{self.name} returned {line!r}, expected setup READY"
@@ -194,10 +214,8 @@ class MatchBot:
         remaining = timeout_ms / 1000.0 - (
             time.perf_counter() - started
         )
-        ready, _, _ = select.select(
-            [self.proc.stdout], [], [], max(0.0, remaining)
-        )
-        if not ready:
+        line = self._readline(remaining)
+        if line is None:
             elapsed_ms = 1000.0 * (time.perf_counter() - started)
             self.max_move_ms = max(self.max_move_ms, elapsed_ms)
             self.timeouts += 1
@@ -205,7 +223,6 @@ class MatchBot:
             raise TimeoutError(
                 f"{self.name} exceeded {timeout_ms}ms move deadline"
             )
-        line = self.proc.stdout.readline()
         if not line:
             raise RuntimeError(f"{self.name} exited during GO (code {self.proc.poll()})")
         elapsed_ms = 1000.0 * (time.perf_counter() - started)
