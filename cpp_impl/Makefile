@@ -13,15 +13,21 @@ SRC_DIR := $(abspath .)
 ROOT := $(abspath ..)
 PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,python3)
 BIN := $(SRC_DIR)/bin
+# Opening book (documentation/play_book.md). The text book is a build artifact;
+# only the packed play_book_data.hpp is committed.
+PLAY_BOOK_TXT ?= $(BIN)/play_book.txt
+PLAY_BOOK_FIRST ?= 5
+PLAY_BOOK_SECOND ?= 4
+PLAY_BOOK_SEARCH_MS ?= 2000
 
-.PHONY: all test bench test-cpp test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect clean
+.PHONY: all test bench test-cpp test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol clean
 
 all: test
 
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp play_book.hpp play_book_data.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ unit_tests.cpp
 
 $(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
@@ -30,7 +36,7 @@ $(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_pre
 $(BIN)/crossfish: crossfish.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ crossfish.cpp
 
-$(BIN)/codingame_nnue: codingame_nnue.cpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+$(BIN)/codingame_nnue: codingame_nnue.cpp mini_eval_d16.hpp macro_eval.hpp play_book.hpp play_book_data.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ codingame_nnue.cpp
 
 $(BIN)/cg_input: cg_input.cpp | $(BIN)
@@ -41,6 +47,18 @@ $(BIN)/cg_legend: cg_legend_hce.cpp | $(BIN)
 
 $(BIN)/bench_ab: bench_ab.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ bench_ab.cpp
+
+$(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ play_book_gen.cpp
+
+$(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp global_board.hpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ play_book_pack.cpp
+
+$(BIN)/play_book_check: play_book_check.cpp play_book.hpp play_book_data.hpp play_book_text.hpp mini_eval_d16.hpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ play_book_check.cpp
+
+$(BIN)/play_book_match: play_book_match.cpp play_book.hpp play_book_data.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ play_book_match.cpp
 
 test-cpp: $(BIN)/unit_tests
 	$(BIN)/unit_tests
@@ -70,6 +88,24 @@ book-inspect: $(BIN)/test_bots
 	$(BIN)/test_bots book inspect $(SRC_DIR)/opening_book.bin
 
 test: test-cpp test-python compile-cg compile-legend book-inspect
+
+# Opening book. play-book-gen takes ~1.7 h on 7 threads; play-book packs the
+# text book into play_book_data.hpp and checks the result against it.
+play-book-gen: $(BIN)/play_book_gen
+	$(BIN)/play_book_gen $(PLAY_BOOK_TXT) $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND) $(PLAY_BOOK_SEARCH_MS)
+
+play-book: $(BIN)/play_book_pack
+	$(BIN)/play_book_pack $(PLAY_BOOK_TXT) $(SRC_DIR)/play_book_data.hpp $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND)
+	$(MAKE) play-book-check
+
+play-book-check: $(BIN)/play_book_check
+	$(BIN)/play_book_check $(PLAY_BOOK_TXT)
+
+play-book-match: $(BIN)/play_book_match
+	$(BIN)/play_book_match 3000 0
+
+play-book-protocol: $(BIN)/cg_input
+	cd $(ROOT) && $(PYTHON) tools/play_book_protocol_check.py $(BIN)/cg_input 40
 
 verify: $(BIN)/test_bots
 	$(BIN)/test_bots verify

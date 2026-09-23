@@ -404,6 +404,21 @@ class TestMinifyCpp(unittest.TestCase):
         self.assertTrue(out.endswith("\n"))
 
 
+class TestStdMemberNames(unittest.TestCase):
+    def test_map_and_pair_members_survive_renaming(self):
+        # A user identifier named like a std member must not rename the member.
+        src = (
+            "int first = 1, second = 2;\n"
+            "std::unordered_map<int, int> table;\n"
+            "auto it = table.find(first);\n"
+            "bool fresh = table.insert({first, second}).second;\n"
+            "int v = it->second + it->first;\n"
+        )
+        out = m.minify_cpp(src, rename=True)
+        for member in (".find(", ").second", "->second", "->first"):
+            self.assertIn(member, out)
+
+
 class TestMainCli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
