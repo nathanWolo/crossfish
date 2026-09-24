@@ -31,7 +31,7 @@ CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX
 # pragmas and always_inline attributes make the submission fast there.
 CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
 
-.PHONY: all test bench cg-gate test-cpp cg-flags test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol clean
+.PHONY: all test bench cg-gate port-check test-cpp cg-flags test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol clean
 
 all: test
 
@@ -61,6 +61,24 @@ $(BIN)/cg_legend: cg_legend_hce.cpp | $(BIN)
 
 $(BIN)/bench_ab: bench_ab.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ bench_ab.cpp
+
+$(BIN)/cg_selfcheck: cg_selfcheck.cpp codingame_nnue.cpp mini_eval_d16.hpp macro_eval.hpp play_book.hpp play_book_data.hpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ cg_selfcheck.cpp
+
+$(BIN)/engine_selfcheck: engine_selfcheck.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ engine_selfcheck.cpp
+
+# After porting a Dev change into codingame_nnue.cpp: the CG search must match
+# Dev exactly (fixed-depth scores and node counts over cg_selfcheck's
+# positions). This holds for tree-changing ports too, unlike comparing
+# cg_selfcheck against itself before and after.
+port-check: $(BIN)/cg_selfcheck $(BIN)/engine_selfcheck
+	@for d in 5 7 9; do \
+	  cg=$$($(BIN)/cg_selfcheck 120 $$d | head -n 1); \
+	  dev=$$($(BIN)/engine_selfcheck dev 120 $$d); \
+	  if [ "$$cg" = "$$dev" ]; then echo "port-check depth $$d: IDENTICAL ($$cg)"; \
+	  else echo "port-check depth $$d: MISMATCH"; echo "  cg:  $$cg"; echo "  dev: $$dev"; exit 1; fi; \
+	done
 
 $(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_gen.cpp
