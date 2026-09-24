@@ -348,6 +348,28 @@ the regeneration procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
+On 2026-09-24, round eleven passed the official 90 ms SPRT against the
+round-ten freeze (`109e2b7`), again with a bit-identical tree:
+
+```text
+90 ms: N 4236 W 1214 D 1942 L 1080
+Penta: 132 / 438 / 848 / 564 / 136
+Elo diff: +10.99 +/- 7.31
+LLR: +3.032 (H0=0, H1=+5) — PASS
+Timeouts: Prev=9 Dev=8 (host stalls)
+Prev NPS: 19,385,984  Dev NPS: 20,566,400
+```
+
+The search now prefetches the next sibling's transposition-table line (and
+the hash move's and first ordered child's) early enough for a subtree to
+hide the latency, and sends depth <= 0 children through a light
+`search_leaf` rather than the full search frame. See section 49 of the
+improvement log. Paste `cpp_impl/cg_input.cpp` (80,576 characters, 19,424
+below the limit); built with CodinGame's own flags it searches 784k nodes per
+move against 649k for the round-nine paste file.
+
+The round before it:
+
 On 2026-09-24, a second tree-identical speed bundle passed the official
 90 ms SPRT against the round-nine freeze (`bcc0e30`) with one of four cores
 reserved, using pentanomial pairs and the 50,000-position book:

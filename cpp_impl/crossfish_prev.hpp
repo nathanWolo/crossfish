@@ -9,12 +9,11 @@
 #include <mutex>
 #include <vector>
 
-// Frozen round-ten winner on 2026-09-24: the round-nine engine with a
-// tree-identical speed bundle (undo records in make/unmake, int16-lane move
-// scoring with killer/history shadows, a running decided-miniboard MiniNet
-// term, constexpr eval weights, exact fast lround). Same scores and node
-// counts as round nine. Official 90 ms SPRT vs the round-nine freeze:
-// N=5478, 1580-2463-1435, +9.20 +/- 6.53 Elo, LLR +3.015 (H0=0, H1=+5) PASS.
+// Frozen round-eleven winner on 2026-09-24: the round-ten engine plus TT
+// prefetches (next sibling, hash-move child, first ordered child) and a
+// light search_leaf path for depth <= 0 children. Same scores and node
+// counts as round ten. Official 90 ms SPRT vs the round-ten freeze:
+// N=4236, 1214-1942-1080, +10.99 +/- 7.31 Elo, LLR +3.032 (H0=0, H1=+5) PASS.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -1638,6 +1637,60 @@ class CrossfishPrev {
             return alpha;
         }
 
+        // A child at depth <= 0 runs exactly search()'s entry checks and TT
+        // cutoffs, then qsearch. Doing that here keeps a third of all
+        // search() calls off its heavy prologue and move-loop frame.
+        int search_leaf(FastBoard &board, int depth, int ply, int alpha, int beta) {
+            if (time_up()) return min_val;
+            nodes++;
+            int winner = check_winner_fast(board);
+            if (winner != -1){
+                if (winner == 2) {
+                    return 0;
+                }
+                else {
+                    if (winner == (board.n_moves & 1)) {
+                        return max_val - ply;
+                    }
+                    else {
+                        return min_val + ply;
+                    }
+                }
+            }
+            bool pv_node = (beta - alpha > 1);
+            CompactTTBucket &tt_bucket =
+                transposition_table[board.tt_hash & (tt_bucket_count - 1)];
+            CompactTTEntry entry = tt_bucket.entries[0];
+            if (entry.zobrist_hash != board.tt_hash) {
+                entry = tt_bucket.entries[1];
+            }
+            bool tt_hit =
+                entry.zobrist_hash == board.tt_hash && board.tt_hash != 0;
+            FastMove tt_move =
+                tt_hit ? tt_to_fast_move(entry.best_move) : NO_FAST_MOVE;
+            int tt_score =
+                tt_hit ? tt_score_from_store(entry.score, ply) : 0;
+            if (tt_hit && entry.depth >= depth) {
+                // Flags match the original store: 0 exact, 1 upper (fail low), 2 lower (fail high).
+                if (entry.flag == TT_EXACT && (!pv_node || ply > 0)) {
+                    return tt_score;
+                }
+                else if (!pv_node && entry.flag == TT_LOWER) {
+                    if (tt_score >= beta) return tt_score;
+                }
+                else if (!pv_node && entry.flag == TT_UPPER) {
+                    if (tt_score <= alpha) return tt_score;
+                }
+            }
+            (void)tt_move;
+            return qsearch(board, alpha, beta, ply);
+        }
+
+        int search_child(FastBoard &board, int depth, int ply, int alpha, int beta) {
+            return depth <= 0 ? search_leaf(board, depth, ply, alpha, beta)
+                              : search(board, depth, ply, alpha, beta);
+        }
+
         int search(FastBoard &board, int depth, int ply, int alpha, int beta) {
             if (time_up()) return min_val;
             nodes++;
@@ -1682,6 +1735,20 @@ class CrossfishPrev {
             }
             if (depth <= 0) {
                 return qsearch(board, alpha, beta, ply);
+            }
+            // The hash move is searched first; start its child's table line
+            // before pruning, move generation and ordering run.
+            if (tt_move != NO_FAST_MOVE) {
+                __builtin_prefetch(
+                    &transposition_table[
+                        (board.tt_hash
+                         ^ (board.n_moves > 0
+                            ? board.legal_mini_board_hashes[
+                                  board.move_history.top().square]
+                            : 0)
+                         ^ board.combo_hashes[board.n_moves & 1]
+                                             [tt_move >> 4][tt_move & 15])
+                        & (tt_bucket_count - 1)], 0, 1);
             }
             bool can_futility_prune = false;
             int static_eval = 0;
@@ -1789,11 +1856,40 @@ class CrossfishPrev {
             int stm = board.n_moves & 1;
             int opponent_global_targets =
                 fast_win_moves[board.mini_board_states[stm ^ 1]];
+            // A child's key is this key minus the old destination term plus
+            // the one combo term for the move (a move that also decides a
+            // miniboard adds more, and its prefetch is merely wasted).
+            const uint64_t child_base = board.tt_hash
+                ^ (board.n_moves > 0
+                   ? board.legal_mini_board_hashes[
+                         board.move_history.top().square]
+                   : 0);
             for (int i = 0; i < nmoves; i++) {
                 if (i == 1 && defer_move_scores) {
                     get_fast_move_scores(legal_moves + 1, nmoves - 1,
                                          board, ply, move_keys + 1, false);
                     sort_move_keys(move_keys + 1, nmoves - 1);
+                }
+                // The first move searched after ordering (move 0 without a
+                // hash move, move 1 after deferred ordering) had no earlier
+                // chance to be prefetched; start it before make.
+                if (i == (int)defer_move_scores) {
+                    const FastMove cur = move_from_key(move_keys[i]);
+                    __builtin_prefetch(
+                        &transposition_table[
+                            (child_base
+                             ^ board.combo_hashes[stm][cur >> 4][cur & 15])
+                            & (tt_bucket_count - 1)], 0, 1);
+                }
+                // Start the next sibling's table line now, so the whole of
+                // this move's subtree hides its latency. No semantic effect.
+                if (i + 1 < nmoves && !(i == 0 && defer_move_scores)) {
+                    const FastMove next = move_from_key(move_keys[i + 1]);
+                    __builtin_prefetch(
+                        &transposition_table[
+                            (child_base
+                             ^ board.combo_hashes[stm][next >> 4][next & 15])
+                            & (tt_bucket_count - 1)], 0, 1);
                 }
                 FastMove fast_move = move_from_key(move_keys[i]);
                 Move move = unpack_fast_move(fast_move);
@@ -1828,7 +1924,7 @@ class CrossfishPrev {
                     __builtin_prefetch(
                         &transposition_table[
                             board.tt_hash & (tt_bucket_count - 1)], 0, 1);
-                    val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
+                    val = -search_child(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                 }
                 else {
                     __builtin_prefetch(
@@ -1842,12 +1938,12 @@ class CrossfishPrev {
                         if (pv_node && reduction > 0) reduction--;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
-                    val = -search(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha);
+                    val = -search_child(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha);
                     // Reduced searches are not allowed to fail high unchallenged.
                     if (val > alpha) {
-                        val = -search(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha);
+                        val = -search_child(board, depth - 1 + extension, ply + 1, -alpha - 1, -alpha);
                         if (val > alpha && val < beta) {
-                            val = -search(board, depth - 1 + extension, ply + 1, -beta, -alpha);
+                            val = -search_child(board, depth - 1 + extension, ply + 1, -beta, -alpha);
                         }
                     }
                 }

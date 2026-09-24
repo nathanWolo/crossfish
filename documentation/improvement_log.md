@@ -371,6 +371,10 @@ This section is the other half of the history. Retrying these without a new hypo
   too often, and makes outnumber evaluations).
 - Out-of-line qsearch capture loop; static Zobrist tables instead of
   references; fixed-length sort rank loop: all within +/-0.3%.
+- Round eleven (section 49): prefetching the sparse per-miniboard tables
+  (-0.9%) or the child's macro-table entry (-0.3%); branchless LMR (+0.5%,
+  n.s.); the outlined qsearch capture loop again, now on the wall clock
+  (+0.5%, n.s.).
 
 **Nets**
 
@@ -2095,3 +2099,88 @@ already present in the source, so it could hand out `j0`, `j1`, `jn`, `y0`,
 Harmless on a variable, fatal on a type (`PbReader` became `jn`, and the
 function hid it). Those six names are now reserved, and a unit test fails
 without the fix.
+
+---
+
+## 49. Hide the table latency, skip the heavy frame (24 September 2026)
+
+Round eleven started from the round-ten freeze with the same rules: speed
+only, bit-identical tree, a wall-clock screen with `tools/speed_ab.py`, then
+the official SPRT. Round ten's lesson was that removing dependency chains
+paid far more than instruction counts predicted, so this round ranked the
+profile by simulated L1 misses and mispredicts too. The largest single miss
+source was the transposition-table probe at the top of every search node.
+The only prefetch was issued after `make`, just before recursing, so little
+of the latency was hidden.
+
+### Accepted (bundle)
+
+Each increment was timed against the previous stage, n=40 paired runs unless
+stated.
+
+- **Prefetch the next sibling's TT line** before searching the current move.
+  Its key is this node's key minus the old destination term plus one combo
+  term, and the whole of the current move's subtree hides the latency. A move
+  that also decides a miniboard hashes differently, and its prefetch is
+  simply wasted. **+5.7% [+3.5, +8.0]**; `walk` at 90 ms +4.8%, +1.7%, +6.3%
+  nodes.
+- **Prefetch the hash move's child line** right after the probe, before
+  pruning, move generation and ordering run. **+2.0% [+0.7, +3.4]**.
+- **Prefetch the first ordered child's line before it is made** (move 0
+  without a hash move, move 1 after deferred ordering). **+0.84% [+0.04,
+  +1.66]** at n=100.
+- **`search_leaf` for depth <= 0 children.** A third of all `search()` calls
+  only run the entry checks and TT cutoffs before handing off to qsearch, but
+  paid for search's full register-save prologue and move-loop frame. The
+  move loop now sends those children to a small function with the same front
+  code. **+3.8% [+2.4, +5.3]**.
+
+Bundle against the round-ten freeze: `speed_ab` **+7.9% [+6.1, +9.8]**;
+`walk` +5.7%, +6.2%, +7.9% nodes; SPRT header NPS 19,385,984 -> 20,566,400.
+Identity: `bench_ab equiv` IDENTICAL at depths 8 and 11, and persistent
+`getMove` identical over 531 searches at depths 7 and 9.
+
+### Rejected (measured, not kept)
+
+- Prefetching the sparse per-miniboard tables (`fast_local_score`,
+  `fast_tiar_flags`, `D16_MN_CODE`) for the next move: -0.9% [-2.2, +0.3].
+  Those misses are L2 hits that out-of-order execution already hides; only
+  the table and macro-sized lines are worth fetching early, and of those
+  only the TT paid.
+- Prefetching the child's 5 MiB macro-table entry: -0.3% [-1.9, +1.5].
+- Branchless LMR reduction: +0.5% [-0.6, +1.7].
+- Outlining the qsearch capture loop, re-timed on the wall clock this round:
+  +0.5% [-0.8, +1.9]. Its instruction-count rejection in section 48 stands.
+
+### Result
+
+Official 90 ms SPRT against the round-ten freeze (`109e2b7`), pentanomial
+pairs, three workers with one of four cores reserved:
+
+```text
+N 4236  W 1214 / D 1942 / L 1080
+Penta 132 / 438 / 848 / 564 / 136
++10.99 +/- 7.31 Elo
+LLR +3.032 (H0=0, H1=+5) — PASS
+Timeout losses: Prev 9 / Dev 8 (host stalls, up to 318 ms)
+Prev NPS 19,385,984  Dev NPS 20,566,400
+```
+
+Porting: the patch applied except for the new `search_leaf`, whose copied
+front called `tt_score_from_store`, which the CG file does not have (its
+search reads `entry.score`, identical while `CROSSFISH_NORMALIZE_TT_MATES` is
+off). The CG leaf was rebuilt from the CG file's own search front. Like
+`search` and `qsearch`, `search_leaf` stays a real function under
+section 47's rules (its point is to be a cheap call); the `search_child`
+dispatcher is `always_inline`. `cg_selfcheck` reproduced the pre-port
+checksums at depths 5, 7, 9 and 11 at `-O3` and at depths 5, 7 and 9 with
+CodinGame's flags. Built with CodinGame's flags (g++ 11, no `-O`), 16 games
+against a random opponent through `tools/cg_speed_check.py`:
+
+| Paste file | Mean nodes per move | Median |
+| --- | ---: | ---: |
+| Section 47 (round nine) | 649k | 728k |
+| + speed round ten | 758k | 869k |
+| + round eleven | 784k | 924k |
+
+Submission: 80,576 characters, 19,424 below the cap.

@@ -9,13 +9,10 @@
 #include <mutex>
 #include <vector>
 
-// Round-eleven experiment, on the round-ten freeze (2026-09-24). One axis:
-// speed only, bit-identical tree (`make -C cpp_impl bench` IDENTICAL):
-//   - prefetch the next sibling's TT line before searching the current
-//     move, the hash move's child line right after the probe, and the
-//     first ordered child's line before it is made;
-//   - children at depth <= 0 go through search_leaf, which runs search()'s
-//     entry checks and TT cutoffs without its heavy move-loop frame.
+// Round-twelve experiment base, frozen 2026-09-24: identical to
+// crossfish_prev.hpp apart from this comment and the class name. Edit only
+// this file while testing. Round-ten engine plus the round-eleven TT
+// prefetches and light leaf path that passed at +10.99 +/- 7.31 Elo.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
