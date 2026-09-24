@@ -289,6 +289,28 @@ of the std versions. Keep it that way:
   shows up here and nowhere else.
 - Never add `std::` containers or algorithms to the CG hot path.
 
+**CodinGame performance gate.** Every pull request (and every push to a
+branch) runs `tools/cg_perf_gate.py` in a `gcc:11.2` Linux container
+(`tools/cg_gate/Dockerfile`, workflow `cg-perf-gate`), which builds the paste
+file exactly as CodinGame does and compares it with `main`:
+
+| Check | Fails when |
+| --- | --- |
+| fresh | `cg_input.cpp` is not the minifier's current output of `codingame_nnue.cpp` |
+| size | over 100,000 characters (UTF-16 units) |
+| speed | nodes per searched move over paired protocol games vs a random opponent: slower than base by more than 5% *and* the 95% interval below 1 |
+| inlining | the CodinGame-flags build below 85% of the same source at `-O3` (a hot helper lost `always_inline`) |
+| latency | first reply 1,000 ms or more, or the 99th percentile of later replies 95 ms or more |
+| smoke | candidate vs base at 90 ms (200 games, random openings): timeouts over 1%, or a score significantly below base (Elo is informational; strength is the SPRT's job) |
+| book | `tools/play_book_protocol_check.py` fails on the candidate build |
+
+Locally: `make -C cpp_impl cg-gate` (needs Docker; `CG_GATE_BASE=<rev>` to
+compare with another revision), or `python tools/cg_perf_gate.py` on Linux with
+g++ installed. A non-GCC compiler is refused: clang ignores the source's
+`#pragma GCC optimize/target`, so its build says nothing about CodinGame
+(`--allow-non-gcc` runs a labelled dry run; its inlining check fails, as it
+should).
+
 CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags is enough for SPRT. Do not enable FMA in MiniNet; it will disagree with the scalar reference.
 
 `make -C cpp_impl sprt` rebuilds `bin/test_bots` when headers change, then runs it. If you run a stale `test_bots` binary, you are SPRTing yesterday's Dev.

@@ -1,0 +1,29 @@
+name: cg-perf-gate
+
+# Builds the CodinGame paste file with CodinGame's own compiler (g++ 11.2,
+# no -O) and compares it with main: freshness, size, nodes per move, inlining,
+# reply latency, a smoke match and book coverage. See tools/cg_perf_gate.py.
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build the CodinGame toolchain image (g++ 11.2)
+        run: docker build -t crossfish-cg-gate tools/cg_gate
+      - name: CodinGame performance gate
+        run: |
+          base="origin/${{ github.base_ref || 'main' }}"
+          docker run --rm -v "$PWD:/repo" crossfish-cg-gate \
+            --base "$base" --workers 3 --summary /repo/cg_gate_summary.md
+      - name: Publish the gate summary
+        if: always()
+        run: test -f cg_gate_summary.md && cat cg_gate_summary.md >> "$GITHUB_STEP_SUMMARY" || true
