@@ -31,7 +31,7 @@ CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX
 # pragmas and always_inline attributes make the submission fast there.
 CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
 
-.PHONY: all test bench test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol clean
+.PHONY: all test bench cg-gate test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol clean
 
 all: test
 
@@ -144,6 +144,14 @@ cg: compile-cg
 
 cg-input:
 	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp --inline-local
+
+# CodinGame performance gate (tools/cg_perf_gate.py) in a g++ 11.2 Linux
+# container, the compiler CodinGame uses. Compares against BASE (default
+# origin/main). Runs on every pull request in CI (cg-perf-gate workflow).
+CG_GATE_BASE ?= origin/main
+cg-gate:
+	cd $(ROOT) && docker build -t crossfish-cg-gate tools/cg_gate
+	cd $(ROOT) && docker run --rm -v "$(ROOT):/repo" crossfish-cg-gate --base $(CG_GATE_BASE)
 
 clean:
 	rm -rf $(BIN)

@@ -304,6 +304,28 @@ of the std versions. Keep it that way:
   `memcpy`/`memmove`, `__stack_chk_fail` and the never-taken lazy
   `macro_load_packed()` branch should remain.
 
+**CodinGame performance gate.** Every pull request (and every push to a
+branch) runs `tools/cg_perf_gate.py` in a `gcc:11.2` Linux container
+(`tools/cg_gate/Dockerfile`, workflow `cg-perf-gate`), which builds the paste
+file exactly as CodinGame does and compares it with `main`:
+
+| Check | Fails when |
+| --- | --- |
+| fresh | `cg_input.cpp` is not the minifier's current output of `codingame_nnue.cpp` |
+| size | over 100,000 characters (UTF-16 units) |
+| speed | nodes per millisecond over full-budget replies (80 ms or more), paired protocol games vs a random opponent: slower than base by more than 5% *and* the 95% interval below 1 |
+| inlining | the CodinGame-flags build below 85% of the same source at `-O3` (a hot helper lost `always_inline`) |
+| latency | first reply 1,000 ms or more, or the 99th percentile of later replies 95 ms or more |
+| smoke | candidate vs base at 90 ms (200 games, random openings): timeouts over 1%, or a score significantly below base (Elo is informational; strength is the SPRT's job) |
+| book | `tools/play_book_protocol_check.py` fails on the candidate build |
+
+Locally: `make -C cpp_impl cg-gate` (needs Docker; `CG_GATE_BASE=<rev>` to
+compare with another revision), or `python tools/cg_perf_gate.py` on Linux with
+g++ installed. A non-GCC compiler is refused: clang ignores the source's
+`#pragma GCC optimize/target`, so its build says nothing about CodinGame
+(`--allow-non-gcc` runs a labelled dry run; its inlining check fails, as it
+should).
+
 CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags is enough for SPRT. Do not enable FMA in MiniNet; it will disagree with the scalar reference.
 
 `make -C cpp_impl sprt` rebuilds `bin/test_bots` when headers change, then runs it. If you run a stale `test_bots` binary, you are SPRTing yesterday's Dev.
@@ -363,6 +385,55 @@ the regeneration procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
+On 2026-09-24, round eleven passed the official 90 ms SPRT against the
+round-ten freeze (`109e2b7`), again with a bit-identical tree:
+
+```text
+90 ms: N 4236 W 1214 D 1942 L 1080
+Penta: 132 / 438 / 848 / 564 / 136
+Elo diff: +10.99 +/- 7.31
+LLR: +3.032 (H0=0, H1=+5) — PASS
+Timeouts: Prev=9 Dev=8 (host stalls)
+Prev NPS: 19,385,984  Dev NPS: 20,566,400
+```
+
+The search now prefetches the next sibling's transposition-table line (and
+the hash move's and first ordered child's) early enough for a subtree to
+hide the latency, and sends depth <= 0 children through a light
+`search_leaf` rather than the full search frame. See section 49 of the
+improvement log. Paste `cpp_impl/cg_input.cpp` (80,576 characters, 19,424
+below the limit); built with CodinGame's own flags it searches 784k nodes per
+move against 649k for the round-nine paste file.
+
+The round before it:
+
+On 2026-09-24, a second tree-identical speed bundle passed the official
+90 ms SPRT against the round-nine freeze (`bcc0e30`) with one of four cores
+reserved, using pentanomial pairs and the 50,000-position book:
+
+```text
+90 ms: N 5478 W 1580 D 2463 L 1435
+Penta: 167 / 612 / 1064 / 701 / 195
+Elo diff: +9.20 +/- 6.53
+LLR: +3.015 (H0=0, H1=+5) — PASS
+Timeouts: Prev=13 Dev=10 (host stalls; normal replies 90-93 ms)
+Prev NPS: 17,689,984  Dev NPS: 19,563,392
+```
+
+Make now records what it overwrites and unmake restores it instead of
+re-deriving hash, MiniNet codes and HCE accumulators; move ordering scores a
+miniboard's nine squares in int16 lanes; the MiniNet decided-miniboard term
+is a running sum; `eval_weights` is constexpr; and `lround` is an exact
+trunc/fraction test. Scores and node counts are unchanged. Candidates were
+screened with a deterministic callgrind cost and `tools/speed_ab.py`
+(repeated paired timing with a 95% CI) before the SPRT; see section 48 of the
+improvement log, including the rejected ones. The CodinGame port
+follows the `always_inline` / `cf_array` rules below; `cg_selfcheck`
+reproduces the round-nine checksums at `-O3` and at CodinGame's flags, and
+built with CodinGame's flags the paste file searches 764k nodes per move
+against 721k before (`tools/cg_speed_check.py`). `cg_input.cpp` is 79,587
+characters (20,413 left).
+
 On 2026-09-24 the CodinGame submission was made fast under CodinGame's own
 compiler flags (no `-O`, see **Compiler and local builds**). The change is
 tree-identical: `cg_selfcheck` checksums match the previous port at depths
@@ -377,7 +448,7 @@ first turn max 187 ms; later moves median 90.2 ms, max 90.9 ms
 ```
 
 The local Dev-vs-Prev SPRT compiles both engines at `-O3` and cannot see
-this gain. A follow-up (improvement log section 48) inlined the remaining
+this gain. A follow-up (improvement log section 51) inlined the remaining
 hot-path calls: the CodinGame-flags build went from 91.6% to 95.7% of the
 `-O3` build's speed on an identical tree (`make -C cpp_impl cg-speed`).
 `cg_input.cpp` is 77,647 characters (22,353 left).
