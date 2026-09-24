@@ -59,6 +59,7 @@ C_NAMES = frozenset(
     sqrt pow sin cos tan atan atan2 log exp floor ceil round
     lround llround
     __attribute__ always_inline
+    j0 j1 jn y0 y1 yn
     """.split()
 )
 
