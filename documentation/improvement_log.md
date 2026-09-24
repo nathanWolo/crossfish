@@ -1950,3 +1950,92 @@ nodes per move against the `-O3` build. The Dev-vs-Prev SPRT cannot see any
 of this: both sides are compiled at `-O3`. Any CodinGame ladder result from
 before this change was obtained at roughly a fifth of the tested speed.
 
+
+---
+
+## 48. Close the rest of the CodinGame-flags gap (24 September 2026)
+
+Section 47's transform only matched function signatures that fit on one
+line, so every signature wrapped across lines was skipped, and the
+`std::array` sweep did not cover the transposition table, a `std::vector`.
+Built the CodinGame way and disassembled, `CrossfishDev::search` still made
+26 out-of-line calls and `qsearch` 13:
+
+| Call target | `search` | `qsearch` |
+| --- | ---: | ---: |
+| `std::vector<CompactTTBucket>::operator[]` (probe, IID re-probe, 2 prefetches, store) | 5 | 0 |
+| `get_fast_move_scores<FastBoard>` | 5 | 3 |
+| `finish_hce<FastBoard>`, `finish_hce_with_global<FastBoard>` | 2 | 2 |
+| `cached_mini_key<FastBoard>` | 1 | 0 |
+| `d16_mini_hsum256` (`mini_eval_d16.hpp`) | 1 | 1 |
+| `evaluate_macro_key` (`macro_eval.hpp`) | 1 | 1 |
+| recursion | 4 | 1 |
+| `std::chrono` clock read and compare (once per 128 nodes) | 3 | 3 |
+| `memcpy`, `memmove`, `__stack_chk_fail` | 4 | 2 |
+
+The fix, again tree-identical:
+
+- the table becomes a `cf_heap_array<CompactTTBucket>`: the same
+  value-initialized heap allocation (`new T[n]()`, 32-byte aligned through
+  C++17 aligned new), with deep copy, move, and an always-inline
+  `operator[]`. `run_match` resets the engine by move assignment, which the
+  type supports;
+- `always_inline` on the multi-line helpers: `cached_mini_key`,
+  `get_fast_move_scores`, `finish_hce_with_global`, `finish_hce`, and
+  `eval_extra_from_maps` (called only from `finish_hce_with_global`, so it
+  becomes the next call once that one inlines);
+- `always_inline` (and `inline`, which silences GCC's "might not be
+  inlinable" warning on a plain `static`) on `d16_mini_hsum256` and
+  `evaluate_macro_key` in the **shared generated headers**. Dev, Prev and
+  `test_bots` include them too; the attribute changes no code at `-O3`, and
+  `bench_ab nodes 60 9` gives the same 1,681,665 nodes before and after.
+  `tools/nnue_emit_mininet_header.py` and `tools/nnue_emit_macro_header.py`
+  now emit the attribute, so a regenerated header keeps it.
+
+Afterwards `search` makes 12 calls (4 recursion, 3 clock, `memcpy` x2,
+`memmove`, `__stack_chk_fail`, and the never-taken lazy
+`macro_load_packed()` fallback inside `evaluate_macro_key`) and `qsearch` 7
+of the same kinds. `get_fast_move_scores` inlined whole, with nothing out of
+line left inside it.
+
+Search time for the identical tree (`cg_selfcheck 30 13`: 30 positions,
+9,617,942 nodes, same checksum everywhere), g++-11 for every build, mean of
+five interleaved runs with start-up subtracted:
+
+| Build | `main` | This change |
+| --- | ---: | ---: |
+| CodinGame flags | 0.691 s | 0.628 s |
+| `-O3` | 0.633 s | 0.601 s |
+| CodinGame / `-O3` speed | 91.6% | 95.7% |
+
+The CodinGame build is 10% faster and now matches the previous `-O3` build.
+What remains (about 4%) is code generation that per-function `optimize`
+attributes cannot reach under a global `-O0`, not calls.
+
+`tools/cg_speed_check.py` cannot resolve a difference this size: its games
+diverge with timing, so mean nodes per move mixes speed with game phase (two
+builds of the same tree read 630k and 716k on the same seeds). `cg_selfcheck`
+now also prints `seconds=` and `nps=` for its searches (after a depth-1
+warm-up, so table initialization is outside the timed region), and
+`make -C cpp_impl cg-speed` builds it at `-O3` and with CodinGame's flags and
+runs both. The checksum lines must match; the seconds ratio is the gap.
+
+The paste file is 77,647 characters (22,353 left); all 101
+`__attribute__((always_inline))` in the readable source and inlined headers
+survive minification.
+
+New versus `main`, both paste files compiled with CodinGame's flags, 90 ms,
+process referee, 1,000 games:
+
+```text
+N 1000  W 335 / D 345 / L 320   Elo +5.2 +/- 17.4
+```
+
+A 10% speed-up is worth single-digit Elo, so this is a no-regression check,
+not a measurement. The run logged 3 timeouts for the new build and 6 for the
+old one while other jobs shared the machine. On an idle machine the protocol
+check gives the new build a first turn of at most 182.8 ms and later moves
+of median 90.2 ms, max 91.6 ms, with exact book coverage (30/30).
+
+PR #22 was opened with its own sections numbered 47-49, which collide with
+section 47 above; renumber them after this one when rebasing.

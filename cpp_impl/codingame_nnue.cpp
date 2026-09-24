@@ -39,6 +39,25 @@ template <class T, size_t N> struct cf_array {
 };
 template <class T> __attribute__((always_inline)) inline T cf_min(T a, T b) { return b < a ? b : a; }
 template <class T> __attribute__((always_inline)) inline T cf_max(T a, T b) { return a < b ? b : a; }
+// Heap storage with value semantics and always-inline indexing, for tables
+// too large for the stack (the 4 MiB transposition table).
+template <class T> struct cf_heap_array {
+    T *_p;
+    size_t _n;
+    explicit cf_heap_array(size_t n) : _p(new T[n]()), _n(n) {}
+    cf_heap_array(const cf_heap_array &o) : _p(new T[o._n]), _n(o._n) {
+        for (size_t i = 0; i < _n; i++) _p[i] = o._p[i];
+    }
+    cf_heap_array(cf_heap_array &&o) noexcept : _p(o._p), _n(o._n) { o._p = nullptr; o._n = 0; }
+    cf_heap_array &operator=(cf_heap_array o) noexcept {
+        T *p = _p; _p = o._p; o._p = p;
+        size_t n = _n; _n = o._n; o._n = n;
+        return *this;
+    }
+    ~cf_heap_array() { delete[] _p; }
+    __attribute__((always_inline)) T &operator[](size_t i) { return _p[i]; }
+    __attribute__((always_inline)) const T &operator[](size_t i) const { return _p[i]; }
+};
 
 // Strength patch vs the original legend submission (SPRT at 20ms, 569 games):
 // W 349 / D 61 / L 159, +121 Elo, LLR +3.00. Changes: working Zobrist keys,
@@ -659,7 +678,7 @@ class CrossfishDev {
         __attribute__((always_inline)) static void restore_active_board(Board &) {}
 
         template <typename Board>
-        static int cached_mini_key(
+        __attribute__((always_inline)) static int cached_mini_key(
             const Board &board, int mb, int perspective = 0) {
             return mini_index(
                 board.mini_boards[mb].markers[perspective],
@@ -959,8 +978,8 @@ class CrossfishDev {
         }
 
         static const int tt_bucket_count = 1 << 17;
-        std::vector<CompactTTBucket> transposition_table =
-            std::vector<CompactTTBucket>(tt_bucket_count);
+        cf_heap_array<CompactTTBucket> transposition_table =
+            cf_heap_array<CompactTTBucket>(tt_bucket_count);
 
         static constexpr int N_TIAR_MASKS = 48;
         static constexpr int two_in_a_row_masks[N_TIAR_MASKS] = {
@@ -2223,7 +2242,7 @@ class CrossfishDev {
             return (FastMove)(key & 255);
         }
         template <typename Board>
-        void get_fast_move_scores(FastMove* moves, int n, Board &board, int ply,
+        __attribute__((always_inline)) void get_fast_move_scores(FastMove* moves, int n, Board &board, int ply,
                                   int* keys, bool qs = false) {
             if (n <= 1) {
                 if (n == 1) keys[0] = pack_move_key(0, moves[0]);
@@ -2472,7 +2491,7 @@ class CrossfishDev {
         }
 
         template <typename Board>
-        int eval_extra_from_maps(Board &board,
+        __attribute__((always_inline)) int eval_extra_from_maps(Board &board,
                                  int p0_two_in_a_row_map,
                                  int p1_two_in_a_row_map) {
             int extra = 0;
@@ -2534,7 +2553,7 @@ class CrossfishDev {
         }
 
         template <typename Board>
-        int finish_hce_with_global(Board &board, int local,
+        __attribute__((always_inline)) int finish_hce_with_global(Board &board, int local,
                                    int p0_two_in_a_row_map,
                                    int p1_two_in_a_row_map,
                                    int global) {
@@ -2552,7 +2571,7 @@ class CrossfishDev {
         }
 
         template <typename Board>
-        int finish_hce(Board &board, int local,
+        __attribute__((always_inline)) int finish_hce(Board &board, int local,
                        int p0_two_in_a_row_map,
                        int p1_two_in_a_row_map) {
             return finish_hce_with_global(

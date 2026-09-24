@@ -18,11 +18,16 @@
 //   g++ -O3 -std=c++17 -mavx2 -mbmi -mbmi2 -mlzcnt -mpopcnt -pthread \
 //       -Wno-unknown-pragmas -o bin/cg_selfcheck cg_selfcheck.cpp
 //   ./bin/cg_selfcheck 120 7
+//
+// It also prints the wall time of the searches alone. Built once at -O3 and
+// once with CodinGame's flags (`make cg-speed` does both), the two compute
+// the same tree, so the seconds ratio is the CodinGame speed gap.
 
 #define main cg_shipped_main_unused
 #include "codingame_nnue.cpp"
 #undef main
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -62,6 +67,18 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    // Warm the static tables (LUTs, macro table) outside the timed region, so
+    // `seconds` measures search alone. The tables are pure functions of the
+    // packed data, so this cannot change any score or node count below.
+    {
+        CrossfishDev *warm = new CrossfishDev();
+        GlobalBoard start;
+        int ignored = 0;
+        warm->search_fixed_depth(start, 1, ignored);
+        delete warm;
+    }
+    double search_seconds = 0;
+
     std::mt19937_64 rng(987654321ull);
     uint64_t checksum = 1469598103934665603ull;
     long long total_nodes = 0;
@@ -93,7 +110,10 @@ int main(int argc, char **argv) {
         CrossfishDev *engine = new CrossfishDev();
         GlobalBoard probe = board;
         int score = 0;
+        const auto t0 = std::chrono::steady_clock::now();
         const bool completed = engine->search_fixed_depth(probe, depth, score);
+        search_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t0).count();
         if (completed) {
             searched++;
             total_nodes += engine->nodes;
@@ -106,6 +126,11 @@ int main(int argc, char **argv) {
     std::printf("cg_selfcheck positions=%d depth=%d nodes=%lld checksum=%llu\n",
                 searched, depth, total_nodes,
                 (unsigned long long)checksum);
+    // Timing goes on its own line so the checksum line stays comparable
+    // across builds. Compare seconds only between builds of the same tree on
+    // the same machine: it is the CodinGame-flags vs -O3 speed gate.
+    std::printf("cg_selfcheck seconds=%.3f nps=%.0f\n", search_seconds,
+                search_seconds > 0 ? total_nodes / search_seconds : 0.0);
     bool book_ok = pb_init<GlobalBoard, Move>();
     std::printf("cg_selfcheck book=%s entries=%zu table_checksum=%llu\n",
                 book_ok ? "ok" : "FAILED", PB_TABLE.size(),

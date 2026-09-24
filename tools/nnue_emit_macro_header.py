@@ -140,7 +140,7 @@ static bool macro_load_packed() {{
     return true;
 }}
 
-static int evaluate_macro_key(int constraint, int key) {{
+__attribute__((always_inline)) static inline int evaluate_macro_key(int constraint, int key) {{
     if (!MACRO_READY && !macro_load_packed()) return 0;
     return MACRO_SCORE[constraint][key];
 }}
