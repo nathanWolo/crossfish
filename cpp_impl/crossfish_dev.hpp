@@ -9,10 +9,9 @@
 #include <mutex>
 #include <vector>
 
-// Round-twelve experiment base, frozen 2026-09-24: identical to
-// crossfish_prev.hpp apart from this comment and the class name. Edit only
-// this file while testing. Round-ten engine plus the round-eleven TT
-// prefetches and light leaf path that passed at +10.99 +/- 7.31 Elo.
+// Experiment base, frozen 2026-09-24: identical to crossfish_prev.hpp apart
+// from this comment and the class name. Edit only this file while testing.
+// Round-eleven engine plus the mate-window pruning fix (section 51).
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
