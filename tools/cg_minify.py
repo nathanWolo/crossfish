@@ -58,6 +58,7 @@ C_NAMES = frozenset(
     abs labs llabs fabs fabsf fabsl exit atoi atol atof
     sqrt pow sin cos tan atan atan2 log exp floor ceil round
     lround llround
+    __attribute__ always_inline
     """.split()
 )
 

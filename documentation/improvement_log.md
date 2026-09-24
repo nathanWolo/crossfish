@@ -344,6 +344,23 @@ This section is the other half of the history. Retrying these without a new hypo
   Do not retry without a new margin story.
 - Skip duplicate full-depth PVS probes on the same baseline: added and reverted in PR #10.
 
+**Round ten (24 September 2026, 90 ms, H0=0/H1=+5, vs round-nine Prev)**
+
+- History-modulated LMR, `r -= (h - 1500) / 3000` ply in hundredths:
+  walk -0.67 ply; N=960, -10.86 +/- 15.34. Killed.
+- Continuation history `[stm][previous move][move]` in ordering, same
+  bonus/malus as history: NPS -4%; N=2106, +1.15 +/- 10.63. Killed.
+- SPSA over 16 constants (margins, LMR, ordering weights, free-move and
+  latent-capture terms), 8,000 pairs at 25 ms: drift was small; N=1794,
+  -0.58 +/- 11.13. The constants are at a local optimum.
+- Exact local-threat correction history (2^18 key: both sides' two-in-a-row
+  maps): NPS -5.4%; N=1128, -1.85 +/- 14.32. Killed.
+- Root move chosen from a fail-low bound: instrumented, 0 of 616 self-play
+  moves affected. Not tested.
+- Every SPRT walks the book in the same order, so near-identical engines
+  share early noise; three unrelated candidates read -11 to -13 near N=600.
+  Use `SPRT_GAME_OFFSET` for independent early readings.
+
 **Nets**
 
 - Sparse-199 replace: −277 at depth 4
@@ -1874,3 +1891,62 @@ The official SPRT cannot gate this: its games start from the 50,000 SPRT
 openings, where a start-position book never applies. Book changes are gated
 by start-position matches (`make -C cpp_impl play-book-match`) and a paired
 run against a different engine. See `documentation/play_book.md`.
+
+---
+
+## 47. Make the submission fast under CodinGame's own compiler (24 September 2026)
+
+Every measurement in this log was made with `-O3` on the command line.
+CodinGame compiles C++ with g++ 11.2 and
+`-std=gnu++17 -Werror=return-type -g -pthread`: no `-O` at all. The source's
+`#pragma GCC optimize("O3")` then optimizes each function body, but a global
+`-O0` leaves GCC's inliner off for everything that is not `always_inline`.
+The hot path was full of such calls: `std::array::operator[]` (every
+miniboard's markers), `std::min` / `std::max`, `FastMoveStack::top`, and the
+engine's own make/unmake, hashing and eval helpers. Built exactly the way
+CodinGame builds it, the shipped paste file searched about 147k nodes per
+move against about 700k at `-O3`.
+
+The fix is mechanical and tree-identical:
+
+- the optimize pragmas move above the includes (the `target` pragma stays
+  after them: GCC 13 rejects it in front of libstdc++);
+- every engine member function except the recursive `search` / `qsearch`
+  and the one-time setup paths is `__attribute__((always_inline))`, as are
+  the move-stack methods and the move-generation lambdas;
+- `std::array` becomes `cf_array` (same layout, always-inline indexing) and
+  `std::min` / `std::max` become `cf_min` / `cf_max`;
+- the minifier keeps `__attribute__` and `always_inline` (it had renamed the
+  attribute to `q`, which silently disables it; a unit test pins this).
+
+`__attribute__((flatten))` on `search` was tried first and does nothing at
+`-O0`; moving only the pragmas recovered 1.6x; `always_inline` on the
+helpers 1.9x; the std replacements the rest.
+
+| Build (CodinGame flags, g++ 11) | Mean nodes per searched move |
+| --- | ---: |
+| Round-nine paste file | 147k |
+| Pragmas before includes | 239k-323k |
+| + `always_inline` helpers | 287k-328k |
+| + `cf_array` / `cf_min` / `cf_max` (shipped) | 669k-722k |
+| Round-nine paste file at `-O3` | 656k-762k |
+
+`cg_selfcheck` checksums (scores and node counts) are identical to the
+round-nine port at depths 7, 10 and 13, at `-O3` and at CodinGame's flags.
+New versus old paste file, both compiled with CodinGame's flags, 90 ms,
+process referee, random openings:
+
+```text
+N 400  W 238 / D 99 / L 63   Elo +163.0 +/- 31.7   timeouts 0 / 0
+```
+
+The protocol check with the CodinGame-flag build keeps exact book coverage
+(30/30), first turn at most 187 ms, later moves median 90.2 ms and max
+90.9 ms. The paste file grew 2,911 characters to 76,954.
+
+`make test` now also builds the paste file with CodinGame's command line
+(`make -C cpp_impl cg-flags`), and `tools/cg_speed_check.py` compares its
+nodes per move against the `-O3` build. The Dev-vs-Prev SPRT cannot see any
+of this: both sides are compiled at `-O3`. Any CodinGame ladder result from
+before this change was obtained at roughly a fifth of the tested speed.
+

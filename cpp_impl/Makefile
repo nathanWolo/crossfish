@@ -26,7 +26,12 @@ PLAY_BOOK_FIRST ?= 5
 PLAY_BOOK_SECOND ?= 4
 PLAY_BOOK_SEARCH_MS ?= 2000
 
-.PHONY: all test bench test-cpp test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol clean
+CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX))
+# CodinGame's own C++ command line: g++ 11.2, no -O flag. Only the source's
+# pragmas and always_inline attributes make the submission fast there.
+CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
+
+.PHONY: all test bench test-cpp cg-flags test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol clean
 
 all: test
 
@@ -47,6 +52,9 @@ $(BIN)/codingame_nnue: codingame_nnue.cpp mini_eval_d16.hpp macro_eval.hpp play_
 
 $(BIN)/cg_input: cg_input.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ cg_input.cpp
+
+$(BIN)/cg_input_cgflags: cg_input.cpp | $(BIN)
+	$(CG_CXX) $(CG_FLAGS) -o $@ cg_input.cpp -lm -lpthread -ldl -lcrypt
 
 $(BIN)/cg_legend: cg_legend_hce.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ cg_legend_hce.cpp
@@ -81,7 +89,8 @@ test-python:
 	cd $(ROOT) && $(PYTHON) -m unittest python_impl.test_rules -v
 	cd $(ROOT) && $(PYTHON) -m unittest discover -s tools -p 'test_*.py' -v
 
-compile-cg: $(BIN)/crossfish $(BIN)/codingame_nnue $(BIN)/cg_input
+compile-cg: $(BIN)/crossfish $(BIN)/codingame_nnue $(BIN)/cg_input $(BIN)/cg_input_cgflags
+cg-flags: $(BIN)/cg_input_cgflags
 compile-legend: $(BIN)/cg_legend
 
 roundrobin: compile-cg compile-legend

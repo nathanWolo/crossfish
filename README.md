@@ -270,6 +270,25 @@ a freeze:
 -O3 -std=c++17 -mavx2 -mbmi -mbmi2 -mlzcnt -mpopcnt -pthread
 ```
 
+**CodinGame does not compile with those flags.** Its C++ command line is g++
+11.2 with `-std=gnu++17 -Werror=return-type -g -pthread` and **no `-O`**.
+At a global `-O0`, `#pragma GCC optimize("O3")` still optimizes each
+function, but GCC inlines only `always_inline` functions, so every
+`std::array::operator[]`, `std::min` and small helper becomes a real call.
+Until round ten the shipped bot therefore searched about 150k nodes per move
+on CodinGame against 700k in every local test (a 4.5x gap no SPRT could see).
+The CG source now puts the optimize pragmas before the includes, marks its
+helpers `always_inline`, and uses `cf_array` / `cf_min` / `cf_max` instead
+of the std versions. Keep it that way:
+
+- `make -C cpp_impl cg-flags` (part of `make test`) builds `cg_input.cpp`
+  with CodinGame's exact command line (`g++-11` if installed).
+- `python tools/cg_speed_check.py cpp_impl/bin/cg_input_cgflags cpp_impl/bin/cg_input`
+  compares nodes per move of that build against the `-O3` build. They should
+  be within noise of each other; a new helper that is not `always_inline`
+  shows up here and nowhere else.
+- Never add `std::` containers or algorithms to the CG hot path.
+
 CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags is enough for SPRT. Do not enable FMA in MiniNet; it will disagree with the scalar reference.
 
 `make -C cpp_impl sprt` rebuilds `bin/test_bots` when headers change, then runs it. If you run a stale `test_bots` binary, you are SPRTing yesterday's Dev.
@@ -328,6 +347,22 @@ out of book immediately against a different engine. Design, measurements and
 the regeneration procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
+
+On 2026-09-24 the CodinGame submission was made fast under CodinGame's own
+compiler flags (no `-O`, see **Compiler and local builds**). The change is
+tree-identical: `cg_selfcheck` checksums match the previous port at depths
+7, 10 and 13, both at `-O3` and at CodinGame's flags. Built exactly as
+CodinGame builds it, the paste file searches 4.9x more nodes per move
+(722k vs 147k mean, random-opponent protocol games) and, new vs old at
+90 ms through the process referee:
+
+```text
+N 400  W 238 / D 99 / L 63   Elo +163.0 +/- 31.7   timeouts 0 / 0
+first turn max 187 ms; later moves median 90.2 ms, max 90.9 ms
+```
+
+The local Dev-vs-Prev SPRT compiles both engines at `-O3` and cannot see
+this gain. `cg_input.cpp` is 76,954 characters (23,046 left).
 
 On 2026-09-22, a tree-identical hot-path rewrite passed the official 90 ms
 SPRT against the round-eight freeze (`88c57b4`) with one of eight physical

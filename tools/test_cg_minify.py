@@ -21,6 +21,14 @@ import cg_minify as m  # noqa: E402
 
 
 class TestIdentHelpers(unittest.TestCase):
+    def test_keeps_always_inline_attribute(self):
+        # CodinGame compiles without -O, so the hot path relies on
+        # always_inline; renaming the attribute silently disables it.
+        out = m.minify_cpp(
+            "__attribute__((always_inline)) int helper_fn(int value) { return value; }\n")
+        self.assertIn("__attribute__((always_inline))", out)
+        self.assertNotIn("helper_fn", out)
+
     def test_word_char(self):
         self.assertTrue(m._is_word_char("a"))
         self.assertTrue(m._is_word_char("Z"))
