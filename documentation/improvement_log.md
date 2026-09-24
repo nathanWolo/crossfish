@@ -375,6 +375,9 @@ This section is the other half of the history. Retrying these without a new hypo
   (-0.9%) or the child's macro-table entry (-0.3%); branchless LMR (+0.5%,
   n.s.); the outlined qsearch capture loop again, now on the wall clock
   (+0.5%, n.s.).
+- Round twelve (section 50): branch hints (-2.7%), skipping the repeated
+  leaf null-window probe (3% fewer nodes, -0.5% time), prefetching the
+  children's macro-correction line (-2.3%).
 
 **Nets**
 
@@ -2184,3 +2187,30 @@ against a random opponent through `tools/cg_speed_check.py`:
 | + round eleven | 784k | 924k |
 
 Submission: 80,576 characters, 19,424 below the cap.
+
+---
+
+## 50. Round twelve: no candidate survived (24 September 2026)
+
+Screened against the round-eleven freeze with `tools/speed_ab.py` (n=40
+paired runs each; a same-day A/A control read +0.46% [-1.16, +2.14]). None
+was kept, and Dev stays identical to Prev.
+
+- **Branch hints** (`__builtin_expect` on `stopped`, terminal returns and the
+  clock check in `time_up`): tree-identical but **-2.67% [-4.15, -1.15]**,
+  measurably slower; GCC's layout and inlining changed for the worse.
+- **Skip the repeated leaf probe.** With no reduction, a null-window probe
+  that beats alpha is repeated with the identical depth and window. For a
+  leaf child (depth <= 0) the repeat is provably redundant (search_leaf and
+  qsearch only read engine state), so skipping it kept every score (320
+  fixed-depth positions) and every persistent `getMove` move and root score
+  (656 searches) while searching 1.8-3.8% fewer nodes. Wall clock:
+  **-0.52% [-1.91, +0.91]**. The skipped probes run on lines that are
+  already hot, so they were nearly free; node count is not cost.
+- **Prefetch the children's macro-correction line** once per node:
+  **-2.31% [-3.90, -0.66]**.
+
+What is left of the profile is search control flow, make/unmake and move
+ordering, with the TT latency now hidden. The next speed gain probably needs
+a structural change (for example a specialised depth-1 node, or a smaller
+per-node state) rather than another local rewrite.
