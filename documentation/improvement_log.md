@@ -357,6 +357,33 @@ This section is the other half of the history. Retrying these without a new hypo
   maps): NPS -5.4%; N=1128, -1.85 +/- 14.32. Killed.
 - Root move chosen from a fail-low bound: instrumented, 0 of 616 self-play
   moves affected. Not tested.
+- TT bound as the pruning eval (an EXACT entry, a LOWER bound above or an
+  UPPER bound below the static eval replaces it for RFP and futility):
+  peaked at +14.8 at N=1200, then N=3702, +2.16 +/- 7.93. Killed.
+- Singular extension with a verification search (depth >= 6, margin
+  30 * depth, multi-cut; the pseudo-singular extension kept below depth 6):
+  N=1938, +2.87 +/- 10.81. Killed.
+- Both of the above as one bundle: N=1206, -8.64 +/- 13.94. They do not add;
+  the small positive readings were noise.
+- "Improving" (RFP margin half a margin smaller when the corrected static
+  eval rose since ply-2): N=1812, -2.49 +/- 11.88.
+- Internal iterative reduction replacing IID (no TT hit, depth >= 4: search
+  one ply shallower): N=1206, -5.47 +/- 13.57.
+- Late-move pruning (non-PV, depth <= 3, quiet moves after 3 + 2*depth^2):
+  N=1230, -5.08 +/- 13.68. Only 6.5% of nodes have more than 9 moves.
+- Qsearch plays a forced single move instead of standing pat: N=1212,
+  -6.88 +/- 13.46.
+- Late-game tempo `min(600, 18 * (n_moves - 32))`, fitted to the measured
+  static-vs-search bias (+75 at 32-39 stones up to +544 at 56-63): N=1212,
+  -6.88 +/- 13.51. The correction histories already absorb that bias.
+- MiniNet fine-tune from the shipped net (the packed D16/H8 expands to a
+  CFM2 checkpoint bit-exactly) on 600k depth-12 HCE-leaf labels with target
+  search - HCE - macro: holdout MAE 1057 -> 1025, but N=1812, -0.96 +/- 11.40.
+  `--pin-empty` diverged (loss rose every epoch); `--relative-empty` works.
+- SPSA over the six HCE global weights: after 3,300 pairs at 25 ms every
+  weight was within 3% of its value. Not worth an SPRT.
+- Full Stockfish-style NNUE replacing HCE + MiniNet + macro, including a
+  data-scaling study and qsearch-leaf training data: see section 52.
 - Every SPRT walks the book in the same order, so near-identical engines
   share early noise; three unrelated candidates read -11 to -13 near N=600.
   Use `SPRT_GAME_OFFSET` for independent early readings.
@@ -2300,3 +2327,84 @@ not a measurement. The run logged 3 timeouts for the new build and 6 for the
 old one while other jobs shared the machine. On an idle machine the protocol
 check gives the new build a first turn of at most 182.8 ms and later moves
 of median 90.2 ms, max 91.6 ms, with exact book coverage (30/30).
+
+---
+
+## 52. A full Stockfish-style NNUE, and whether data fixes it (24 September 2026)
+
+The CJK14 repack left room for a larger network, so this round asked whether
+a Stockfish-style NNUE can replace the whole evaluation (HCE, MiniNet and the
+macro head) instead of correcting it. Nothing here shipped; the code is in
+`tools/experiments/full_nnue/` with a README.
+
+**Network.** 199 sparse features per perspective: each stone of a live
+miniboard as mine or theirs (162), each decided miniboard as mine, theirs or
+drawn (27), and the move constraint (10, shared). A shared-weight
+accumulator of width 256 per perspective, clipped ReLU, concatenated 512 ->
+32 -> 1. The corrected static eval in interior pruning and the qsearch
+stand-pat both became NNUE + correction history; the HCE's incremental
+threat maps stayed for move ordering and the global-win tactics. A float
+reference implementation matched PyTorch to within one eval unit. The only
+earlier attempt (section 8) had a 32-wide accumulator and depth-6 HCE labels
+and lost about 277 Elo at depth 4.
+
+**Data.** 1.59M self-play positions (30,000 games at 10 ms) and 300k random
+positions, all labeled by the full current engine searching to depth 12
+(about 1.7 ms per position on four threads; 20% of labels are mate scores).
+Every row also carries the current static eval, so the trainer reports the
+baseline on the same 50,000-position holdout.
+
+**First result: better fit, worse play.**
+
+| Evaluator | Holdout WDL-MSE | MAE | Corr | Equal depth 4 vs Prev |
+| --- | ---: | ---: | ---: | ---: |
+| Current static eval (HCE + MiniNet + macro) | 0.02865 | 998 | 0.621 | - |
+| NNUE, sigmoid-MSE (K = 2000), 1.89M rows | **0.02435** | 933 | 0.635 | **-192.7 +/- 34.0** (N=510) |
+| NNUE, Huber, mates dropped | 0.0447 | **792** | **0.689** | **-295.6 +/- 44.0** (N=444) |
+
+No sign or perspective bug: the NNUE agrees in sign with the old eval on 88%
+of positions where the old eval exceeds +/-3000. The better the net
+predicts a deep search's verdict, the worse it orders leaves: its outputs
+are compressed (standard deviation 1,759-1,983 against 2,738) and correlate
+only 0.61-0.65 with the evaluator the search was tuned around.
+
+**Data scaling.** The same net on nested subsets, one holdout, 400 games at
+depth 4 per point (+/- ~40 Elo each):
+
+| Training rows | Holdout WDL-MSE | MAE | Equal depth 4 |
+| ---: | ---: | ---: | ---: |
+| 125,000 | 0.0378 | 1032 | -303 +/- 49 |
+| 250,000 | 0.0339 | 1030 | -344 +/- 49 |
+| 500,000 | 0.0311 | 1006 | -214 +/- 42 |
+| 1,000,000 | 0.0280 | 981 | -172 +/- 37 |
+| 1,837,147 | 0.0243 | 931 | -205 +/- 39 |
+
+Offline error falls steadily with data and has not plateaued. Play improves
+roughly 30-50 Elo per doubling up to 1M rows and then stops within the
+noise. Even at the optimistic slope, reaching parity would take five or six
+more doublings (on the order of 100M labeled positions, about two days of
+labeling per doubling at this machine's rate for the last ones).
+
+**Better-matched data made it worse.** Root self-play positions are not what
+the evaluator is asked about, so 1.52M positions were sampled at qsearch
+entry during 3,000 self-play games at 20 ms (`leaf_dump`, 1 in 4,096 nodes)
+and labeled the same way. Leaf positions are sharp: the mean depth-12 score
+for the side to move is +4,771 (roots: +96) and 26% are mates. There the
+current evaluator is better even offline, and the net trained only on them
+is far worse in play:
+
+| 1M training rows | Holdout WDL-MSE (leaf holdout) | Corr | Equal depth 4 |
+| --- | ---: | ---: | ---: |
+| Current static eval | 0.0504 | 0.638 | - |
+| NNUE on leaf positions (lr 3e-4; lr 1e-3 collapsed to a constant) | 0.0541 | 0.536 | **-474 +/- 75** |
+
+**Reading.** The handcrafted terms and the MiniNet's exact per-miniboard
+pattern tables encode two-in-a-row geometry and threat structure directly.
+A per-cell linear first layer has to rebuild that from 1-2M positions and
+cannot yet, least of all in the tactical positions where qsearch evaluates.
+The architecture that works here is a sharp base with learned corrections
+on top, which is what shipped. A future attempt should start from that:
+an NNUE residual on top of HCE (as the MiniNet is), pattern-level input
+features rather than cells, or a WDL-blended target over far more games.
+Anything that relabels positions must use a `test_bots` built from the
+unpatched Dev, or the experimental net becomes its own teacher.
