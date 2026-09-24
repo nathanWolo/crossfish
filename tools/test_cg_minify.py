@@ -29,6 +29,14 @@ class TestIdentHelpers(unittest.TestCase):
         self.assertIn("__attribute__((always_inline))", out)
         self.assertNotIn("helper_fn", out)
 
+    def test_never_emits_libc_bessel_names(self):
+        # <math.h> declares j0 j1 jn y0 y1 yn at global scope. A class renamed
+        # to one of them is hidden by the function (`jn x{...};` stops
+        # parsing), so the generator must skip them like any taken name.
+        src = "".join(f"int ident_{i} = {i};\n" for i in range(3000))
+        out = set(m.minify_cpp(src).replace("=", " ").replace(";", " ").split())
+        self.assertFalse(out & {"j0", "j1", "jn", "y0", "y1", "yn"})
+
     def test_word_char(self):
         self.assertTrue(m._is_word_char("a"))
         self.assertTrue(m._is_word_char("Z"))

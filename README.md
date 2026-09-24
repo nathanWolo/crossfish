@@ -348,6 +348,33 @@ the regeneration procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
+On 2026-09-24, a second tree-identical speed bundle passed the official
+90 ms SPRT against the round-nine freeze (`bcc0e30`) with one of four cores
+reserved, using pentanomial pairs and the 50,000-position book:
+
+```text
+90 ms: N 5478 W 1580 D 2463 L 1435
+Penta: 167 / 612 / 1064 / 701 / 195
+Elo diff: +9.20 +/- 6.53
+LLR: +3.015 (H0=0, H1=+5) — PASS
+Timeouts: Prev=13 Dev=10 (host stalls; normal replies 90-93 ms)
+Prev NPS: 17,689,984  Dev NPS: 19,563,392
+```
+
+Make now records what it overwrites and unmake restores it instead of
+re-deriving hash, MiniNet codes and HCE accumulators; move ordering scores a
+miniboard's nine squares in int16 lanes; the MiniNet decided-miniboard term
+is a running sum; `eval_weights` is constexpr; and `lround` is an exact
+trunc/fraction test. Scores and node counts are unchanged. Candidates were
+screened with a deterministic callgrind cost and `tools/speed_ab.py`
+(repeated paired timing with a 95% CI) before the SPRT; see section 48 of the
+improvement log, including the rejected ones. The CodinGame port
+follows the `always_inline` / `cf_array` rules below; `cg_selfcheck`
+reproduces the round-nine checksums at `-O3` and at CodinGame's flags, and
+built with CodinGame's flags the paste file searches 764k nodes per move
+against 721k before (`tools/cg_speed_check.py`). `cg_input.cpp` is 79,587
+characters (20,413 left).
+
 On 2026-09-24 the CodinGame submission was made fast under CodinGame's own
 compiler flags (no `-O`, see **Compiler and local builds**). The change is
 tree-identical: `cg_selfcheck` checksums match the previous port at depths

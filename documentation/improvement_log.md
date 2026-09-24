@@ -361,6 +361,17 @@ This section is the other half of the history. Retrying these without a new hypo
   share early noise; three unrelated candidates read -11 to -13 near N=600.
   Use `SPRT_GAME_OFFSET` for independent early readings.
 
+**Speed round ten (section 48; all tree-identical, none kept)**
+
+- Ternary-indexed 77 KiB miniboard table replacing the sparse 512/256 KiB
+  LUTs: fewer simulated L1 misses, -1.6% to -2.6% wall clock. Tried twice.
+- Huge-page (`MADV_HUGEPAGE`) transposition table: granted, but no measurable
+  gain (+1.3% +/- 2.4% sat; walk -4.2% to +1.2%).
+- Caching the lined-up threat term in make: +19.6M instructions (flags change
+  too often, and makes outnumber evaluations).
+- Out-of-line qsearch capture loop; static Zobrist tables instead of
+  references; fixed-length sort rank loop: all within +/-0.3%.
+
 **Nets**
 
 - Sparse-199 replace: −277 at depth 4
@@ -1950,3 +1961,137 @@ nodes per move against the `-O3` build. The Dev-vs-Prev SPRT cannot see any
 of this: both sides are compiled at `-O3`. Any CodinGame ladder result from
 before this change was obtained at roughly a fifth of the tested speed.
 
+---
+
+## 48. Restore instead of re-derive: a tree-identical speed round (24 September 2026)
+
+Speed round ten was speed only, on the round-nine freeze. (It is separate
+from the round-ten search experiments listed in section 11.) Every accepted change
+computes the bit-identical tree (`bench_ab equiv` IDENTICAL at depths 7, 8
+and 11, 320 positions), so the gate was identity first, then timing, then the
+official 90 ms SPRT.
+
+### Measurement first
+
+On this 4-core cloud VM a single `bench_ab sat` run swings by ±4% with Dev
+and Prev being the same code, so one run cannot see a 2% change.
+`tools/speed_ab.py` repeats the paired saturated-TT run, pins it to one core,
+checks node counts are identical on every run and reports the mean time ratio
+with a 95% CI. A pinned A/A control read +0.09% ± 2.1%.
+
+Individual micro-changes are below that noise floor, so each was first
+screened by a deterministic simulated cost: callgrind with cache and branch
+simulation over a fixed Dev-only workload (two scripted games, depth 9,
+persistent engine), estimated as Ir + 12·L1 misses + 150·LL misses + 16·branch
+mispredicts. Only changes that cut that cost went into the bundle, and the
+bundle was then timed on the wall clock. Two cautions from using it:
+callgrind's branch predictor is indexed by code address, so mispredict counts
+move with layout on lines a change never touched; and it cannot see the TLB.
+
+The starting profile was flat. By source function (inlined code attributed
+back): search 25%, make/unmake and the helpers they call 29%, move ordering
+10%, HCE finish 7.5%, MiniNet 3.4%.
+
+### Accepted (bundle)
+
+- **Undo records.** Unmake used to re-derive everything make changed: XOR the
+  hash back, re-look-up both MiniNet codes, re-accumulate the HCE score and
+  threat maps, and probe the three decided-state masks to find which one the
+  move set. Make already holds every value before it overwrites it, so it now
+  writes a 32-byte record (hash, HCE local/global score, both threat maps, the
+  miniboard's score and flags, both code bytes, active board, terminal, the
+  decided state) and unmake restores it. -55M simulated instructions (-2.5%),
+  but the largest wall-clock gain of the round: the bundle with it measured
+  +10.7% [+8.6, +13.0] against +2.8% [+1.0, +4.6] without it. Removing the
+  dependency chains mattered more than the instruction count.
+- **Vector move scoring.** Every ordering term except the counter move depends
+  only on (miniboard, square), and moves arrive grouped by miniboard, so each
+  group scores all nine squares at once in 16 int16 lanes. Killers are
+  mirrored as a per-ply bitmask and history as a `history / 20` shadow table
+  written wherever history changes, so no per-move division remains. -109M
+  simulated instructions.
+- **Running decided-miniboard term.** The MiniNet's per-miniboard super-class
+  vectors depend only on which miniboards are decided, so their sum is kept per
+  perspective and updated where the macro key changes (rare), replacing nine
+  class-dependent loads and branches per leaf. The class-0 rows are exactly
+  zero (`lround(x - x)`), which is what makes this exact. This is not the
+  rejected full hidden-accumulator (section 44): only the rarely-changing term
+  is incremental. -35M.
+- **constexpr `eval_weights`** (never written) lets every pruning margin fold
+  to an immediate. -10M.
+- **Exact fast `lround`.** Truncate, take the fractional part (exact for
+  |x| < 2^31) and step away from zero at one half. Checked equal to
+  `std::lround` on all 2,650,800,128 finite floats below 2^31; larger inputs
+  keep the old conversion. -15M.
+
+Bundle timing against the round-nine freeze: `speed_ab` +8.0% [+6.3, +9.8]
+(n=40, node counts identical every run); `walk 10 40 90` +5.5% and +8.6% nodes
+at a fixed move budget; the SPRT header's 1-second startpos search
+17,689,984 → 19,563,392 NPS (+10.6%).
+
+### Rejected (measured, not kept)
+
+- **Ternary-indexed miniboard table** (one 77 KiB `{score, flags, code}` table
+  indexed by an incrementally kept base-3 key, replacing reads from the
+  512 KiB and 256 KiB sparse tables). Cut simulated L1 misses 21% but added
+  instructions; wall clock -2.6% ± 1.5% alone and -1.6% [-3.6, +0.5] on top of
+  the undo records. Tried twice; the sparse tables are L2-resident and their
+  misses overlap.
+- **Huge-page transposition table** (`aligned_alloc` + `madvise(MADV_HUGEPAGE)`;
+  the kernel granted 4 MiB of huge pages). +1.3% ± 2.4% on `sat`, and
+  +1.2%, -4.2%, +0.7% nodes in three `walk` runs. No evidence, and CodinGame's
+  THP setting is unknown.
+- **Static Zobrist tables** instead of `FastBoard` reference members: -0.1%
+  instructions. Not worth the churn.
+- **Cached lined-up threat term** in make: the local two-in-a-row flags change
+  on too many moves, and there are fewer evaluations than makes. +19.6M
+  instructions.
+- **Out-of-line qsearch capture loop** to shrink the stand-pat prologue: -0.9M;
+  GCC keeps the heavy prologue for the inlined eval.
+- **Fixed-length rank loop** in the ≤8-key sort: +7M instructions, neutral.
+
+### Result
+
+Official 90 ms SPRT against the round-nine freeze (`35dd664` vs `bcc0e30`),
+pentanomial pairs, three workers with one of four cores reserved, the
+50,000-position book:
+
+```text
+N 5478  W 1580 / D 2463 / L 1435
+Penta 167 / 612 / 1064 / 701 / 195
++9.20 +/- 6.53 Elo
+LLR +3.015 (H0=0, H1=+5) — PASS
+Timeout losses: Prev 13 / Dev 10
+Maximum response: Prev 140.23 ms / Dev 163.83 ms
+Prev NPS 17,689,984  Dev NPS 19,563,392 (+10.6%)
+```
+
+The run started badly (-13 +/- 18 at N=606) and that was checked rather than
+waited out: a persistent-engine test drove both engines through scripted games
+via `getMove` at a fixed depth, carrying TT, history, killers, counters and
+correction history across moves as a real game does, and found identical
+moves, node counts and root scores in all 310 searches. Only speed could
+separate them. The timeouts are host stalls on this shared VM (both engines,
+up to 164 ms), not engine overruns: normal replies stayed at 90-93 ms.
+
+Porting: the patch applied to `codingame_nnue.cpp` except where its layout
+differs (the rounding and MiniNet block, and the move-scoring loop, which the
+CG copy keeps without a disabled `#ifdef`), which were ported by hand. The
+port was then rebased onto section 47's CodinGame-compiler fix, and its new
+hot-path code follows those rules: `cf_array` for the undo records and the
+killer and history shadows, `always_inline` on make/unmake, the super-term
+helpers, `sync_history_div` and the lane lambda, and `__builtin_fabsf`
+rather than `std::fabs` in the rounding. `cg_selfcheck` reproduces the
+pre-port checksums at depths 5, 7, 9 and 11 at `-O3` and at depths 5, 7 and
+9 with CodinGame's flags (g++ 11, no `-O`), and on a `--no-rename` bundle.
+Built with CodinGame's flags, the paste file searches 764k nodes per move
+against 721k for the section-47 build (`tools/cg_speed_check.py`, six games
+against a random opponent). Submission: 79,587 characters, 20,413 below the
+cap.
+
+Rebuilding the paste file also exposed a minifier bug: it avoided only names
+already present in the source, so it could hand out `j0`, `j1`, `jn`, `y0`,
+`y1` or `yn`, which glibc's `<math.h>` declares globally as Bessel functions.
+Harmless on a variable, fatal on a type (`PbReader` became `jn`, and the
+function hid it). Those six names are now reserved, and a unit test fails
+without the fix.

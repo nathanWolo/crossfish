@@ -9,17 +9,10 @@
 #include <mutex>
 #include <vector>
 
-// Round-ten experiment, on the round-nine freeze (2026-09-22). One axis:
-// speed only. Every change below computes the bit-identical search tree
-// (`make -C cpp_impl bench` IDENTICAL: same scores and node counts):
-//   - make records what it overwrites and unmake restores it, instead of
-//     re-deriving hash, MiniNet codes and HCE accumulators;
-//   - move ordering scores all nine squares of a miniboard in int16 lanes,
-//     with killer and history/20 shadows so no per-move division remains;
-//   - the MiniNet decided-miniboard term is kept as a running sum that
-//     changes only when a miniboard is decided;
-//   - eval_weights is constexpr and lround is a trunc/fraction test that
-//     matches std::lround on every finite float below 2^31.
+// Round-eleven experiment base, frozen 2026-09-24: identical to
+// crossfish_prev.hpp apart from this comment and the class name. Edit only
+// this file while testing. Round-nine engine plus the round-ten
+// tree-identical speed bundle that passed at +9.20 +/- 6.53 Elo.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
