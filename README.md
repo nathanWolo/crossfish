@@ -298,7 +298,7 @@ file exactly as CodinGame does and compares it with `main`:
 | --- | --- |
 | fresh | `cg_input.cpp` is not the minifier's current output of `codingame_nnue.cpp` |
 | size | over 100,000 characters (UTF-16 units) |
-| speed | nodes per searched move over paired protocol games vs a random opponent: slower than base by more than 5% *and* the 95% interval below 1 |
+| speed | nodes per millisecond over full-budget replies (80 ms or more), paired protocol games vs a random opponent: slower than base by more than 5% *and* the 95% interval below 1 |
 | inlining | the CodinGame-flags build below 85% of the same source at `-O3` (a hot helper lost `always_inline`) |
 | latency | first reply 1,000 ms or more, or the 99th percentile of later replies 95 ms or more |
 | smoke | candidate vs base at 90 ms (200 games, random openings): timeouts over 1%, or a score significantly below base (Elo is informational; strength is the SPRT's job) |

@@ -11,10 +11,11 @@ submitted:
   1. fresh:    cpp_impl/cg_input.cpp is the minifier's current output of
                codingame_nnue.cpp (not stale, not hand-edited)
   2. size:     under the 100,000-character cap (UTF-16 units)
-  3. speed:    nodes per searched move, candidate vs base, both built with
-               CodinGame's flags, over paired protocol games against a random
-               opponent; fails on a slowdown that is both material (more than
-               --tol) and significant (95% interval below 1)
+  3. speed:    nodes per millisecond over full-budget replies, candidate vs
+               base, both built with CodinGame's flags, over paired protocol
+               games against a random opponent; fails on a slowdown that is
+               both material (more than --tol) and significant (95% interval
+               below 1)
   4. inlining: the candidate built with CodinGame's flags vs the same source
                at -O3; a large gap means a hot helper is not always_inline
   5. latency:  first reply under 1,000 ms; 99th percentile of later replies
@@ -53,6 +54,7 @@ from python_impl.operations import ops  # noqa: E402
 
 CPP = ROOT / "cpp_impl"
 CAP = 100_000
+FULL_MS = 80  # a later reply this long used (nearly) the whole 90 ms budget
 CG_FLAGS = ["-std=gnu++17", "-Werror=return-type", "-g", "-pthread"]
 O3_FLAGS = ["-O3", "-std=c++17", "-mavx2", "-mbmi", "-mbmi2", "-mlzcnt", "-mpopcnt", "-pthread",
             "-Wno-unknown-pragmas", "-Wno-ignored-attributes"]
@@ -122,8 +124,8 @@ def protocol_game(bot: Path, bot_first: bool, seed: int, max_ply: int = 40) -> d
                     raise RuntimeError(f"{bot.name}: illegal move {move} at ply {ply}")
                 n = [int(t[1:]) for t in reply[2:] if t.startswith("N")]
                 d = [int(t[1:]) for t in reply[2:] if t.startswith("D")]
-                if n:
-                    nodes.append(n[0])
+                if n and len(latencies) > 1:  # later turns only: the first has a longer budget
+                    nodes.append((n[0], latencies[-1]))
                 if d:
                     depths.append(d[0])
             else:
@@ -153,7 +155,7 @@ def main() -> int:
     ap.add_argument("--speed-games", type=int, default=16)
     ap.add_argument("--smoke-games", type=int, default=200)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2 - 1))
-    ap.add_argument("--tol", type=float, default=0.05, help="tolerated nodes-per-move slowdown")
+    ap.add_argument("--tol", type=float, default=0.05, help="tolerated slowdown in nodes per millisecond")
     ap.add_argument("--skip-smoke", action="store_true")
     ap.add_argument("--skip-book", action="store_true")
     ap.add_argument("--allow-non-gcc", action="store_true")
@@ -206,19 +208,35 @@ def main() -> int:
     for g in range(args.speed_games):
         for k in bins:
             per[k].append(protocol_game(bins[k], bot_first=(g % 2 == 0), seed=1000 + g))
-    mean_nodes = {k: [statistics.mean(r["nodes"]) for r in per[k]] for k in bins}
-    all_nodes = {k: [n for r in per[k] for n in r["nodes"]] for k in bins}
+    # Speed is nodes per millisecond over full-budget replies (at least FULL_MS of
+    # the 90 ms budget). Nodes per move is not speed: a search that stops early
+    # (a proven result, or a mate "reached depth 50") searches fewer nodes
+    # without being slower, and a fix that stops it quitting early would look
+    # faster.
+    def nps(game):
+        full = [(n, ms) for n, ms in game["nodes"] if ms >= FULL_MS]
+        return sum(n for n, _ in full) / sum(ms for _, ms in full) if full else None
+
+    def paired(a, b):
+        return [(x, y) for x, y in zip(map(nps, per[a]), map(nps, per[b])) if x and y]
+
+    def full_share(k):
+        moves = [ms for g in per[k] for _, ms in g["nodes"]]
+        return sum(ms >= FULL_MS for ms in moves) / max(1, len(moves))
+
     all_depth = {k: [d for r in per[k] for d in r["depths"]] for k in bins}
-    r, lo, hi = ratio_ci(list(zip(mean_nodes["base"], mean_nodes["cand"])))
+    pairs = paired("base", "cand")
+    r, lo, hi = ratio_ci(pairs)
     speed_ok = not (r < 1 - args.tol and hi < 1.0)
     record("speed" + note, speed_ok,
-           f"nodes/move candidate {statistics.mean(all_nodes['cand']):,.0f} vs base "
-           f"{statistics.mean(all_nodes['base']):,.0f}: ratio {r:.3f} [{lo:.3f}, {hi:.3f}] over "
-           f"{args.speed_games} paired games; mean depth {statistics.mean(all_depth['cand']):.1f} vs "
+           f"nodes/ms at full budget: candidate {statistics.mean(y for _, y in pairs):,.0f} vs base "
+           f"{statistics.mean(x for x, _ in pairs):,.0f}, ratio {r:.3f} [{lo:.3f}, {hi:.3f}] over "
+           f"{len(pairs)} paired games; full-budget replies {full_share('cand'):.0%} vs "
+           f"{full_share('base'):.0%}; mean depth {statistics.mean(all_depth['cand']):.1f} vs "
            f"{statistics.mean(all_depth['base']):.1f}")
-    ri, loi, hii = ratio_ci(list(zip(mean_nodes["cand_o3"], mean_nodes["cand"])))
+    ri, loi, hii = ratio_ci(paired("cand_o3", "cand"))
     record("inlining" + note, ri >= 0.85,
-           f"CodinGame-flags build at {ri:.0%} [{loi:.0%}, {hii:.0%}] of the -O3 build's nodes/move "
+           f"CodinGame-flags build at {ri:.0%} [{loi:.0%}, {hii:.0%}] of the -O3 build's nodes/ms "
            f"(below 85% means a hot helper is not always_inline)")
     first = [r["latencies"][0] for r in per["cand"] if r["latencies"]]
     later = sorted(x for r in per["cand"] for x in r["latencies"][1:])
