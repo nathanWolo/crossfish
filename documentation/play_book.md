@@ -110,7 +110,7 @@ continues" digit; at each opponent position the book continues from, one 0/1
 | --- | --- |
 | Information content | 184,846 bits |
 | Payload | 23,548 bytes, 13,456 characters (the full-coverage book: 4,656) |
-| `cg_input.cpp` | 89,354 characters, 10,646 left |
+| `cg_input.cpp` | 90,095 characters, 9,905 left |
 | Decode at startup | about 9 ms, inside the 1,000 ms first turn |
 
 The packer (`play_book_pack.cpp`) and the runtime drive the same `PbWalker`,

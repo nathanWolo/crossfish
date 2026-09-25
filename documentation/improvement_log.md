@@ -2559,7 +2559,7 @@ The format changes with it: the payload now also carries a "continues" digit
 per book position and a "covered" digit per non-terminal reply at each
 expanded opponent position (`documentation/play_book.md`). The book holds
 34,066 of our positions (was 20,883) in 13,456 payload characters (was 4,656);
-`cg_input.cpp` is 89,354 characters. `play_book_check` found 0 mismatches and
+`cg_input.cpp` is 90,095 characters after merging #22-#26. `play_book_check` found 0 mismatches and
 the protocol check, now exact against the text book, passed 40/40.
 
 Old and new book, same engine, seeds and 90 ms (`play_book_match`):
