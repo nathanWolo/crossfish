@@ -1848,7 +1848,10 @@ class CrossfishDev {
             if (alpha < stand_pat) {
                 alpha = stand_pat;
             }
-            if (!g_disable_eval_prune && stand_pat + QDELTA_PAWNS * eval_weights[PAWN_IDX] < alpha) {
+            // Delta pruning against a mate-range alpha would skip the capture
+            // that wins the game.
+            if (!g_disable_eval_prune && alpha < CORR_MATE_BOUND
+                && stand_pat + QDELTA_PAWNS * eval_weights[PAWN_IDX] < alpha) {
                 return alpha;
             }
 
@@ -1990,19 +1993,29 @@ class CrossfishDev {
                     evaluate_hce_incremental(board), static_corr_refs);
                 have_static = true;
 
-                int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
-                if (static_eval - reverse_futility_margin * depth >= beta) {
-                    return beta;
-                }
-                if (depth == 1
-                    && static_eval + 2500 - reverse_futility_margin >= beta
-                    && static_eval + evaluate_mini_cached(board)
-                       - reverse_futility_margin >= beta) {
-                    return beta;
+                // A static eval says nothing about how soon anyone is mated,
+                // so it only prunes against bounds outside mate range. Against
+                // a mate-range beta, reverse futility would claim the node
+                // escapes the mate without searching; against a mate-range
+                // alpha, futility would skip the quiet move that mates sooner.
+                // Either gives false fail-lows in the aspiration windows that
+                // follow a mate score.
+                if (beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
+                    int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
+                    if (static_eval - reverse_futility_margin * depth >= beta) {
+                        return beta;
+                    }
+                    if (depth == 1
+                        && static_eval + 2500 - reverse_futility_margin >= beta
+                        && static_eval + evaluate_mini_cached(board)
+                           - reverse_futility_margin >= beta) {
+                        return beta;
+                    }
                 }
 
                 int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
-                can_futility_prune = (static_eval + futility_margin * depth <= alpha);
+                can_futility_prune = alpha > -CORR_MATE_BOUND && alpha < CORR_MATE_BOUND
+                    && (static_eval + futility_margin * depth <= alpha);
             }
             if (pv_node && !tt_hit && depth > 2) {
                 search(board, 1, ply, alpha, beta);
