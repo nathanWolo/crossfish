@@ -288,7 +288,22 @@ of the std versions. Keep it that way:
   compares nodes per move of that build against the `-O3` build. They should
   be within noise of each other; a new helper that is not `always_inline`
   shows up here and nowhere else.
-- Never add `std::` containers or algorithms to the CG hot path.
+- Never add `std::` containers or algorithms to the CG hot path. Large
+  tables that must live on the heap use `cf_heap_array` (the transposition
+  table was a `std::vector` until round ten's follow-up).
+- Mark every new hot-path helper `always_inline`, including templated ones
+  and ones whose signature wraps across lines. That includes helpers in the
+  generated eval headers: `tools/nnue_emit_mininet_header.py` and
+  `tools/nnue_emit_macro_header.py` emit `d16_mini_hsum256` and
+  `evaluate_macro_key` with the attribute, so regenerate rather than
+  hand-edit.
+- To see what is still out of line, build the readable source the CodinGame
+  way and list the `call` targets inside `CrossfishDev::search` and
+  `CrossfishDev::qsearch`:
+  `g++-11 -std=gnu++17 -Werror=return-type -g -pthread -Icpp_impl -o /tmp/cg cpp_impl/codingame_nnue.cpp && objdump -d -C --no-show-raw-insn /tmp/cg`.
+  Only recursion, the `std::chrono` clock read (once per 128 nodes),
+  `memcpy`/`memmove`, `__stack_chk_fail` and the never-taken lazy
+  `macro_load_packed()` branch should remain.
 
 **CodinGame performance gate.** Every pull request (and every push to a
 branch) runs `tools/cg_perf_gate.py` in a `gcc:11.2` Linux container
@@ -458,7 +473,10 @@ first turn max 187 ms; later moves median 90.2 ms, max 90.9 ms
 ```
 
 The local Dev-vs-Prev SPRT compiles both engines at `-O3` and cannot see
-this gain. `cg_input.cpp` is 76,954 characters (23,046 left).
+this gain. A follow-up (improvement log section 52) inlined the remaining
+hot-path calls: the CodinGame-flags build went from 91.6% to 95.7% of the
+`-O3` build's speed on an identical tree (`make -C cpp_impl cg-speed`).
+`cg_input.cpp` is 81,317 characters (18,683 left).
 
 On 2026-09-22, a tree-identical hot-path rewrite passed the official 90 ms
 SPRT against the round-eight freeze (`88c57b4`) with one of eight physical

@@ -346,6 +346,15 @@ def emit_header(
     )
     source = source[:fast_start] + FACTOR_EVAL
 
+    # CodinGame compiles without -O, where only always_inline functions are
+    # inlined; the horizontal sum runs once per MiniNet evaluation.
+    hsum_decl = "static float mini_hsum256(__m256 v) {"
+    if source.count(hsum_decl) != 1:
+        raise SystemExit("template no longer defines mini_hsum256 as expected")
+    source = source.replace(
+        hsum_decl,
+        "__attribute__((always_inline)) static inline float mini_hsum256(__m256 v) {")
+
     function_tag = symbol_tag or f"d{d}"
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", function_tag):
         raise SystemExit(

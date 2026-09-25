@@ -618,7 +618,7 @@ static int d16_evaluate_mini(const GlobalBoard &b) {
 // AVX2 MiniNet. Same network as d16_evaluate_mini; mul+add (not FMA) to match
 // the codingame AVX2-only target. Horizontal-add order can differ by 1
 // from the scalar path after lround.
-static float d16_mini_hsum256(__m256 v) {
+__attribute__((always_inline)) static inline float d16_mini_hsum256(__m256 v) {
     __m128 lo = _mm256_castps256_ps128(v);
     __m128 hi = _mm256_extractf128_ps(v, 1);
     __m128 s = _mm_add_ps(lo, hi);
