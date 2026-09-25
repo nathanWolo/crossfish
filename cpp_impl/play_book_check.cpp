@@ -40,9 +40,9 @@ static std::string child_key(GlobalBoard b, Move m) {
     return canonical_key(b, t);
 }
 
-static void opp(GlobalBoard &b, int idx, int max_idx);
+static void opp(GlobalBoard &b);
 
-static void ours(GlobalBoard &b, int idx, int max_idx) {
+static void ours(GlobalBoard &b) {
     int t;
     if (!g_seen_ours.insert(canonical_key(b, t)).second) return;
     Move want, got;
@@ -56,20 +56,19 @@ static void ours(GlobalBoard &b, int idx, int max_idx) {
                         has_rt ? "has" : "lacks", got.mini_board, got.square);
         return;
     }
-    if (idx + 1 >= max_idx) return;
     b.makeMove(want);
-    if (b.checkWinner() == -1) opp(b, idx + 1, max_idx);
+    if (b.checkWinner() == -1) opp(b);  // opp() follows only the replies the text book covers
     b.unmakeMove();
 }
 
-static void opp(GlobalBoard &b, int idx, int max_idx) {
+static void opp(GlobalBoard &b) {
     int t;
     if (!g_seen_opp.insert(canonical_key(b, t)).second) return;
     Move legal[81];
     int n = b.fillLegalMoves(legal);
     for (int i = 0; i < n; i++) {
         b.makeMove(legal[i]);
-        if (b.checkWinner() == -1) ours(b, idx, max_idx);
+        if (b.checkWinner() == -1 && g_text.has(b)) ours(b);
         b.unmakeMove();
     }
 }
@@ -85,9 +84,10 @@ int main(int argc, char **argv) {
     std::printf("table_checksum=%llu\n", (unsigned long long)play_book_table_checksum());
     GlobalBoard first;
     first.makeMove(Move{4, 4});
-    opp(first, 0, PLAY_BOOK_DEPTH_FIRST);
-    GlobalBoard second;
-    opp(second, 0, PLAY_BOOK_DEPTH_SECOND);
+    opp(first);
+    GlobalBoard second;  // both roots follow the first player's center-center
+    second.makeMove(Move{4, 4});
+    ours(second);
     std::printf("checked %d positions (text book %zu): %d mismatches\n", g_checked, g_text.entries.size(), g_bad);
     return (g_bad == 0 && g_checked == (int)g_text.entries.size() && (int)PB_TABLE.size() == g_checked) ? 0 : 1;
 }

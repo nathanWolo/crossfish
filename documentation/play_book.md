@@ -6,81 +6,112 @@ SPRT *starting positions* described in [opening_book.md](opening_book.md).
 
 ## What it covers
 
-The book covers **every** opponent reply to a fixed depth:
+The book is a tree that starts after the first player's **center-center**:
 
-| Bot moves | Book moves per game | Coverage |
-| --- | ---: | --- |
-| First | 5 | the bot opens center-center (unchanged), then our next 5 moves against any replies |
-| Second | 4 | every opponent first move, then our first 4 moves against any replies |
+- moving first, the bot opens center-center (unchanged) and the book starts at
+  the opponent's reply;
+- moving second, the book **assumes** the opponent opened center-center and
+  starts at our reply to it. Any other first move means no book in that game.
 
-That is 20,883 positions after merging those equivalent under the 8 board
-symmetries and transpositions. Each book move is the engine's choice after a
-2-second search (depth about 18), against about depth 11-12 in the 90 ms the
-bot has per move.
+Inside the tree, the book covers the opponent replies a strong independent
+engine considers **reasonable**: those uttt.ai's policy network (the
+CodinGame-rules fork, net4) gives prior 0.03 or more. Other replies leave the
+book, and the bot's normal search takes over. Lines are grown best-first by
+their estimated chance of being reached, so likely lines run deep (to ply 18)
+and unlikely ones stop early. Our move in each position is uttt.ai's after a
+3,200-simulation search, unless crossfish (500 ms) prefers another move and
+scores uttt.ai's more than 500 worse; it vetoed 3.3% of moves.
+
+| | |
+| --- | --- |
+| Our positions | 34,066 (after merging symmetric and transposed positions) |
+| Opponent positions expanded | 6,033 |
+| Deepest line | ply 18 |
+| Book moves per game (3,000 games vs the plain engine) | 6.0 moving first, 6.2 moving second |
 
 In book, the bot still runs its normal 90 ms search before playing the book
 move. That warms its transposition, history and correction tables for the
 moves after the book ends, and it is exactly how the book was tested.
 
-## Why full coverage, not likely lines
+## Why uttt.ai's reasonable replies
 
-Chess books cover a few likely lines deeply because a chess position has 30+
-legal moves and a handful cover almost all serious play. Ultimate Tic-Tac-Toe
-opponents usually have 9 or fewer replies, and engine replies are hard to
-predict: in early positions the engine's own 90 ms choice was the top-ranked
-reply under a depth-12 search only 29% of the time, and among the top five
-only 84%. A selective book therefore loses a large share of games at every
-level, and the losses compound.
+The previous book covered **every** reply to a fixed depth (our first 5 moves
+moving first, 4 moving second), because the selective books tried before it
+did not transfer: a pilot that pruned replies with crossfish's own depth-12
+ranking left the book after about three moves (crossfish's 90 ms reply was that
+ranking's top choice only 29% of the time), and a book grown from crossfish's
+self-play was worth +38.5 against crossfish but about 0 against a different
+engine, because it had learned one opponent's replies.
 
-Measured history (all at 90 ms from the start position, CodinGame protocol):
+uttt.ai's policy predicts what *other* engines play far better. Over 500 early
+positions from mixed play by five engines, the share of each engine's reply
+inside uttt.ai's reasonable set (`cg/analysis/book_coverage.py` in the
+[uttt.ai fork](https://github.com/nathanWolo/utttai/tree/codingame-rules)):
 
-| Book | vs | Book moves / game (first / second) | Book value |
-| --- | --- | --- | ---: |
-| Selective pilot (margin pruning, 2,506 positions) | current engine | 3.2 / 3.1 | +12 ± 17 |
-| Grown on-policy from self-play (6,506 positions) | current engine | 6.8 / 8.0 | +38.5 ± 11.0 |
-| same | diverse opponent (paired) | 6.2 / 4.0 | ~+21 |
-| same | round-six engine (paired) | 2.5 / 3.0 | ~0 |
-| **Full coverage (20,883 positions)** | **round-six engine (paired)** | **5.0 / 4.0** | **+21.3** |
-| **Full coverage, second run (shipped packed book, new seed)** | **round-six engine (paired)** | **5.0 / 4.0** | **+19.5** |
-| **Full coverage** | **current engine, 3,000 games** | **5.0 / 4.0** | **+19.6 ± 11.1** |
-| **Full coverage, extension (shipped packed book)** | **current engine, 1,500 games** | **5.0 / 4.0** | **+17.2 ± 15.7** |
+| Prior threshold | Set size (of ~9) | crossfish | crossfish HCE bot | Legend bot | legacy Python bot |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.02 | 7.2 | 99.8% | 99.8% | 99.6% | 87% |
+| **0.03** | **6.7** | **99.4%** | **98.8%** | **98.4%** | **77%** |
+| 0.05 | 5.6 | 92% | 93% | 92% | 68% |
 
-The two head-to-head runs pool to **+18.8 ± 9.1** over 4,500 games
-(1915-913-1672), LLR 3.67 against H0=0 / H1=+5: a pass under the repo's SPRT
-bounds. The two round-six runs pool to about +20 over 2,000 openings.
+At 0.03 the book drops about a fifth of the replies at every opponent move
+while missing 1-2% of what three unrelated competent engines play; replies
+outside the set are mostly weak, and the bot's search handles them. The space
+saved, and not spending the second-player book on 80 first moves other than
+center-center, pay for lines far deeper than full coverage can reach. uttt.ai
+also chooses the early moves better: in 300 opening positions its 90 ms move
+beat crossfish's where the two engines' deep searches agreed on which was
+better (75 to 24).
 
-The on-policy book looked strong only against the engine it was grown from:
-it had learned that opponent's replies. Against a different engine it fell
-out of book after two or three moves and gained nothing. Full coverage is
-opponent-independent by construction, so it is the version that transfers to
-CodinGame, where opponents are other people's engines.
+## Measured strength
 
-"Paired" runs play every opening twice, with and without the book, against
-the same opponent; the book's value is the Elo difference. Each side of a
-1,000-opening paired run has a 95% interval of about ±19, so a single paired
-difference is about ±27.
+Old (full coverage) and new book, identical engine, seeds and 90 ms, through
+`play_book_match`:
+
+| Match | Old book | **uttt.ai book** |
+| --- | ---: | ---: |
+| Mode 0: book vs plain engine, 3,000 games | +18.7 ± 11.1 | **+99.4 ± 11.2** |
+| Mode 1: diverse opponent (off-center half the time), 1,000 paired openings: book value | +16.3 | **+62.8** |
+| Mode 2: round-six engine, 1,000 paired openings: book value | +12.2 | **+50.1** |
+| Book moves per game, first / second (mode 2) | 5.0 / 4.0 | 5.3 / 6.7 |
+
+A paired book value is about ±27 at 1,000 openings. Mode 2 is the transfer
+test the previous selective books failed: a different engine, and the book
+still gains four times as much. Mode 1 shows the cost of the center-center
+assumption: when the opponent opens elsewhere there is no book, and the
+second player averaged 3.4 book moves, yet the book value still quadrupled.
+
+Against uttt.ai itself, from the empty board (the crossfish CodinGame bot with
+each book vs uttt.ai net4, 90 ms each, one game at a time; crossfish opens
+center-center when first, uttt.ai samples its first two moves by visit count
+for variety and opened center-center in all 200 of its first-move games):
+
+| | crossfish W / D / L | Elo | book moves (first / second) |
+| --- | ---: | ---: | ---: |
+| Old book | 257 / 44 / 99 | +145 ± 35 | 5.0 / 4.0 |
+| **uttt.ai book** | **314 / 18 / 68** | **+249 ± 42** | **6.6 / 8.9** |
+
+This is the setting most favourable to the new book: its moves are uttt.ai's own
+deep choices and uttt.ai's replies are covered by construction. The games are
+also less varied than 400 suggests (about 60 distinct lines through ply 8), so
+the interval is optimistic; mode 2 above is the engine-independent evidence.
 
 ## Size and cost
 
-Full coverage needs no position keys. `PbWalker` (in `play_book.hpp`) visits
-the book's positions in one fixed order: our positions in turn, every legal
-opponent reply in move-generation order, symmetric and transposed duplicates
-skipped. The payload stores only each book move's index among the legal moves
-at that position, packed in mixed radix (a 9-way choice costs log2 9 bits) in
+Positions need no keys. `PbWalker` (in `play_book.hpp`) visits the book in one
+fixed order and the payload holds only mixed-radix digits: at each of our
+positions, the book move's index among the legal moves and a 0/1 "the book
+continues" digit; at each opponent position the book continues from, one 0/1
+"covered" digit per reply that does not end the game. The digits are packed in
 56-bit chunks and carried as CJK14 text like the network weights
 ([minification.md](minification.md) section 4).
 
 | | |
 | --- | --- |
-| Positions | 20,883 |
-| Information content | 63,053 bits |
-| Payload | 8,148 bytes, 4,656 characters |
-| Whole feature in `cg_input.cpp` | +8,312 characters (74,043 total, 25,957 left) |
-| Decode at startup | about 5 ms, inside the 1,000 ms first turn |
-
-Each extra move of full coverage multiplies the book by about 8: covering one
-more move per side would take roughly 9 hours of generation per side and about
-16,000-18,000 more characters.
+| Information content | 184,846 bits |
+| Payload | 23,548 bytes, 13,456 characters (the full-coverage book: 4,656) |
+| `cg_input.cpp` | 90,095 characters, 9,905 left |
+| Decode at startup | about 9 ms, inside the 1,000 ms first turn |
 
 The packer (`play_book_pack.cpp`) and the runtime drive the same `PbWalker`,
 so their order cannot drift. At runtime the walk rebuilds a table from a
@@ -95,30 +126,48 @@ returns it if it is legal in the actual position.
 | `cpp_impl/play_book.hpp` | Runtime: canonical hash, walk, decoder, lookup. Shipped. |
 | `cpp_impl/play_book_data.hpp` | Generated payload. Shipped. Do not edit. |
 | `cpp_impl/play_book_text.hpp` | Text book format and string-keyed symmetry helpers for the tools. |
-| `cpp_impl/play_book_gen.cpp` | Generates the text book. |
-| `cpp_impl/play_book_pack.cpp` | Packs the text book into `play_book_data.hpp`. |
+| `cpp_impl/play_book_pack.cpp` | Packs a text book into `play_book_data.hpp`. |
 | `cpp_impl/play_book_check.cpp` | Decodes the payload and checks every entry against the text book. |
+| `cpp_impl/play_book_gen.cpp` | Generates a full-coverage book with crossfish's own search (the previous method). |
 | `cpp_impl/play_book_match.cpp` | Book-vs-no-book matches on the shipped book. |
-| `tools/play_book_protocol_check.py` | Plays the CodinGame binary through the real protocol against a random opponent. |
+| `tools/play_book_protocol_check.py` | Plays the CodinGame binary through the real protocol. |
+| `cg/book/uttt_book_gen.py` ([uttt.ai fork](https://github.com/nathanWolo/utttai/tree/codingame-rules)) | Generates the shipped book; `cg/book/uttt_book_v1.txt` is its text. |
+
+## The text book
+
+The text book lists only **our** positions. A reply is covered when it leads to
+one of them, and the book continues after our move when any reply does; there
+are no separate coverage records. Two line forms are accepted:
+
+- `<key> <mb> <sq> <score> <ply> <prob>`: a canonical key and the move in
+  canonical orientation (what `play_book_gen` writes);
+- `S <seq> <move>`: the position reached from the empty board by `seq`
+  (comma-separated cells, `mb * 9 + sq`) and our move there, in real
+  orientation. The packer replays and keys it, so an external generator never
+  has to reproduce the canonical key.
 
 ## Regenerating the book
 
-Regenerate when the engine changes enough that its deep choices would differ,
-or to change the depths.
+The shipped book needs the uttt.ai fork (its GPU toolchain and net4):
 
 ```bash
-make -C cpp_impl play-book-gen      # ~1.7 h on 7 threads; writes cpp_impl/bin/play_book.txt
+# in the uttt.ai fork's cg/ directory
+python book/uttt_book_gen.py book/uttt_book_v2.txt --cf crossfish_cg_debug.exe --chars 13000
+# about 1.8 h on the reference machine (GPU search plus 7 crossfish threads)
+
+cp <that text book> cpp_impl/bin/play_book.txt
 make -C cpp_impl play-book          # pack + check against the text book
 make -C cpp_impl test               # update the pinned table checksum in test_play_book first
 make -C cpp_impl cg-input
-make -C cpp_impl play-book-protocol # exact book coverage through the real protocol
+make -C cpp_impl play-book-protocol # exact book use through the real protocol
 ```
 
-Change `PLAY_BOOK_FIRST` / `PLAY_BOOK_SECOND` / `PLAY_BOOK_SEARCH_MS` in the
-Makefile to change the depths or the search time; the packer fails if the
-depths do not match the book it is given. `cg_selfcheck` also prints the
-decoded table's entry count and checksum, which must equal the local build's
-(`play_book_check` prints the same checksum).
+`--chars` sets the payload budget (the packed result lands within a few percent
+of it), `--cover` the prior threshold, `--sims` uttt.ai's search, and
+`--cf-ms` / `--veto` crossfish's veto. `make -C cpp_impl play-book-gen` still
+writes a full-coverage book with crossfish's own search, in the same format.
+`cg_selfcheck` also prints the decoded table's entry count and checksum, which
+must equal the local build's (`play_book_check` prints the same checksum).
 
 ## Testing a book change
 
@@ -144,3 +193,6 @@ g++ -O3 -std=c++17 -mavx2 -mbmi -mbmi2 -mlzcnt -mpopcnt -pthread -I. -I/tmp/opp 
     -DPLAY_BOOK_OPPONENT_HEADER='"crossfish_old.hpp"' -o bin/play_book_match_old play_book_match.cpp
 bin/play_book_match_old 1000 2
 ```
+
+To compare two books fairly, build `play_book_match` from each (a git worktree
+of the old revision works) and run the same modes with the same seed.

@@ -369,20 +369,21 @@ implementation, and validation procedure.
 
 ## Opening book
 
-The CodinGame bot plays its first moves from a full-coverage opening book,
-`cpp_impl/play_book_data.hpp`: every opponent reply is covered for our first 5
-moves after the center-center opening when moving first, and our first 4
-moves when moving second. Book moves come from 2-second searches, against the
-90 ms the bot otherwise has. It is 20,883 positions in 4,656 characters,
-stored without keys as move indices along a fixed walk of the book.
+The CodinGame bot plays its first moves from an opening book chosen by
+uttt.ai, `cpp_impl/play_book_data.hpp`: a tree after the first player's
+center-center (moving second, the book assumes the opponent opened there) that
+covers the replies uttt.ai's policy rates at 0.03 or more, grown deepest along
+the likeliest lines (to ply 18). Our moves are uttt.ai's after a
+3,200-simulation search, with a crossfish veto. It is 34,066 positions in 13,456
+characters, stored without keys as digits along a fixed walk of the book.
 
-It measured **+18.8 ± 9.1 Elo** head-to-head over 4,500 games from the start
-position (LLR 3.67, H0=0 / H1=+5) and about +20 in paired runs against the
-round-six engine, which it was not built from. It covers every game to the
-designed depth regardless of the opponent. A book
-grown from the lines our own engine plays looked better at home (+38) but fell
-out of book immediately against a different engine. Design, measurements and
-the regeneration procedure are in `documentation/play_book.md`.
+Against the previous full-coverage book (same engine, 90 ms): **+99.4 ± 11.2**
+vs +18.7 ± 11.1 head-to-head against the plain engine over 3,000 games, and a
+paired book value of **+50.1 vs +12.2 against the round-six engine**, which it
+was not built from. uttt.ai's reasonable replies hold 98-99% of what three
+unrelated engines play, which is why this selective book transfers where
+earlier ones did not. Design, measurements and the regeneration procedure are
+in `documentation/play_book.md`.
 
 ## Latest strength result
 

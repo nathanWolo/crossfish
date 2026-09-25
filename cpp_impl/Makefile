@@ -137,7 +137,7 @@ play-book-gen: $(BIN)/play_book_gen
 	$(BIN)/play_book_gen $(PLAY_BOOK_TXT) $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND) $(PLAY_BOOK_SEARCH_MS)
 
 play-book: $(BIN)/play_book_pack
-	$(BIN)/play_book_pack $(PLAY_BOOK_TXT) $(SRC_DIR)/play_book_data.hpp $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND)
+	$(BIN)/play_book_pack $(PLAY_BOOK_TXT) $(SRC_DIR)/play_book_data.hpp
 	$(MAKE) play-book-check
 
 play-book-check: $(BIN)/play_book_check
@@ -147,7 +147,7 @@ play-book-match: $(BIN)/play_book_match
 	$(BIN)/play_book_match 3000 0
 
 play-book-protocol: $(BIN)/cg_input
-	cd $(ROOT) && $(PYTHON) tools/play_book_protocol_check.py $(BIN)/cg_input 40
+	cd $(ROOT) && $(PYTHON) tools/play_book_protocol_check.py $(BIN)/cg_input 40 24 --book $(PLAY_BOOK_TXT)
 
 verify: $(BIN)/test_bots
 	$(BIN)/test_bots verify
