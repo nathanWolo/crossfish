@@ -383,7 +383,7 @@ This section is the other half of the history. Retrying these without a new hypo
 - SPSA over the six HCE global weights: after 3,300 pairs at 25 ms every
   weight was within 3% of its value. Not worth an SPRT.
 - Full Stockfish-style NNUE replacing HCE + MiniNet + macro, including a
-  data-scaling study and qsearch-leaf training data: see section 52.
+  data-scaling study and qsearch-leaf training data: see section 53.
 - Every SPRT walks the book in the same order, so near-identical engines
   share early noise; three unrelated candidates read -11 to -13 near N=600.
   Use `SPRT_GAME_OFFSET` for independent early readings.
@@ -2244,7 +2244,129 @@ per-node state) rather than another local rewrite.
 
 ---
 
-## 51. Close the rest of the CodinGame-flags gap (24 September 2026)
+## 51. Keep eval pruning away from mate-range bounds (24 September 2026)
+
+Found from outside the SPRT: in a 1,000-game match against a CodinGame-rules
+uttt.ai network, 155 of crossfish's 21,780 searched moves (in 146 games)
+reported a root score between 20,000 and 90,000. That is neither an eval nor a
+mate score (mates are `±(99999 - ply)`). The values clustered at 51,566-51,570,
+which is `99969 - 48400`: a mate score minus the sum of four aspiration
+widenings (400 + 1,200 + 3,600 + 10,800 + 32,400).
+
+### What was wrong
+
+A per-iteration trace of one such position (a forced win in 30) showed every
+depth failing low five times before a wide re-search found the same mate:
+
+```text
+depth 29  window [99569, 100369] -> 99569 FAIL-LOW
+depth 29  window [98369, 100369] -> 98369 FAIL-LOW
+...
+depth 29  window [-45631, 100369] -> 99969            (inside the first window)
+```
+
+74 of 197 iterations in a 3-second search were such mate-window fail-lows,
+and when the 90 ms clock ran out inside a cascade the root reported the
+widened bound (51,569) as its score. With eval pruning disabled the same
+search had none.
+
+The cause is three prunes that compare the static eval with the window:
+
+- **Reverse futility** returns beta when `static_eval - margin >= beta`.
+  With beta at -99,569 any ordinary eval passes, so the node claims to escape
+  the mate without searching.
+- **Futility pruning** skips quiet moves when `static_eval + margin <= alpha`.
+  With alpha at +99,569 it skips every quiet move, including the one that
+  mates sooner.
+- **qsearch delta pruning** does the same for captures.
+
+A static eval says nothing about how soon anyone is mated, so the three prunes
+now run only against bounds outside mate range: reverse futility needs
+`|beta| < CORR_MATE_BOUND`, futility `|alpha| < CORR_MATE_BOUND`, delta
+pruning `alpha < CORR_MATE_BOUND`. Stand-pat is unchanged.
+
+### Measurement
+
+The change alters the tree wherever a mate score appears in it: `bench_ab
+equiv 80 8` differs in 65 of 80 positions, at +1.1% nodes and -0.6% time
+(`bench_ab nodes 120 8`). The symptom, on crossfish turns from recorded games
+searched fresh at 90 ms (`cg/tools/mate_window_probe.py` in the uttt.ai fork):
+
+| | before | after |
+| --- | ---: | ---: |
+| traced position: mate-window fail-lows in 3 s | 74 | 0 |
+| after a mate score (150 positions): searches with any | 20 | 1 |
+| middlegame (150 positions): searches with any | 5 | 0 |
+| bound reported as the score | 2 | 0 |
+| median depth, middlegame | 18 | 18 |
+
+Middlegame move choices differed in 9 of 150 positions, inside the 12 of 150
+that the unchanged build differs from itself at 90 ms; after a mate score
+they differed in 17 of 150 against 1 of 150 for the unchanged build, as the
+search now finds shorter mates (mate in 20 rather than 30 on the traced
+position).
+
+This is a bug fix, so it was gated for **non-regression** (H0 = -5, H1 = 0)
+rather than the +5 bar a search change normally needs. SPRT at 90 ms against
+the round-eleven freeze, six workers on eight physical cores:
+
+```text
+N 2880  W 801 / D 1354 / L 725
+Penta 63 / 345 / 569 / 379 / 84
++9.17 +/- 8.56 Elo
+LLR +3.055 (H0=-5, H1=0) — PASS
+Timeouts: Prev 0 / Dev 0   Maximum response: 90.14 ms / 90.15 ms
+Prev NPS 30,783,360  Dev NPS 31,464,192
+```
+
+A run at the usual bar (H0 = 0, H1 = +5) on fresh openings (`SPRT_GAME_OFFSET=1440`)
+was stopped undecided:
+
+```text
+N 10488  W 2773 / D 5048 / L 2667
+Penta 263 / 1274 / 2094 / 1320 / 293
++3.51 +/- 4.51 Elo
+LLR +0.957 (H0=0, H1=+5) — stopped, undecided
+Timeouts: Prev 0 / Dev 0
+```
+
+Over both runs (13,368 games) the fix measures about +4.7 Elo: a small gain,
+too small to clear +5 in reasonable time, and shipped as a correctness fix.
+
+The CodinGame performance gate (section 47's compiler, `tools/cg_perf_gate.py`)
+passed against `main` with g++ 11.2: nodes per millisecond at full budget
+0.968 [0.936, 1.000] (the candidate now uses its full budget on 93% of replies
+against 71%, adding won positions the old build left early, so the two sets of
+replies differ); inlining 96% of `-O3`; later replies p99 90.1 ms with none at
+or over 100 ms; smoke match 58-77-65 with no timeouts; 40/40 book games.
+
+### Port
+
+The same three guards went into `codingame_nnue.cpp`. A tree-changing port
+cannot be checked by `cg_selfcheck` against itself, so `engine_selfcheck.cpp`
+runs `cg_selfcheck`'s positions and checksum over `CrossfishDev` or
+`CrossfishPrev`: the unported CG file matched Prev at depths 7 and 9, and the
+ported file matches Dev at depths 5, 7, 9 and 11 (and the no-rename minified
+bundle at 7 and 9). `make -C cpp_impl port-check` repeats that comparison.
+`cg_input.cpp`: 80,617 characters (19,383 left). The protocol check kept 40/40
+exact book games, first turn at most 187 ms, later replies median 90.1 ms and
+max 90.2 ms.
+
+### Not fixed
+
+A rarer fault remains: occasional wrong proofs with state carried between
+moves. In one 1-second game crossfish played a move it scored as a forced win
+(+99,976) that a fresh search proves lost; in a 90 ms game it reported a
+forced loss (-99,977) in a position a fresh search proves won, and then
+played the losing move. Neither reproduces from a fresh engine, and replaying
+the game's history reproduced one of them in 1 of 15 tries, so it depends on
+table state and timing. This change does not show whether it helps; the
+probes to chase it (a traced debug build with THINK, PV and switches for each
+pruning and shortcut) are in the uttt.ai fork's `cg/tools/`.
+
+---
+
+## 52. Close the rest of the CodinGame-flags gap (24 September 2026)
 
 Section 47's transform only matched function signatures that fit on one
 line, so every signature wrapped across lines was skipped, and the
@@ -2330,7 +2452,7 @@ of median 90.2 ms, max 91.6 ms, with exact book coverage (30/30).
 
 ---
 
-## 52. A full Stockfish-style NNUE, and whether data fixes it (24 September 2026)
+## 53. A full Stockfish-style NNUE, and whether data fixes it (24 September 2026)
 
 The CJK14 repack left room for a larger network, so this round asked whether
 a Stockfish-style NNUE can replace the whole evaluation (HCE, MiniNet and the

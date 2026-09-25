@@ -1,6 +1,6 @@
 # Full-evaluation NNUE experiment (round ten, not shipped)
 
-Code for improvement log section 52: a Stockfish-style NNUE replacing
+Code for improvement log section 53: a Stockfish-style NNUE replacing
 HCE + MiniNet + macro. It lost at equal depth in every configuration, so
 nothing here is used by the engine. It is kept so the direction can be
 resumed without rebuilding the pipeline.

@@ -43,6 +43,7 @@ shipped opening book, and compiles the CodinGame binaries
 | `make test-python` | Independent Python board perft / make-undo / winners (`python_impl/test_rules.py`), plus `tools/test_*.py` |
 | `make verify` | The older smoke checks inside `test_bots.cpp`, then exit (no SPRT) |
 | `make -C cpp_impl bench` | Proves a speed-only change is tree-identical: fresh engine per position, identical scores **and** node counts, plus node counts and wall time |
+| `make -C cpp_impl port-check` | Proves `codingame_nnue.cpp` searches exactly like Dev (fixed-depth scores and node counts at depths 5, 7, 9), for tree-changing ports too |
 | `make sprt` | Strength: Dev vs Prev self-play with SPRT at **90 ms** (slow, noisy) |
 | `make book-inspect` | Validate and summarize the shipped 10k-position SPRT opening book |
 | `make opening-book` | Regenerate the depth-16-qualified opening book (slow; normally do not run) |
@@ -385,6 +386,30 @@ the regeneration procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
+On 2026-09-24 a search bug fix landed: reverse futility, futility and qsearch
+delta pruning no longer run against mate-range bounds, where comparing a static
+eval with the window is meaningless. After a mate score, every aspiration
+iteration used to fail low four or five times before a wide re-search found the
+same mate, and a search that ran out of time inside that cascade reported the
+widened bound (such as 51,569) as its score. **As a bug fix it was gated for
+non-regression**, not the +5 bar:
+
+```text
+90 ms: N 2880 W 801 D 1354 L 725
+Penta: 63 / 345 / 569 / 379 / 84
+Elo diff: +9.17 +/- 8.56
+LLR: +3.055 (H0=-5, H1=0) — PASS
+Timeouts: Prev=0 Dev=0
+```
+
+A run at H0=0/H1=+5 on fresh openings stopped undecided at N=10488,
++3.51 +/- 4.51 Elo (LLR +0.957); both runs together measure about +4.7 Elo.
+The CodinGame performance gate passed under g++ 11.2, and the port matches Dev
+exactly (`make -C cpp_impl port-check`). See section 51 of the improvement log.
+Paste `cpp_impl/cg_input.cpp` (80,617 characters, 19,383 below the limit).
+
+The round before it:
+
 On 2026-09-24, round eleven passed the official 90 ms SPRT against the
 round-ten freeze (`109e2b7`), again with a bit-identical tree:
 
@@ -448,10 +473,10 @@ first turn max 187 ms; later moves median 90.2 ms, max 90.9 ms
 ```
 
 The local Dev-vs-Prev SPRT compiles both engines at `-O3` and cannot see
-this gain. A follow-up (improvement log section 51) inlined the remaining
+this gain. A follow-up (improvement log section 52) inlined the remaining
 hot-path calls: the CodinGame-flags build went from 91.6% to 95.7% of the
 `-O3` build's speed on an identical tree (`make -C cpp_impl cg-speed`).
-`cg_input.cpp` is 77,647 characters (22,353 left).
+`cg_input.cpp` is 81,317 characters (18,683 left).
 
 On 2026-09-22, a tree-identical hot-path rewrite passed the official 90 ms
 SPRT against the round-eight freeze (`88c57b4`) with one of eight physical
