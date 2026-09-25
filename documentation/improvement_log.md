@@ -2214,3 +2214,65 @@ What is left of the profile is search control flow, make/unmake and move
 ordering, with the TT latency now hidden. The next speed gain probably needs
 a structural change (for example a specialised depth-1 node, or a smaller
 per-node state) rather than another local rewrite.
+
+
+## 52. An opening book chosen by uttt.ai (24 September 2026)
+
+Section 46's full-coverage book spent its characters on every reply, including
+replies no competent engine plays, and on all 81 first moves when moving
+second. This replaces it with a tree grown by uttt.ai, the AlphaZero-style
+engine retrained for CodinGame rules in the
+[uttt.ai fork](https://github.com/nathanWolo/utttai/tree/codingame-rules):
+
+- both roots follow the first player's center-center (the bot plays it; moving
+  second, the book assumes the opponent did);
+- opponent replies are covered when uttt.ai's network prior is at least 0.03;
+- lines are expanded best-first by estimated reach until a 13,000-character
+  budget is spent;
+- our moves are uttt.ai's after 3,200 simulations, with a crossfish veto (it
+  replaced 3.3% of them).
+
+Two measurements made the design. uttt.ai's policy predicts other engines'
+replies far better than crossfish's own ranking did for the rejected selective
+pilot: at prior 0.03 its reasonable set (6.7 of about 9 moves) held 99.4%,
+98.8% and 98.4% of the replies of crossfish, its HCE bot and the Legend bot,
+and 77% of the weak legacy Python bot's. And in 300 opening positions uttt.ai's
+90 ms move beat crossfish's 75 to 24 where deep searches of both engines agreed
+on which was better.
+
+The format changes with it: the payload now also carries a "continues" digit
+per book position and a "covered" digit per non-terminal reply at each
+expanded opponent position (`documentation/play_book.md`). The book holds
+34,066 of our positions (was 20,883) in 13,456 payload characters (was 4,656);
+`cg_input.cpp` is 89,354 characters. `play_book_check` found 0 mismatches and
+the protocol check, now exact against the text book, passed 40/40.
+
+Old and new book, same engine, seeds and 90 ms (`play_book_match`):
+
+| Match | Old book | uttt.ai book |
+| --- | ---: | ---: |
+| vs plain engine, 3,000 games | +18.7 ± 11.1 | +99.4 ± 11.2 |
+| diverse opponent, paired book value (1,000 openings) | +16.3 | +62.8 |
+| round-six engine, paired book value (1,000 openings) | +12.2 | +50.1 |
+
+The round-six run is the transfer test the earlier selective books failed; the
+new book stayed in book 5.3 / 6.7 moves per game (first / second) against it,
+against 5 / 4 for the old one. The cost of the center-center assumption shows in
+the diverse run, whose opponent opens elsewhere half the time: the second
+player then has no book, averaging 3.4 book moves, and the book value still
+quadrupled.
+
+Against uttt.ai itself, from the empty board (the crossfish CodinGame bot with
+each book vs uttt.ai net4, 90 ms each, one game at a time; crossfish opens
+center-center when first, uttt.ai samples its first two moves by visit count
+for variety and opened center-center in all 200 of its first-move games):
+
+| | crossfish W / D / L | Elo | book moves (first / second) |
+| --- | ---: | ---: | ---: |
+| Old book | 257 / 44 / 99 | +145 ± 35 | 5.0 / 4.0 |
+| **uttt.ai book** | **314 / 18 / 68** | **+249 ± 42** | **6.6 / 8.9** |
+
+This is the setting most favourable to the new book: its moves are uttt.ai's own
+deep choices and uttt.ai's replies are covered by construction. The games are
+also less varied than 400 suggests (about 60 distinct lines through ply 8), so
+the interval is optimistic; mode 2 above is the engine-independent evidence.
