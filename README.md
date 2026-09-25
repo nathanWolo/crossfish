@@ -13,6 +13,7 @@ Detailed project documentation:
 
 - [Engine improvement log](documentation/improvement_log.md): the chronological
   record of every accepted and rejected experiment, with its gate
+- [Handcrafted evaluation and correction history](documentation/hce_and_correction_history.md)
 - [NNUE training and runtime implementation](documentation/nnue_training_and_implementation.md)
 - [CodinGame submission and minifier](documentation/minification.md)
 - [Gameplay opening book](documentation/play_book.md): the book the CodinGame bot plays from
@@ -499,6 +500,7 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `tools/nnue_*.py` — MiniNet and macro-head training and header emitters; `tools/experiments/full_nnue/` archives the rejected full-NNUE study (log §53)
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting
 - `documentation/improvement_log.md` — chronological accepted and rejected engine experiments
+- `documentation/hce_and_correction_history.md` — the handcrafted evaluation's features, tables and incremental updates, and the three correction histories
 - `documentation/nnue_training_and_implementation.md` — data, training, packing, and runtime details for the learned evaluator
 - `documentation/opening_book.md` — SPRT book selection, binary format, validation, and versioning policy
 - `documentation/play_book.md` — the gameplay opening book: design, measurements, regeneration

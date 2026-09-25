@@ -70,7 +70,8 @@ Three correction histories are learned online during search, each an exact
 table of running static-eval errors: a structural one keyed by side to move,
 forced miniboard and the decided-miniboard mask; one keyed by the shape of the
 forced miniboard; and one keyed by the 18-bit macro state (improvement log
-sections 14, 33 and 42).
+sections 14, 33 and 42). [hce_and_correction_history.md](hce_and_correction_history.md)
+describes the HCE and these tables in detail.
 
 The full public evaluator used by tests and probes is:
 
