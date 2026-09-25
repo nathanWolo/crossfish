@@ -131,8 +131,11 @@ book-inspect: $(BIN)/test_bots
 
 test: test-cpp test-python compile-cg compile-legend book-inspect
 
-# Opening book. play-book-gen takes ~1.7 h on 7 threads; play-book packs the
-# text book into play_book_data.hpp and checks the result against it.
+# Opening book (documentation/play_book.md). The shipped book's text comes from
+# the uttt.ai fork (cg/book/uttt_book_gen.py); copy it to $(PLAY_BOOK_TXT).
+# play-book-gen instead writes a full-coverage book with crossfish's own search
+# (the previous method, ~1.7 h on 7 threads). play-book packs the text book
+# into play_book_data.hpp and checks the result against it.
 play-book-gen: $(BIN)/play_book_gen
 	$(BIN)/play_book_gen $(PLAY_BOOK_TXT) $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND) $(PLAY_BOOK_SEARCH_MS)
 
