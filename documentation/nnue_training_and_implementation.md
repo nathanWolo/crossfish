@@ -1,7 +1,9 @@
 # NNUE training and runtime implementation
 
-This document describes the learned evaluation stack shipped in the round-seven
-Crossfish engine. It covers the data format, teacher-label generation, feature
+This document describes the learned evaluation stack Crossfish has shipped
+since round seven. The network weights have not changed since then; the
+runtime around them was made faster in rounds nine and ten (improvement log
+sections 44 and 48) without changing any score. It covers the data format, teacher-label generation, feature
 encoding, PyTorch models, training objectives, checkpoint formats, compression,
 generated C++ headers, runtime evaluation, and strength validation.
 
@@ -36,10 +38,16 @@ Crossfish has experimented with several learned evaluators:
 - a sparse 199-feature dual-accumulator network;
 - the D8/H4 MiniNet that first shipped as an HCE residual;
 - the current D16/H8 MiniNet;
-- a separate macro-context residual head.
+- a separate macro-context residual head;
+- a full Stockfish-style NNUE (199 features, 256-wide accumulator) that
+  replaced HCE, MiniNet and macro together. It fitted holdout labels better
+  and lost 193-296 Elo at equal depth; improvement log section 53 and
+  `tools/experiments/full_nnue/` record it.
 
 The current local MiniNet is evaluated from the board at selected search nodes,
-but its first layer is heavily preprojected. The macro network is reduced to an
+but its first layer is heavily preprojected, and the two pieces of its input
+that change rarely (each miniboard's centroid code and the decided-miniboard
+term) are kept up to date by make/unmake. The macro network is reduced to an
 exact table lookup whose key is maintained incrementally. The HCE itself also
 has an incremental local-board accumulator.
 
@@ -58,6 +66,13 @@ Let:
 - `R_macro(p)` be the macro-context output;
 - `C(p)` be the search correction-history adjustment.
 
+Three correction histories are learned online during search, each an exact
+table of running static-eval errors: a structural one keyed by side to move,
+forced miniboard and the decided-miniboard mask; one keyed by the shape of the
+forced miniboard; and one keyed by the 18-bit macro state (improvement log
+sections 14, 33 and 42). [hce_and_correction_history.md](hce_and_correction_history.md)
+describes the HCE and these tables in detail.
+
 The full public evaluator used by tests and probes is:
 
 ```text
@@ -65,7 +80,7 @@ E(p) = H(p) + R_local(p) + R_macro(p)
 ```
 
 The qsearch stand-pat path additionally applies the structural correction
-history:
+history only (the cheapest of the three):
 
 ```text
 stand_pat(p) = H(p) + C(p) + R_local(p) + R_macro(p)
@@ -82,9 +97,12 @@ exact value cannot matter:
 
 `MINI_MAX` is 8000 and `MACRO_CLIP` is 2000 in the shipped engine.
 
-Interior reverse-futility pruning normally uses corrected HCE. At depth one, a
-selective second check evaluates the D16 local head before pruning a borderline
-fail-high. The macro residual is not paid on that interior pruning path.
+Interior reverse-futility pruning normally uses HCE corrected by all three
+histories. At depth one, a selective second check evaluates the D16 local head
+before pruning a borderline fail-high. The macro residual is not paid on that
+interior pruning path. Reverse futility, futility and qsearch delta pruning do
+not run against mate-range bounds at all, where a static eval says nothing
+(improvement log section 51).
 
 Relevant runtime files:
 
@@ -611,10 +629,10 @@ categorical choice, so the emitter/runtime preprojects those terms once.
 The shipped tables are:
 
 ```text
-FACTOR_INIT[constraint][hidden]
-FACTOR_CODE[miniboard][centroid][hidden]
-FACTOR_SUPER[miniboard][super_class][hidden]
-FACTOR_ACTIVE[miniboard][hidden]
+D16_MN_FACTOR_INIT[constraint][hidden]
+D16_MN_FACTOR_CODE[miniboard][centroid][hidden]
+D16_MN_FACTOR_SUPER[miniboard][super_class][hidden]
+D16_MN_FACTOR_ACTIVE[miniboard][hidden]
 ```
 
 `FACTOR_CODE` includes the common live/inactive local contribution.
@@ -625,11 +643,10 @@ Every projection is rounded to int32 with a fixed scale of 192. Runtime
 inference is approximately:
 
 ```text
-hidden = FACTOR_INIT[constraint]
+hidden = FACTOR_INIT[constraint] + super_acc[side_to_move]
 
 for each miniboard:
-    hidden += FACTOR_CODE[miniboard][centroid_code]
-    hidden += FACTOR_SUPER delta if won/drawn
+    hidden += FACTOR_CODE[miniboard][mini_code[side_to_move][miniboard]]
 
 if a miniboard is forced:
     hidden += FACTOR_ACTIVE[forced_miniboard]
@@ -638,6 +655,19 @@ output =
     b2
     + dot(W2, ReLU(float(hidden))) / 192
 ```
+
+Two inputs are maintained by the search rather than looked up per leaf:
+
+- `mini_code[perspective][miniboard]` caches each miniboard's centroid code
+  (round nine). Only the miniboard a move is played in can change, so make
+  updates two bytes and unmake restores them.
+- `super_acc[perspective]` is the running sum of `FACTOR_SUPER` over all nine
+  miniboards (round ten). It changes only when a miniboard becomes decided,
+  exactly where the macro key changes. This is exact because the live-class
+  rows are exactly zero (each is `lround(x - x)`).
+
+This is deliberately not a full incremental accumulator: maintaining the whole
+hidden vector on every make/unmake was measured slower (section 1).
 
 All eight hidden lanes fit in one AVX2 vector. The main code table occupies
 72 KiB:
@@ -857,16 +887,20 @@ At the start of a search:
 For an ordinary move in a still-live miniboard:
 
 - local HCE state is updated;
-- no local MiniNet accumulator is maintained;
+- that miniboard's two cached centroid codes are refreshed;
 - no macro key changes.
 
 When a move wins or draws a miniboard:
 
 - the super-board state changes;
-- the cached out-of-play mask changes;
-- the relevant two-bit macro class is updated in both perspective keys.
+- the cached out-of-play mask and terminal flag change;
+- the relevant two-bit macro class is updated in both perspective keys, and
+  the matching `FACTOR_SUPER` rows are added to both `super_acc` sums.
 
-Unmake performs the exact inverse.
+Make records everything it overwrites (hash, HCE scores and threat maps, the
+miniboard's HCE entry, both centroid codes, active board, terminal flag and
+decided state) in a 32-byte undo record, and unmake restores from it rather
+than re-deriving each value (round ten).
 
 ### 10.3 Qsearch
 
@@ -908,15 +942,19 @@ python3 -c "s=open('cpp_impl/cg_input.cpp',encoding='utf-8').read(); print(len(s
 `tools/cg_minify.py --inline-local` recursively expands the local generated
 headers into `codingame_nnue.cpp`, then strips and renames the combined source.
 
-The current `cg_input.cpp` is 74,043 UTF-16 code units, leaving 25,957 below
-the 100,000-unit limit. `wc -c` reports bytes, which overstate the count
+The current `cg_input.cpp` is 90,095 UTF-16 code units, leaving 9,905 below
+the 100,000-unit limit; the evaluator payloads account for 26,247 of them and
+the opening book for 13,456. `wc -c` reports bytes, which overstate the count
 because each payload character is three UTF-8 bytes; the minifier prints the
 unit count. The lossless CJK14 payload encoding keeps both evaluator payloads
 compact; their decoded data remains byte-for-byte identical to the accepted
 round-seven networks.
 
 Always compile both the readable and minified sources. Packing bugs can preserve
-Python validation metrics while producing a broken submission.
+Python validation metrics while producing a broken submission. CodinGame
+compiles without `-O`, so a regenerated header must keep its hot helpers
+(`d16_mini_hsum256`, `evaluate_macro_key`) `always_inline`; the emitters write
+the attribute ([minification.md](minification.md) section 13).
 
 ## 12. Correctness and equivalence tests
 

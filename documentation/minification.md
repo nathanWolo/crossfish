@@ -2,22 +2,23 @@
 
 This document describes how Crossfish turns the readable local engine into the
 single C++ source file pasted into CodinGame. It covers the generated neural
-evaluation data, its textual encoding and runtime reconstruction, local-header
-bundling, the tokenizer and identifier renamer, output packing, and the checks
-required before shipping a regenerated submission.
+evaluation data and opening-book payload, their textual encoding and runtime
+reconstruction, local-header bundling, the tokenizer and identifier renamer,
+output packing, how CodinGame compiles the result, and the checks required
+before shipping a regenerated submission.
 
 The short version is:
 
 ```text
-accepted NN checkpoints
-        |
-        v
-generated evaluator headers
-  mini_eval_d16.hpp + macro_eval.hpp
-        |
-        +------ included by ------+
-                                 |
-codingame_nnue.cpp --------------+
+accepted NN checkpoints              gameplay text book
+        |                                    |
+        v                                    v
+generated evaluator headers          play_book_pack
+  mini_eval_d16.hpp + macro_eval.hpp   play_book_data.hpp (+ play_book.hpp)
+        |                                    |
+        +---------- included by -------------+
+                            |
+codingame_nnue.cpp ---------+
         |
         v
 inline repository-local headers
@@ -44,8 +45,10 @@ evaluator inputs, then regenerate it.
 | `tools/nnue_emit_mininet_header.py` | Converts an accepted D16/H8 checkpoint into `mini_eval_d16.hpp`. |
 | `tools/nnue_emit_macro_header.py` | Converts an accepted macro checkpoint into `macro_eval.hpp`. |
 | `tools/nnue_cjk14.py` | Deterministic 14-bits-per-character payload encoder and decoder shared by the emitters. |
+| `cpp_impl/play_book.hpp` / `play_book_data.hpp` | Gameplay opening book runtime and its generated CJK14 payload ([play_book.md](play_book.md)). |
 | `tools/cg_minify.py` | Bundles local headers, tokenizes C++, shortens identifiers, and emits one compact source file. |
 | `cpp_impl/cg_input.cpp` | Final generated file to paste into CodinGame. |
+| `tools/cg_perf_gate.py` | CI gate: checks the committed paste file is fresh, under the cap, and fast when built CodinGame's way (section 13). |
 
 The normal build entry point is:
 
@@ -172,7 +175,9 @@ table-building code appear in the source.
 ## 4. CJK14 payload encoding
 
 Both evaluator payloads use the deterministic encoder in
-`tools/nnue_cjk14.py`.
+`tools/nnue_cjk14.py`. The gameplay opening book packs its mixed-radix digits
+into the same CJK14 alphabet and decodes with the same decoder
+([play_book.md](play_book.md)).
 
 ### 4.1 Why not ASCII
 
@@ -277,12 +282,13 @@ Angle-bracket system includes are never inlined:
 #include <immintrin.h>
 ```
 
-This produces one translation unit containing the readable engine and both
-generated evaluator implementations. For the current submission:
+This produces one translation unit containing the readable engine, both
+generated evaluator implementations and the opening book. For the current
+submission:
 
 ```text
-readable codingame_nnue.cpp: 102,956 characters
-after local-header bundling: 176,729 characters
+readable codingame_nnue.cpp: 139,732 characters
+after local-header bundling: 204,984 characters
 ```
 
 The bundled form is intentionally larger than the readable source. Its purpose
@@ -339,8 +345,15 @@ The renamer does not touch:
 - names inside a `std::...` nested-name specifier;
 - known standard/container method names such as `data`, `size`, `push`, and
   `pop`;
-- compiler builtins beginning with `__`;
-- AVX intrinsic names beginning with `_mm` or `_MM`.
+- compiler builtins beginning with `__`, and `__attribute__` / `always_inline`
+  explicitly (renaming the attribute to a short name makes GCC ignore it with
+  only a warning, which silently undoes section 13);
+- AVX intrinsic names beginning with `_mm` or `_MM`;
+- `find`, `first` and `second`, which the code calls on standard containers
+  and pairs;
+- `j0`, `j1`, `jn`, `y0`, `y1` and `yn`, which glibc's `<math.h>` declares at
+  global scope as Bessel functions. A type renamed to one of them is hidden by
+  the function and the file stops compiling.
 
 Keeping standard method spellings globally also protects user-defined
 stack-like classes that expose methods such as `top()`, `push()`, and `pop()`.
@@ -364,7 +377,8 @@ a, b, ..., z, A, ..., Z, a_, aa, ab, ...
 ```
 
 The first character never starts with `_`. Every identifier spelling already
-present in the translation unit is treated as occupied, preventing collisions.
+present in the translation unit, and every reserved name above, is treated as
+occupied, preventing collisions.
 A mapping is applied only when its replacement is shorter.
 
 ### 7.3 Why the mapping is global
@@ -441,10 +455,10 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 120661 (bundled 176508)
--> cpp_impl/cg_input.cpp 74043
-saved 102465
-cap 25957 left
+cpp_impl/codingame_nnue.cpp 139732 (bundled 204984)
+-> cpp_impl/cg_input.cpp 90095
+saved 114889
+cap 9905 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
@@ -453,15 +467,18 @@ translation unit, not with the readable top-level source.
 Sizes are UTF-16 code units, which is what CodinGame counts. Everything
 outside the two payload literals is ASCII, and every payload character is one
 UTF-16 unit, so the unit count equals Python's `len`. It does not equal
-`wc -c`: each payload character is three UTF-8 bytes, and the file is 118,225
+`wc -c`: each payload character is three UTF-8 bytes, and the file is 169,501
 bytes. The CLI exits with failure when output is 100,000 units or larger.
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
 3,113. Replacing ASCII85 with CJK14 cut the two payloads from 57,414 to
 26,247 characters, bringing the submission to 65,731 with 34,269 left. The
-gameplay opening book ([play_book.md](play_book.md)) then added 8,312,
-for 74,043 with 25,957 left.
+first (full-coverage) opening book added 8,312, for 74,043. The CodinGame
+compiler work (`always_inline` attributes and the `cf_*` helpers, section 13)
+and speed rounds ten and eleven brought it to 81,317, and the larger uttt.ai
+opening book (13,456 payload characters against 4,656) to **90,095, with
+9,905 left**. Headroom is again worth watching.
 
 ## 11. Reproducible generation procedure
 
@@ -521,30 +538,26 @@ Regeneration is not complete merely because the script reports fewer than
 
 ### 12.1 Reproducibility and size
 
-Run the generator twice and confirm the output hash does not change:
+The committed `cg_input.cpp` must be exactly the generator's output for the
+committed sources:
 
 ```bash
 make -C cpp_impl cg-input
-sha256sum cpp_impl/cg_input.cpp
-wc -c cpp_impl/cg_input.cpp
+git diff --exit-code cpp_impl/cg_input.cpp
 ```
 
-The current expected values are:
-
-```text
-SHA-256  9b2a077f3675eb2627d5a1ba946e50cbe178aec74938b3958d50a4810c993070
-size     96,887 bytes
-```
-
-These values must be updated intentionally whenever the readable engine or
-generated headers change.
+The CodinGame performance gate's `fresh` check enforces this on every pull
+request, and its `size` check the 100,000-unit cap, so no hash is pinned here.
+Generation is deterministic: two runs on the same sources produce the same
+bytes.
 
 ### 12.2 Compile both forms
 
-The readable and bundled/minified sources must both compile:
+The readable and bundled/minified sources must both compile, and the paste
+file must also compile with CodinGame's own command line:
 
 ```bash
-make -C cpp_impl compile-cg
+make -C cpp_impl compile-cg     # includes bin/cg_input_cgflags
 ```
 
 Compiling only `codingame_nnue.cpp` does not validate include bundling,
@@ -592,7 +605,29 @@ construction belong to CodinGame's 1000 ms first-turn allowance, not the
 100 ms later-turn deadline. External-match workers are also pinned one per
 physical core so process scheduling does not manufacture timeout regressions.
 
-## 13. Troubleshooting
+## 13. How CodinGame compiles the paste file
+
+CodinGame builds C++ with g++ 11.2 and
+`-std=gnu++17 -Werror=return-type -g -pthread`: no `-O` flag at all. The only
+optimization the submission gets is what its own source asks for, which is why
+`codingame_nnue.cpp` starts with `#pragma GCC optimize("O3")` *above* its
+`#include`s. At a global `-O0` that pragma optimizes each function body, but
+GCC then inlines only functions marked `always_inline`, so:
+
+- every hot-path helper in `codingame_nnue.cpp` and in the generated eval
+  headers carries `__attribute__((always_inline))` (the emitters write it);
+- the hot path uses `cf_array`, `cf_heap_array`, `cf_min` and `cf_max` instead
+  of `std::array`, `std::vector`, `std::min` and `std::max`;
+- the `#pragma GCC target("avx2,...")` line stays *after* the includes (GCC 13
+  rejects it in front of libstdc++).
+
+Before these rules the shipped bot searched about a fifth of the nodes every
+local test measured (improvement log sections 47 and 52). The README's
+**Compiler and local builds** section lists the checks (`cg-flags`,
+`cg-speed`, the objdump call listing), and CI runs `tools/cg_perf_gate.py` in a
+`gcc:11.2` container on every pull request.
+
+## 14. Troubleshooting
 
 ### Output is unexpectedly larger
 
@@ -622,6 +657,15 @@ physical core so process scheduling does not manufacture timeout regressions.
 - Confirm the destination buffer is large enough and the decoder did not
   return `-1`.
 - Verify the raw-string payload contains no hand edits.
+
+### CodinGame shows about 130k nodes per move
+
+The bot prints `N<nodes>` after each searched move. Around 130k at 90 ms,
+against 600k-900k normally, is the signature of a build without the
+optimize pragma or the `always_inline` attributes (section 13). The usual cause
+is pasting an old or wrong file: the first line of the paste must be
+`#pragma GCC optimize("O3")`. If the paste is right, build it with
+`make -C cpp_impl cg-flags` and look for new out-of-line calls.
 
 ### CodinGame times out on the first move
 

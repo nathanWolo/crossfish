@@ -2,7 +2,7 @@
 
 This is the oral history of the engine: what we tried, what landed, what it was worth, and what we already know does not work. It is written for the next person (or agent) who will hill-climb Elo. The process itself lives in the README under **Improving the engine**. This file is the memory.
 
-Elo numbers here are almost always **self-play against the immediately previous accepted version**, not CodinGame ladder rating and not a running total. They do not add. A +400 jump in January 2024 and a +5 pass in 2026 are not the same kind of event: the first is "the search finally knows which move to try," the second is "this is still a real gain on a strong baseline." Time controls also change. Early Python numbers come from `faceoff` scripts. C++ SPRT is usually 20 ms/move, sometimes 95 ms (the CodinGame later-move budget), sometimes equal-depth 4 with eval pruning off.
+Elo numbers here are almost always **self-play against the immediately previous accepted version**, not CodinGame ladder rating and not a running total. They do not add. A +400 jump in January 2024 and a +5 pass in 2026 are not the same kind of event: the first is "the search finally knows which move to try," the second is "this is still a real gain on a strong baseline." Time controls also change. Early Python numbers come from `faceoff` scripts. C++ SPRTs ran at 20 ms/move through round three, at 95 ms (the CodinGame later-move budget) from round four, and since round seven at the official 90 ms with an external 100 ms referee (sections 38-39); some gates are equal-depth 4 with eval pruning off. From round nine the harness scores colour-swapped opening pairs (pentanomial) on a 50,000-position book (section 43).
 
 When a commit quotes `N / W / D / L / Elo / LLR`, that is the gate that shipped the change. Failures in this file are as important as passes. Several of the largest Elo numbers in the repo are bugs being fixed, not new ideas.
 
@@ -429,7 +429,7 @@ This section is the other half of the history. Retrying these without a new hypo
 
 ## 12. How the numbers sit together
 
-A honest running story, not a sum:
+An honest running story, not a sum:
 
 1. Python learns to search (TT order, negamax, two-in-a-row, killers, history) and wins UVicAI.
 2. C++ relearns the same search, adds qsearch and AVX, hits Legend, with a dead hash.
@@ -441,15 +441,39 @@ A honest running story, not a sum:
 8. Correction history + log LMR: **+33** at 20 ms. Then the #15 hot-path bundle: another **+40** at 20 ms, mostly speed (1.56× NPS) plus persist-corrhist and global-win ordering.
 9. The #16 compact-state / canonical-TT bundle: **+59** at 20 ms vs #15.
 10. The #17–#25 search/speed bundle vs #16: independent **+28** at 20 ms and
-    **+38** at 95 ms. Official ship bar is now 95 ms.
+    **+38** at 95 ms. The ship bar moved to 95 ms here.
+11. Round five (one-reply tactical proofs, two-entry TT buckets, a narrower
+    aspiration window, a fine-tuned MiniNet, signed history malus): **+54** at
+    95 ms. Round six (active-miniboard correction history, hot-path trims,
+    latent macro captures): about **+25**.
+12. Round seven, the D16/H8 MiniNet plus a learned macro residual: **+31** at
+    95 ms against H0=+20; the external referee then moved the bar to **90 ms**
+    with zero tolerated timeouts (**+21.6**). Round eight's exact macro-state
+    correction history: **+29.6** against H0=+20.
+13. Round nine, a bit-identical hot-path rewrite: **+18.8** (+22% NPS).
+14. Section 47: the shipped bot had been compiled by CodinGame **without `-O`**
+    and ran at about a fifth of its tested speed. Fixing that was **+163** in a
+    CodinGame-built match and invisible to every local SPRT.
+15. Rounds ten and eleven, bit-identical speed again: **+15.4** as a bundle in
+    an independent review SPRT. The mate-window pruning fix (section 51) passed
+    for non-regression only; section 52 closed the rest of the CodinGame
+    inlining gap (+4% to +9% nodes per millisecond).
+16. The uttt.ai opening book (section 54): about **+72** paired book value
+    against a different engine, against +26 for the full-coverage book it
+    replaced.
 
 CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet
-moved 82 → 68. The round-4 bundle is the current ship. Absolute ladder Elo is
-noisy and not what SPRT measures.
+moved 82 → 68. Absolute ladder Elo is noisy and not what SPRT measures. The
+README's **Latest strength result** names the current ship.
 
 ---
 
-## 13. Where the code is now
+## 13. Where the code stood after round four (7 September 2026)
+
+This snapshot is historical; the README's **Layout** and **The three copies of
+the engine** describe the current tree. Since then Prev and Dev moved to the
+D16/H8 MiniNet in `mini_eval_d16.hpp` plus `macro_eval.hpp` (section 37), and
+`mini_eval.hpp` is kept only for unit tests.
 
 | Piece | Role |
 | --- | --- |
@@ -464,7 +488,7 @@ noisy and not what SPRT measures.
 
 The next cheap experiment is whatever you can falsify in one SPRT: a constant, a skip, a LUT that must match `eval_consistency`. The next expensive experiment is a net that is better at equal depth *and* not slower at 20 ms. We already know H=128 and "more D on old labels" are not that net.
 
-When you land something, freeze Prev, port the CG file, minify, and add a short section here. When you fail, add a line to section 11. The log is only useful if the graves stay marked.
+When you land something, freeze Prev, port the CG file, minify, and add a short section at the end of this log. When you fail, add a line to section 11. The log is only useful if the graves stay marked.
 
 ---
 
@@ -1995,6 +2019,20 @@ nodes per move against the `-O3` build. The Dev-vs-Prev SPRT cannot see any
 of this: both sides are compiled at `-O3`. Any CodinGame ladder result from
 before this change was obtained at roughly a fifth of the tested speed.
 
+**Independent review.** The reviewer rebuilt both paste files with g++ 11.5
+and CodinGame's flags: mean nodes per move went from 141k to 497k (3.5x) against
+~583k at `-O3`, with identical `cg_selfcheck` checksums at depths 7 and 10. A
+600-game new-versus-old match on openings disjoint from the ones above gave
+348-163-89, **+160.5 +/- 25.2** Elo. On CodinGame itself the NPS jump was
+visible in the bot's `N` output immediately.
+
+**The symptom to recognise.** On 25 September a CodinGame self-play log showed
+one side searching 85k-160k nodes per move and the other 400k-925k. The slow
+side had been pasted from an old copy whose first line was not
+`#pragma GCC optimize("O3")`. About 130k nodes per 90 ms move is this
+section's signature; check the first line of the paste before suspecting the
+engine.
+
 ---
 
 ## 48. Restore instead of re-derive: a tree-identical speed round (24 September 2026)
@@ -2099,6 +2137,13 @@ Timeout losses: Prev 13 / Dev 10
 Maximum response: Prev 140.23 ms / Dev 163.83 ms
 Prev NPS 17,689,984  Dev NPS 19,563,392 (+10.6%)
 ```
+
+An independent review SPRT of the same candidate against the round-nine
+engine, on openings disjoint from the ones above, was stopped undecided at
+N=8184, **+3.06 +/- 5.44** Elo (LLR +0.36), and the reviewer's startpos NPS
+gain on a different 4-core host was +5% rather than +10.6%. Round ten alone is
+therefore a smaller gain than its first SPRT suggested; section 49 has the
+direct measurement of rounds ten and eleven together.
 
 The run started badly (-13 +/- 18 at N=606) and that was checked rather than
 waited out: a persistent-engine test drove both engines through scripted games
@@ -2215,6 +2260,21 @@ against a random opponent through `tools/cg_speed_check.py`:
 
 Submission: 80,576 characters, 19,424 below the cap.
 
+The two rounds merged as one PR, so the reviewer measured the bundle directly:
+PR Dev (rounds ten and eleven) against `main`'s round-nine Prev, 90 ms,
+openings from offset 30,000:
+
+```text
+N 2748  W 818 / D 1234 / L 696   Penta 76 / 287 / 543 / 375 / 93
++15.43 +/- 9.05 Elo
+LLR +3.012 (H0=0, H1=+5) — PASS
+Timeout losses: Prev 13 / Dev 5 (host stalls, up to 158 ms)
+Prev NPS 13,394,176  Dev NPS 14,935,936 (+11.5%)
+```
+
+Sequential SPRTs do not add: +9.2 and +11.0 against moving baselines became
++15.4 measured in one step.
+
 ---
 
 ## 50. Round twelve: no candidate survived (24 September 2026)
@@ -2250,8 +2310,8 @@ Found from outside the SPRT: in a 1,000-game match against a CodinGame-rules
 uttt.ai network, 155 of crossfish's 21,780 searched moves (in 146 games)
 reported a root score between 20,000 and 90,000. That is neither an eval nor a
 mate score (mates are `±(99999 - ply)`). The values clustered at 51,566-51,570,
-which is `99969 - 48400`: a mate score minus the sum of four aspiration
-widenings (400 + 1,200 + 3,600 + 10,800 + 32,400).
+which is `99969 - 48400`: a mate score minus the initial 400-unit aspiration
+half-width and four widenings (400 + 1,200 + 3,600 + 10,800 + 32,400).
 
 ### What was wrong
 
@@ -2332,6 +2392,24 @@ Timeouts: Prev 0 / Dev 0
 
 Over both runs (13,368 games) the fix measures about +4.7 Elo: a small gain,
 too small to clear +5 in reasonable time, and shipped as a correctness fix.
+
+An independent review ran the same non-regression test against `main`'s
+round-eleven Prev on openings from offset 40,000. It needed many more games,
+and one container restart (resumed from its W/D/L and pentanomial counters),
+but passed:
+
+```text
+N 13212  W 3635 / D 5952 / L 3625   Penta 407 / 1621 / 2557 / 1597 / 424
++0.26 +/- 4.17 Elo
+LLR +3.053 (H0=-5, H1=0) — PASS
+Timeout losses: Prev 29 / Dev 36 (host stalls)
+```
+
+Pooled over all three runs the fix is roughly +2 Elo in self-play: it costs
+nothing and removes the wrong scores. Its value is in positions a self-play
+SPRT rarely reaches, converting won games faster and reporting real scores.
+The non-regression gate (H0=-5, H1=0) is the repository's rule for bug fixes;
+search and eval experiments still need H0=0, H1=+5.
 
 The CodinGame performance gate (section 47's compiler, `tools/cg_perf_gate.py`)
 passed against `main` with g++ 11.2: nodes per millisecond at full budget
@@ -2449,6 +2527,14 @@ not a measurement. The run logged 3 timeouts for the new build and 6 for the
 old one while other jobs shared the machine. On an idle machine the protocol
 check gives the new build a first turn of at most 182.8 ms and later moves
 of median 90.2 ms, max 91.6 ms, with exact book coverage (30/30).
+
+The branch landed after sections 48-51, so its gain was re-measured against
+that `main` in review. Same-tree search time with CodinGame's flags fell from
+0.533 s to 0.512 s (-3.9%; `-O3` 0.507 s to 0.494 s), the CodinGame gate read
++4.6% [+0.4%, +9.0%] nodes per millisecond locally and **+8.7% [+6.6%,
++10.8%]** in CI with g++ 11.2, and out-of-line calls fell from 32 to 15 in
+`search`, 13 to 7 in `qsearch` and 5 to 4 in `search_leaf`. After the merges
+the paste file was 81,317 characters with 108 `always_inline` attributes.
 
 ---
 
@@ -2591,3 +2677,18 @@ This is the setting most favourable to the new book: its moves are uttt.ai's own
 deep choices and uttt.ai's replies are covered by construction. The games are
 also less varied than 400 suggests (about 60 distinct lines through ply 8), so
 the interval is optimistic; mode 2 above is the engine-independent evidence.
+
+The reviewer reran mode 2 for both books on the same new seed (7), 500 paired
+openings each against the round-six engine:
+
+| Book | With book | Without | Book value |
+| --- | ---: | ---: | ---: |
+| Full coverage | +91.0 ± 28.2 | +64.7 ± 26.8 | +26.3 |
+| **uttt.ai** | **+143.9 ± 29.1** | **+71.9 ± 27.2** | **+72.0** |
+
+On identical openings the new book is worth about 2.7 times the old one, a
++46 difference; the "four times" above rests on the author's lower reading
+for the old book. The review also confirmed that the committed payload is
+reproduced byte for byte by `play_book_pack` from the uttt.ai fork's
+`cg/book/uttt_book_v1.txt`, and that the merged paste file is 90,095
+characters (9,905 left).

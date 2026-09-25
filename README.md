@@ -11,9 +11,13 @@ from the first Legend hit. The Python tree under `python_impl/` is legacy.
 
 Detailed project documentation:
 
-- [Engine improvement log](documentation/improvement_log.md)
+- [Engine improvement log](documentation/improvement_log.md): the chronological
+  record of every accepted and rejected experiment, with its gate
+- [Handcrafted evaluation and correction history](documentation/hce_and_correction_history.md)
 - [NNUE training and runtime implementation](documentation/nnue_training_and_implementation.md)
-- [SPRT opening-book generation and maintenance](documentation/opening_book.md)
+- [CodinGame submission and minifier](documentation/minification.md)
+- [Gameplay opening book](documentation/play_book.md): the book the CodinGame bot plays from
+- [SPRT opening book](documentation/opening_book.md): the frozen starting positions the SPRT harness uses
 
 Hill-climbing Elo is a specific loop: freeze Prev, edit only Dev, prove correctness, then SPRT. Read **Improving the engine** before changing search or eval.
 
@@ -32,24 +36,31 @@ Run this after every engine/rules/eval change. It is fast and deterministic:
 make test
 ```
 
-That builds and runs the C++ unit tests, the Python rules oracle, validates the
-shipped opening book, and compiles the CodinGame binaries
-(`codingame_nnue.cpp`, `crossfish.cpp`, and the Legend snapshot).
+That builds and runs the C++ unit tests, the Python rules oracle and the
+`tools/test_*.py` suites, validates the SPRT opening book, and compiles the
+CodinGame binaries: the readable `codingame_nnue.cpp`, the paste file
+`cg_input.cpp` both at `-O3` and with CodinGame's own flags, the HCE-only
+`crossfish.cpp`, and the Legend snapshot. CI runs it on every push, alongside
+the CodinGame performance gate (see **Compiler and local builds**).
 
 | Target | What it checks |
 | --- | --- |
 | `make test` | Correctness: perft, make/unmake, Zobrist, legal moves vs an independent oracle, eval internals, search legality / instant wins, plus CG compile |
 | `make test-cpp` | C++ unit tests only (`cpp_impl/unit_tests.cpp`) |
 | `make test-python` | Independent Python board perft / make-undo / winners (`python_impl/test_rules.py`), plus `tools/test_*.py` |
-| `make verify` | The older smoke checks inside `test_bots.cpp`, then exit (no SPRT) |
+| `make verify` | The harness's own checks in `test_bots.cpp` (movegen, the 100 ms referee, the opening traversal fingerprint, the pentanomial SPRT maths against a Fishtest reference, eval consistency), then exit (no SPRT) |
 | `make -C cpp_impl bench` | Proves a speed-only change is tree-identical: fresh engine per position, identical scores **and** node counts, plus node counts and wall time |
 | `make -C cpp_impl port-check` | Proves `codingame_nnue.cpp` searches exactly like Dev (fixed-depth scores and node counts at depths 5, 7, 9), for tree-changing ports too |
 | `make sprt` | Strength: Dev vs Prev self-play with SPRT at **90 ms** (slow, noisy) |
-| `make book-inspect` | Validate and summarize the shipped 10k-position SPRT opening book |
-| `make opening-book` | Regenerate the depth-16-qualified opening book (slow; normally do not run) |
-| `make roundrobin` | 10k-game pairs of current C++ vs Legend vs Python at 20ms/move |
-| `make cg` | Compile the CodinGame submission |
+| `make book-inspect` | Validate and summarize the 50,000-position SPRT opening book |
+| `make opening-book` | Regenerate the depth-16-qualified SPRT opening book (slow; normally do not run) |
+| `make roundrobin` | 10k-game pairs at 20 ms/move between the HCE-only `crossfish.cpp` bot, the Legend snapshot and the Python bot (a legacy sanity check, not the shipped engine) |
+| `make cg` | Compile the CodinGame bot, the paste file (at `-O3` and with CodinGame's flags) and the HCE bot |
 | `make cg-input` | Rebuild `cpp_impl/cg_input.cpp` from `codingame_nnue.cpp` with the minifier |
+| `make -C cpp_impl cg-flags` | Build the paste file with CodinGame's exact command line (`bin/cg_input_cgflags`) |
+| `make -C cpp_impl cg-speed` | Same-tree search time of the CodinGame port at `-O3` and with CodinGame's flags; checksums must match |
+| `make -C cpp_impl cg-gate` | The CI CodinGame performance gate, locally in a `gcc:11.2` container (needs Docker) |
+| `make -C cpp_impl play-book-match` | Gameplay book vs no book from the start position (see `documentation/play_book.md`) |
 
 SPRT answers "is this stronger?". Unit tests answer "did I break the rules, hashing, eval, or search?". Do not skip `make test` because SPRT passed.
 
@@ -65,12 +76,12 @@ tests whether Dev clears +50 Elo instead of the default 0-vs-5 screen:
 SPRT_ELO0=50 SPRT_ELO1=55 make sprt
 ```
 
-The shipped opening records are traversed through a deterministic permutation,
-not their generation order. `SPRT_GAME_OFFSET=N` starts at permutation index
-`N`; resume counters infer that offset automatically when it is omitted.
-
-Other controls are `SPRT_THINK_MS`, `SPRT_LLR_BOUND`, `SPRT_MAX_GAMES`,
-`SPRT_THREADS`, and `SPRT_OPENING_BOOK`.
+The SPRT opening records are traversed through a deterministic permutation,
+not their generation order. `SPRT_GAME_OFFSET=N` starts at opening pair `N` of
+that permutation. Use a fresh offset when you want a reading independent of an
+earlier run: every SPRT from offset 0 walks the same openings, so
+near-identical engines share their early noise. The full list of controls is
+under **SPRT contract** below.
 
 ## Improving the engine
 
@@ -84,17 +95,18 @@ enforced 100 ms deadline. A change is not shipped until it passes that gate
 without timeout forfeits. 20 ms is an optional cheap screen, not a ship. The
 submission cap is **100,000 characters**.
 
-### The three copies of the engine
+### The three copies of the engine, and the files around them
 
 | File | Role | Who may edit it |
 | --- | --- | --- |
 | `cpp_impl/crossfish_prev.hpp` | Frozen baseline. `CrossfishPrev` in SPRT. | Only when **freezing** a landed win. Never during an experiment. |
 | `cpp_impl/crossfish_dev.hpp` | The experiment. `CrossfishDev` in SPRT. | The only search/eval file you change while testing. |
-| `cpp_impl/mini_eval.hpp` | Frozen packed D8/H4 MiniNet used by Prev and regression tests. | Baseline eval; do not change during a Dev experiment. |
-| `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` | Generated packed evaluators used by Dev and the CG bot. | Regenerate only for an accepted eval candidate. |
+| `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` | Generated packed evaluators shared by Dev, Prev and the CG bot. | Regenerate only for an accepted eval candidate, with the emitters in `tools/`. |
+| `cpp_impl/mini_eval.hpp` | The retired D8/H4 MiniNet, kept for unit tests of the packed-net code paths. | Do not change. |
 | `cpp_impl/global_board.hpp` | Board, movegen, make/unmake, Zobrist. Shared by everyone. | Rules/hash only. Perft is frozen. |
 | `cpp_impl/codingame_nnue.cpp` | Readable CG bot; local eval headers are bundled for submission. | After a pass, when porting. Not the experiment. |
-| `cpp_impl/cg_input.cpp` | Bundled and minified paste file. | Regenerated from `codingame_nnue.cpp`. |
+| `cpp_impl/cg_input.cpp` | Bundled and minified paste file. | Regenerated from `codingame_nnue.cpp`; never hand-edited. |
+| `cpp_impl/play_book.hpp` / `play_book_data.hpp` | Gameplay opening book runtime and its generated payload. | Only through the procedure in `documentation/play_book.md`. |
 | `cpp_impl/crossfish.cpp` | Self-contained HCE CG bot; packing source for a new MiniNet emit. | Only if you are emitting a new net or changing the HCE template. |
 | `cpp_impl/cg_legend_hce.cpp` | Historical Legend snapshot. | Do not touch. |
 
@@ -157,6 +169,10 @@ Environment overrides:
 | `SPRT_GAME_OFFSET` | Starting index in the deterministic opening permutation. One index produces two color-swapped games. |
 | `SPRT_OPENING_BOOK` | Override the shipped book path. `none` or `0` disables the file book and uses the legacy opener selected by `SPRT_BOOK`. |
 | `SPRT_BOOK` | Legacy fallback only: 1 selects deterministic seeded 4-8-ply openings and 0 selects unseeded random openings. The shipped file book is the default. |
+| `SPRT_PAIR_MODEL` | 1 (default) scores colour-swapped opening pairs with the pentanomial model; 0 is the old per-game trinomial model, for diagnostics only. |
+| `SPRT_RESUME_WINS` / `_DRAWS` / `_LOSSES` / `_PENTA` | Resume a stopped run from its last printed line. `SPRT_RESUME_PENTA=LL,LD,MID,DW,WW` is required in the pair model, and `SPRT_GAME_OFFSET` must be the original offset plus half the resumed games (it defaults to half the resumed games, which is right only for a run that started at offset 0). |
+| `SPRT_ALLOW_BOOK_WRAP` | Diagnostics only: reuse openings after the book is exhausted. Without it an exhausted book ends the run as inconclusive. |
+| `SPRT_CENTER_ENUM` | Diagnostics only: the center-first deterministic opener used for the section 41 opening experiments. |
 
 Example: prove a huge speed win is more than +50 Elo at 90 ms:
 
@@ -166,26 +182,36 @@ SPRT_ELO0=50 SPRT_ELO1=55 make -C cpp_impl sprt
 
 Use a raised H0 only when the first thousands of games already show a blowout. Do not use it to dress up a +8 Elo run.
 
-Each printed line is `N W D L Elo +/- CI LLR`. The header also prints **Prev NPS** and **Dev NPS** from a 1-second startpos search. Timed lines report each engine's maximum observed response latency. Treat NPS as a speed signal, not a strength score.
+Each printed line reads like
 
-Normal SPRTs load `cpp_impl/opening_book.bin`. Its 10,000 positions were
-selected by the frozen merged baseline, independently searched to depth 16,
-and limited to an absolute baseline score of 300. Each position is played
-twice with colors swapped, so the complete book covers 20,000 games before an
-opening repeats. Missing the expected book is an error rather than a silent
+```text
+N: 2748 W: 818 D: 1234 L: 696 Penta=76,287,543,375,93 Elo diff: 15.43 +/- 9.05 LLR: 3.012 timeouts Prev=13 Dev=5 max_ms Prev=158.3 Dev=127.1
+```
+
+where `Penta` counts opening pairs from Dev's side (two losses, loss+draw,
+split or two draws, win+draw, two wins), `timeouts` counts external-referee
+forfeits and `max_ms` is each engine's slowest reply. The header also prints
+**Prev NPS** and **Dev NPS** from a 1-second startpos search. Treat NPS as a
+speed signal, not a strength score: it varies by several percent between
+hosts and between runs.
+
+Normal SPRTs load `cpp_impl/opening_book.bin`. Its 50,000 positions were
+selected by a frozen merged baseline, independently searched to depth 16, and
+limited to an absolute baseline score of 300. Each position is played twice
+with colors swapped and scored as one pentanomial pair, so the book covers
+100,000 games before an opening would repeat; the harness never reuses one
+silently. Missing the expected book is an error rather than a silent
 fallback. See the [opening-book guide](documentation/opening_book.md) before
 regenerating or replacing it.
 
-A controlled 2,000-game comparison measured the shuffled balanced book at
-**+24.01 +/- 11.59 Elo** with 42.2% draws, versus **+6.95 +/- 12.67 Elo** and
-30.8% draws for the legacy random opener. The book's nominal confidence
-interval was 8.6% narrower. The book result is the preferred estimate for
-strength from balanced, reasonable openings, while remaining conditional on
-that opening distribution; full methodology and caveats are in the guide.
+When the original 10,000-position book replaced random openings, a controlled
+2,000-game comparison measured the same candidate at **+24.01 +/- 11.59 Elo**
+with 42.2% draws on the book, versus **+6.95 +/- 12.67 Elo** and 30.8% draws
+on the legacy random opener. Balanced, reasonable openings leave more room for
+the engine change to decide the game; full methodology and caveats are in the
+guide.
 
-Timed result lines also print external referee forfeits as
-`timeouts Prev=N Dev=N`. These losses count in W/D/L exactly as they would on
-CodinGame. A candidate that gains nodes by overrunning the clock is weaker, not
+Referee forfeits count in W/D/L exactly as they would on CodinGame. A candidate that gains nodes by overrunning the clock is weaker, not
 faster.
 
 `depth N` sets a fixed search depth and turns **eval pruning off on both sides** (`g_disable_eval_prune`: no RFP / futility / qsearch-delta). That is the equal-depth gate: same node budget in ply, so a loss means a worse leaf, not a slower one.
@@ -197,7 +223,9 @@ faster.
 | Different leaf / different net / different HCE weights | `depth 4` | optional 20 ms, then **90 ms** | Official 90 ms pass. Depth-only is not enough. |
 | Same eval, faster implementation (LUTs, MiniNet projection, AVX) | `make -C cpp_impl bench` must print **IDENTICAL** | optional 20 ms, then **90 ms** | Official 90 ms pass. If `bench` reports any node-count difference, the "speedup" changed the eval and the SPRT would be measuring something else. |
 | Search (LMR, TT, move order, pruning) | optional 20 ms | **90 ms** | Official 90 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
-| Gameplay opening book (`play_book_data.hpp`) | `make -C cpp_impl play-book` (pack + check) | `play-book-match` from the start position, plus a paired run against a different engine | The official SPRT starts from its own 50,000 openings and never reaches the book; see `documentation/play_book.md`. |
+| Bug fix (the old behaviour is wrong, not just weaker) | `make test` plus a test or trace that shows the bug | **90 ms** with `SPRT_ELO0=-5 SPRT_ELO1=0` | Non-regression pass. Say in the PR that it is a bug fix; a strength claim still needs H0=0, H1=+5. |
+| CodinGame port only (no Dev change) | `make -C cpp_impl port-check` (tree-changing) or `cg_selfcheck` before/after (tree-identical) | the CodinGame performance gate in CI | Gate passes; for a speed claim, a new-vs-old match with both paste files built with CodinGame's flags. |
+| Gameplay opening book (`play_book_data.hpp`) | `make -C cpp_impl play-book` (pack + check against the text book) | `play-book-match` from the start position, plus a paired run against a different engine, same seed for old and new book | The official SPRT starts from its own 50,000 openings and never reaches the book; see `documentation/play_book.md`. |
 
 Do not skip `make test` because a gate passed.
 
@@ -227,7 +255,7 @@ Run `make test` after any rules, hash, eval, or search edit. It builds C++ unit 
 
 If you change HCE, `eval_consistency` in `unit_tests.cpp` still has to match `eval_diffs` / `eval_parts`. A LUT rewrite that disagrees with the linear features is a bug even if it is faster.
 
-If you change MiniNet, scalar `evaluate_mini`, AVX `evaluate_mini_avx`, and any fast projection path must match within a couple of points on random games. The AVX path is **mul+add, not FMA**, so it matches the scalar net.
+If you change the MiniNet or its packing, the scalar reference `d16_evaluate_mini` and the fast factored path `d16_evaluate_mini_fast` must agree within 8 eval units on random games, and the macro lookup must equal `evaluate_macro_key` exactly (`d16_fast_matches_scalar` in `unit_tests.cpp`). The AVX paths are **mul+add, not FMA**, so they match the scalar net.
 
 Large tables (`1<<18` scores, threat maps, MiniNet projections) must be `static inline` (BSS), not instance members. Instance arrays of that size overflow the 1 MB Windows stack and kill `match` workers. CodinGame's Linux stack may hide this. `codingame_nnue.cpp` already hit it.
 
@@ -235,16 +263,27 @@ Do not put a 1 MB table on `main`'s stack in the CG file.
 
 Startpos perft is frozen in C++ and Python. If one suite's counts change, update the other in the same commit. Do not "fix" perft to match a movegen bug.
 
+| Depth | Nodes |
+| ---: | ---: |
+| 1 | 81 |
+| 2 | 720 |
+| 3 | 6336 |
+| 4 | 55080 |
+| 5 | 473256 |
+
 ### What is not strength
 
 These have already fooled people in this repo:
 
 - **Holdout MAE / correlation.** A net can fit search scores better and still play the same moves (equal-depth ~0 Elo).
 - **Beating static HCE on a dump.** MiniNet only runs at qsearch leaves when HCE is inside the window. Training on mates and fail-highs that search never asks the net about is the wrong target.
-- **Scaling MiniNet width (D) on old HCE-only depth-6 labels.** Extra unused concat; mixer stays tiny. Measured ~0 Elo at equal depth vs the shipped D=8 H=4 residual.
+- **Scaling MiniNet width (D) on old HCE-only depth-6 labels.** Extra unused concat; mixer stays tiny. Measured ~0 Elo at equal depth vs the D=8 H=4 residual shipped at the time. (The later D16/H8 net won because it was trained on better labels and packed to stay cheap.)
+- **A full Stockfish-style NNUE with a better holdout fit.** It replaced HCE, MiniNet and macro and lost 193-296 Elo at equal depth; parity looked like it would need on the order of 100M labeled positions (improvement log section 53).
 - **A much wider mixer (H=128) at 20 ms.** NPS collapse, hundreds of Elo lost.
 - **A slower better leaf.** A +10 Elo equal-depth eval with a 5% NPS tax can be ~0 at 20 ms.
 - **SPRT against a Prev you just weakened or against old HCE when the ship is MiniNet.** Gate vs the frozen ship, not vs a convenient opponent.
+- **Nodes per move in a CodinGame log, compared across games.** `N` depends on the position and on how much of the clock the search used; compare the same position, or use `make -C cpp_impl cg-speed` and the CI gate.
+- **A local speed-up alone.** The SPRT builds at `-O3`; CodinGame builds without `-O`. A change that is fast locally can be slow on CodinGame, and the reverse (improvement log section 47 was worth +163 there and nothing locally).
 
 Early-game positions are where HCE is weakest (minis not yet decided). If you train a net, bias data toward low ply with MiniNet-search labels, not only late self-play.
 
@@ -254,14 +293,25 @@ A Dev SPRT pass does **not** update the CG bot. `codingame_nnue.cpp` keeps a
 standalone copy of the search but shares generated packed-eval headers. After
 a freeze:
 
-1. Port accepted search changes into `codingame_nnue.cpp`. For eval changes,
-   regenerate `mini_eval_d16.hpp` and/or `macro_eval.hpp` with the matching
-   tools. Keep large LUTs in static storage.
-2. Run `make -C cpp_impl cg-input`; the minifier recursively inlines local
-   headers before shortening the source.
-3. Confirm `cg_input.cpp` is under 100k characters. Paste **that** file into CodinGame, not the readable source unless you are debugging.
-4. Optionally play minified vs readable at 20 ms (`roundrobin.run_pair` on the two `match` binaries). Expect ~0 Elo if minify only renamed tokens.
-5. Write the SPRT line into **Latest strength result** (N, W/D/L, Elo, LLR, hypotheses, NPS).
+1. Port accepted search changes into `codingame_nnue.cpp`, following the
+   CodinGame compiler rules below (`always_inline` helpers, no `std::`
+   containers on the hot path). For eval changes, regenerate
+   `mini_eval_d16.hpp` and/or `macro_eval.hpp` with the matching tools. Keep
+   large LUTs in static storage.
+2. Prove the port: `make -C cpp_impl port-check` must print IDENTICAL at every
+   depth (the CG search against Dev). For a tree-identical change,
+   `cg_selfcheck` checksums must also match their pre-port values.
+3. Run `make -C cpp_impl cg-input`; the minifier recursively inlines local
+   headers before shortening the source. The CI gate fails if the committed
+   `cg_input.cpp` is not exactly this output.
+4. Confirm the minifier's count is under 100,000 and that the CodinGame
+   performance gate passes. Paste **that** file into CodinGame, not the
+   readable source. Its first line must be `#pragma GCC optimize("O3")`; a
+   paste without it searches about 130k nodes per move instead of 600k-900k,
+   which the bot's `N` output shows at once.
+5. Record the result: the SPRT line (N, W/D/L, pentanomial counts, Elo, LLR,
+   hypotheses, timeouts, NPS) in a new improvement-log section, and a row in
+   **Latest strength result**.
 
 `nnue_emit_mininet_cg.py` minifies by default and has a coarse vs-HCE match (`Elo < -80` fails). That is a packing-smoke test, not the Dev-vs-Prev gate.
 
@@ -284,10 +334,13 @@ of the std versions. Keep it that way:
 
 - `make -C cpp_impl cg-flags` (part of `make test`) builds `cg_input.cpp`
   with CodinGame's exact command line (`g++-11` if installed).
-- `python tools/cg_speed_check.py cpp_impl/bin/cg_input_cgflags cpp_impl/bin/cg_input`
-  compares nodes per move of that build against the `-O3` build. They should
-  be within noise of each other; a new helper that is not `always_inline`
-  shows up here and nowhere else.
+- `make -C cpp_impl cg-speed` times the CodinGame port on an identical tree
+  at `-O3` and with CodinGame's flags (`cg_selfcheck 30 13`); the checksum
+  lines must match and the seconds should be within a few percent. A new
+  helper that is not `always_inline` shows up here and nowhere else.
+  `python tools/cg_speed_check.py <bot> [<bot> ...]` compares nodes per move
+  through the real protocol, but its games diverge with timing, so it only
+  resolves large gaps (identical trees have read 630k vs 716k).
 - Never add `std::` containers or algorithms to the CG hot path. Large
   tables that must live on the heap use `cf_heap_array` (the transposition
   table was a `std::vector` until round ten's follow-up).
@@ -298,15 +351,15 @@ of the std versions. Keep it that way:
   `evaluate_macro_key` with the attribute, so regenerate rather than
   hand-edit.
 - To see what is still out of line, build the readable source the CodinGame
-  way and list the `call` targets inside `CrossfishDev::search` and
-  `CrossfishDev::qsearch`:
+  way and list the `call` targets inside `CrossfishDev::search`,
+  `CrossfishDev::qsearch` and `CrossfishDev::search_leaf`:
   `g++-11 -std=gnu++17 -Werror=return-type -g -pthread -Icpp_impl -o /tmp/cg cpp_impl/codingame_nnue.cpp && objdump -d -C --no-show-raw-insn /tmp/cg`.
   Only recursion, the `std::chrono` clock read (once per 128 nodes),
   `memcpy`/`memmove`, `__stack_chk_fail` and the never-taken lazy
   `macro_load_packed()` branch should remain.
 
 **CodinGame performance gate.** Every pull request (and every push to a
-branch) runs `tools/cg_perf_gate.py` in a `gcc:11.2` Linux container
+branch other than `main`) runs `tools/cg_perf_gate.py` in a `gcc:11.2` Linux container
 (`tools/cg_gate/Dockerfile`, workflow `cg-perf-gate`), which builds the paste
 file exactly as CodinGame does and compares it with `main`:
 
@@ -327,7 +380,11 @@ g++ installed. A non-GCC compiler is refused: clang ignores the source's
 (`--allow-non-gcc` runs a labelled dry run; its inlining check fails, as it
 should).
 
-CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags is enough for SPRT. Do not enable FMA in MiniNet; it will disagree with the scalar reference.
+CI (`.github/workflows/`) runs `make test` on Ubuntu (`tests`, on every push
+and pull request) and the performance gate above (`cg-perf-gate`, on pull
+requests and pushes to branches other than `main`). A local
+Windows toolchain that matches the `-O3` flags is enough for SPRT. Do not
+enable FMA in MiniNet; it will disagree with the scalar reference.
 
 `make -C cpp_impl sprt` rebuilds `bin/test_bots` when headers change, then runs it. If you run a stale `test_bots` binary, you are SPRTing yesterday's Dev.
 
@@ -341,12 +398,15 @@ CI is `make test` on Ubuntu. A local Windows toolchain that matches those flags 
 - If 90 ms Elo is +1 to +3 after ~8k games, kill it. It will not clear H1 = +5 in a useful amount of time. A 20 ms screen that is already stuck near 0 can save the machine.
 - Never run two SPRTs at once. Never edit Prev "just for the test". Never ship `codingame_nnue.cpp` from an unfrozen Dev.
 - Sequential gates: depth 4 (if eval) → optional 20 ms screen → official 90 ms. Stop at the first fail. Do not ship on 20 ms alone.
+- Sequential passes do not add. Rounds ten and eleven passed at +9.2 and +11.0 against moving baselines and measured +15.4 as one bundle. When several accepted steps ship together, measure the bundle against `main` directly.
+- A reviewer should be able to reproduce the claim: say which offset (`SPRT_GAME_OFFSET`) and seed a run used. An SPRT stops at its first LLR crossing, so the Elo it prints is biased upward; an independent rerun on fresh openings usually lands lower. The reviews recorded in improvement-log sections 47, 48 and 51 all did; round ten alone went from +9.2 to +3.1.
+- The local SPRT cannot see anything CodinGame's compiler does. Every port must pass `port-check` and the CodinGame performance gate as well as the SPRT.
 
 ## CodinGame file and minifier
 
 CodinGame's source cap is **100,000 characters**, counted as UTF-16 code
-units. The network weights are packed at 14 bits per character using CJK
-ideographs (see `documentation/minification.md`), so the file is larger in
+units. The network weights and the opening book are packed at 14 bits per
+character using CJK ideographs (see `documentation/minification.md`), so the file is larger in
 bytes than in counted characters; trust the minifier's count, not `wc -c`. Paste
 **`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
 headers are intentionally kept separate for review.
@@ -378,209 +438,46 @@ the likeliest lines (to ply 18). Our moves are uttt.ai's after a
 characters, stored without keys as digits along a fixed walk of the book.
 
 Against the previous full-coverage book (same engine, 90 ms): **+99.4 ± 11.2**
-vs +18.7 ± 11.1 head-to-head against the plain engine over 3,000 games, and a
-paired book value of **+50.1 vs +12.2 against the round-six engine**, which it
-was not built from. uttt.ai's reasonable replies hold 98-99% of what three
-unrelated engines play, which is why this selective book transfers where
-earlier ones did not. Design, measurements and the regeneration procedure are
-in `documentation/play_book.md`.
+vs +18.7 ± 11.1 head-to-head against the plain engine over 3,000 games. The
+transfer test against the round-six engine, which the book was not built
+from, gave a paired book value of +50.1 vs +12.2 in the author's run and
+**+72.0 vs +26.3** in an independent review on a new seed (500 openings each):
+about 2.7 times the old book. uttt.ai's reasonable replies hold 98-99% of what
+three unrelated engines play, which is why this selective book transfers where
+earlier ones did not. Moving second against anything but a center-center
+opening, the bot has no book. Design, measurements and the regeneration
+procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
-On 2026-09-24 a search bug fix landed: reverse futility, futility and qsearch
-delta pruning no longer run against mate-range bounds, where comparing a static
-eval with the window is meaningless. After a mate score, every aspiration
-iteration used to fail low four or five times before a wide re-search found the
-same mate, and a search that ran out of time inside that cascade reported the
-widened bound (such as 51,569) as its score. **As a bug fix it was gated for
-non-regression**, not the +5 bar:
+The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
+search with the mate-window pruning fix, the D16/H8 MiniNet and macro
+residual, the CodinGame-compiler inlining work and the uttt.ai opening book.
+It is **90,095 characters**, 9,905 under the cap (the minifier's count; `wc -c`
+reports UTF-8 bytes). Replies take 90.1-90.6 ms against the 100 ms referee,
+and the first turn about 140-230 ms of its 1,000 ms.
 
-```text
-90 ms: N 2880 W 801 D 1354 L 725
-Penta: 63 / 345 / 569 / 379 / 84
-Elo diff: +9.17 +/- 8.56
-LLR: +3.055 (H0=-5, H1=0) — PASS
-Timeouts: Prev=0 Dev=0
-```
+Each accepted step, newest first. Elo is against the step before it unless
+stated, at 90 ms with the external referee, H0=0 / H1=+5, pentanomial pairs on
+the 50,000-position book; the improvement-log section has the full record.
 
-A run at H0=0/H1=+5 on fresh openings stopped undecided at N=10488,
-+3.51 +/- 4.51 Elo (LLR +0.957); both runs together measure about +4.7 Elo.
-The CodinGame performance gate passed under g++ 11.2, and the port matches Dev
-exactly (`make -C cpp_impl port-check`). See section 51 of the improvement log.
-Paste `cpp_impl/cg_input.cpp` (80,617 characters, 19,383 below the limit).
+| Date | Step | Result | Log |
+| --- | --- | --- | ---: |
+| 2026-09-24 | uttt.ai opening book | paired book value vs the round-six engine +72.0 (full-coverage book +26.3), same 500 openings | §54 |
+| 2026-09-24 | Inline the remaining CodinGame hot-path calls | +4.6% to +8.7% nodes/ms with CodinGame's flags, tree identical | §52 |
+| 2026-09-24 | Mate-window pruning fix (bug fix) | N=13212, +0.26 ± 4.17, LLR +3.05 (H0=-5, H1=0) PASS | §51 |
+| 2026-09-24 | Speed rounds ten and eleven, tree identical | N=2748, 818-1234-696, +15.43 ± 9.05, LLR +3.01 PASS, as one bundle vs round nine | §48-49 |
+| 2026-09-24 | Build fast under CodinGame's own flags (no `-O`) | 4.9x nodes per move built CodinGame's way; new vs old paste file +163.0 ± 31.7 (N=400) and +160.5 ± 25.2 (N=600) | §47 |
+| 2026-09-23 | CJK14 payload repack; first opening book | size only; book +18.8 ± 9.1 head-to-head | §45-46 |
+| 2026-09-22 | Round nine: hot-path rewrite, tree identical | N=2366, 723-1048-595, +18.81 ± 10.18, LLR +3.01 PASS (+22% NPS) | §44 |
+| 2026-09-14 | Round eight: exact macro-state correction history | N=4672, +29.59 ± 7.63, LLR +3.02 (H0=+20, H1=+25) PASS | §42 |
+| 2026-09-13 | Round seven: D16/H8 MiniNet, macro residual, timeout hardening | N=2954, 1100-937-917, +21.55 ± 10.37, LLR +3.11 PASS vs round six | §37-39 |
+| 2026-09-12 | Round six | about +25 (direct H0=+30 run stopped at +23.70 ± 10.51), 95 ms | §33-36 |
+| 2026-09-10 | Round five | N=1056, +53.72 ± 17.23, LLR +3.00 PASS, 95 ms | §26-32 |
 
-The round before it:
-
-On 2026-09-24, round eleven passed the official 90 ms SPRT against the
-round-ten freeze (`109e2b7`), again with a bit-identical tree:
-
-```text
-90 ms: N 4236 W 1214 D 1942 L 1080
-Penta: 132 / 438 / 848 / 564 / 136
-Elo diff: +10.99 +/- 7.31
-LLR: +3.032 (H0=0, H1=+5) — PASS
-Timeouts: Prev=9 Dev=8 (host stalls)
-Prev NPS: 19,385,984  Dev NPS: 20,566,400
-```
-
-The search now prefetches the next sibling's transposition-table line (and
-the hash move's and first ordered child's) early enough for a subtree to
-hide the latency, and sends depth <= 0 children through a light
-`search_leaf` rather than the full search frame. See section 49 of the
-improvement log. Paste `cpp_impl/cg_input.cpp` (80,576 characters, 19,424
-below the limit); built with CodinGame's own flags it searches 784k nodes per
-move against 649k for the round-nine paste file.
-
-The round before it:
-
-On 2026-09-24, a second tree-identical speed bundle passed the official
-90 ms SPRT against the round-nine freeze (`bcc0e30`) with one of four cores
-reserved, using pentanomial pairs and the 50,000-position book:
-
-```text
-90 ms: N 5478 W 1580 D 2463 L 1435
-Penta: 167 / 612 / 1064 / 701 / 195
-Elo diff: +9.20 +/- 6.53
-LLR: +3.015 (H0=0, H1=+5) — PASS
-Timeouts: Prev=13 Dev=10 (host stalls; normal replies 90-93 ms)
-Prev NPS: 17,689,984  Dev NPS: 19,563,392
-```
-
-Make now records what it overwrites and unmake restores it instead of
-re-deriving hash, MiniNet codes and HCE accumulators; move ordering scores a
-miniboard's nine squares in int16 lanes; the MiniNet decided-miniboard term
-is a running sum; `eval_weights` is constexpr; and `lround` is an exact
-trunc/fraction test. Scores and node counts are unchanged. Candidates were
-screened with a deterministic callgrind cost and `tools/speed_ab.py`
-(repeated paired timing with a 95% CI) before the SPRT; see section 48 of the
-improvement log, including the rejected ones. The CodinGame port
-follows the `always_inline` / `cf_array` rules below; `cg_selfcheck`
-reproduces the round-nine checksums at `-O3` and at CodinGame's flags, and
-built with CodinGame's flags the paste file searches 764k nodes per move
-against 721k before (`tools/cg_speed_check.py`). `cg_input.cpp` is 79,587
-characters (20,413 left).
-
-On 2026-09-24 the CodinGame submission was made fast under CodinGame's own
-compiler flags (no `-O`, see **Compiler and local builds**). The change is
-tree-identical: `cg_selfcheck` checksums match the previous port at depths
-7, 10 and 13, both at `-O3` and at CodinGame's flags. Built exactly as
-CodinGame builds it, the paste file searches 4.9x more nodes per move
-(722k vs 147k mean, random-opponent protocol games) and, new vs old at
-90 ms through the process referee:
-
-```text
-N 400  W 238 / D 99 / L 63   Elo +163.0 +/- 31.7   timeouts 0 / 0
-first turn max 187 ms; later moves median 90.2 ms, max 90.9 ms
-```
-
-The local Dev-vs-Prev SPRT compiles both engines at `-O3` and cannot see
-this gain. A follow-up (improvement log section 52) inlined the remaining
-hot-path calls: the CodinGame-flags build went from 91.6% to 95.7% of the
-`-O3` build's speed on an identical tree (`make -C cpp_impl cg-speed`).
-`cg_input.cpp` is 81,317 characters (18,683 left).
-
-On 2026-09-22, a tree-identical hot-path rewrite passed the official 90 ms
-SPRT against the round-eight freeze (`88c57b4`) with one of eight physical
-cores reserved, using pentanomial pairs and the 50,000-position book:
-
-```text
-90 ms: N 2366 W 723 D 1048 L 595
-Penta: 69 / 257 / 434 / 323 / 100
-Elo diff: +18.81 +/- 10.18
-LLR: +3.010 (H0=0, H1=+5) — PASS
-Timeouts: Prev=0 Dev=0
-Maximum response: Prev=98.37 ms Dev=98.40 ms
-Prev NPS: 11,881,856  Dev NPS: 14,548,864
-```
-
-The candidate changes no score and no node count: it computes a bit-identical
-search tree 22.4% faster. A branchless AVX2 rank sort over packed move keys
-replaces the two-array insertion sort, the per-node terminal check becomes an
-O(1) cached field, the move/constraint/side Zobrist terms are pre-XORed into
-one table, movegen emits eight squares per store, and the MiniNet centroid
-code and global HCE term are cached. Because it is speed-only, the gate was
-node-count identity first (`make -C cpp_impl bench`) and then the 90 ms SPRT.
-
-Paste `cpp_impl/cg_input.cpp` (96,887 characters at round nine; 65,731 after
-the CJK14 payload repack; 74,043 with the opening book, 25,957 below the limit).
-Static storage grew 4,368 bytes; the 4 MiB transposition table and 5 MiB macro
-table are unchanged. The CodinGame port is pinned to the pre-port engine by
-`cpp_impl/cg_selfcheck.cpp`, which checksums fixed-depth scores and node
-counts; it matched at fifteen depth/position configurations from depth 5 to 16,
-including against the minified bundle.
-
-Submission headroom is no longer tight after the CJK14 repack. Time is: the
-shipped `CODINGAME_MOVE_MS = 90` replies at 90.1-90.6 ms against the
-100 ms referee, leaving about 10 ms of scheduling slack.
-
-On 2026-09-13, the timeout-hardened round-seven stack passed the official
-90 ms SPRT against the merged round-six engine
-(`db8bce60e8f88ad4201042484dccc578fb59ecd4`) with one of eight physical cores
-reserved:
-
-```text
-90 ms: N 2954 W 1100 D 937 L 917
-Elo diff: +21.55 +/- 10.37
-LLR: +3.110 (H0=0, H1=+5) — PASS
-Timeouts: Prev=0 Dev=0
-Maximum response: Prev=97.99 ms Dev=90.19 ms
-Prev NPS: 14,007,040  Dev NPS: 11,566,848
-```
-
-The earlier evaluation-only stack passed a stricter direct 95 ms strength
-target before the external referee was added:
-
-```text
-95 ms: N 5152 W 2012 D 1591 L 1549
-Elo diff: +31.31 +/- 7.91
-LLR: +3.063 (H0=+20, H1=+25) — PASS
-Prev NPS: 13,333,760  Dev NPS: 11,787,264
-```
-
-The optional 20 ms screen also passed at N=2208, 878-630-700,
-**+28.07 +/- 12.28 Elo**, LLR +3.03 (H0=0, H1=+5).
-
-The accepted evaluator combines a larger D16/H8 local-pattern MiniNet with a
-compact learned macro-context residual. The macro head is precomputed into a
-5 MiB static score table keyed by constraint and base-4 super-board state;
-search maintains both perspective keys only when a miniboard becomes decided.
-The table exactly matches the original macro MLP and recovered about 6% NPS
-within the new eval. Paste `cpp_impl/cg_input.cpp` (93,272 characters, leaving
-6,728 below the CodinGame limit).
-
-The prior round-five direct bundle passed the official 95 ms gate at N=1056,
-433-352-271, **+53.72 +/- 17.23 Elo**, LLR +3.00 (H0=0, H1=+5).
-The next sequential winner on top of that exact merged baseline adds a
-lower-weight correction history keyed by the STM-relative shape of the forced
-miniboard. It passed the official 95 ms gate at N=6240, 2236-1968-2036,
-**+11.14 +/- 7.14 Elo**, LLR +3.02 (H0=0, H1=+5). This is an accepted
-hill-climb step, not yet a new direct +30 bundle proof.
-
-The following exact hot-path bundle removes the unused full search-board
-hash, compacts killer/counter storage, keeps counter moves packed, and reuses
-correction-entry references. It matched the frozen engine on move, score, and
-node count across 400 randomized depth-4 positions. The authoritative 95 ms
-gate passed at N=14816, 5146-4783-4887, **+6.07 +/- 4.60 Elo**, LLR +3.11
-(H0=0, H1=+5). This is the second accepted step toward the next direct proof.
-
-The third accepted step caches the finished-miniboard mask and already-scaled
-correction values, then adds a bounded HCE penalty when the opponent has a
-latent local capture on a macro-winning target. The authoritative 95 ms gate
-passed at N=7392, 2646-2308-2438, **+9.78 +/- 6.57 Elo**, LLR +3.02
-(H0=0, H1=+5). A direct 95 ms H0=+30/H1=+35 run against `d5617e5` was
-stopped at N=2848, 1061-920-867, **+23.70 +/- 10.51 Elo**, LLR -0.84.
-Round six therefore ships as an approximately +25 Elo improvement, not as a
-formal direct +30 proof.
-
-Startpos perft is frozen in both C++ and Python. If one suite's counts change, update the other in the same commit:
-
-| Depth | Nodes |
-| ---: | ---: |
-| 1 | 81 |
-| 2 | 720 |
-| 3 | 6336 |
-| 4 | 55080 |
-| 5 | 473256 |
+The Dev-vs-Prev SPRT compiles both engines at `-O3`, so it measures the search
+and eval but not the CodinGame build; that is why the rows for sections 47 and
+52 are CodinGame-built matches and speed measurements instead.
 
 ## Layout
 
@@ -592,10 +489,19 @@ Startpos perft is frozen in both C++ and Python. If one suite's counts change, u
 - `cpp_impl/crossfish.cpp` — self-contained HCE CG bot (packing source for MiniNet)
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
 - `cpp_impl/bench_ab.cpp` — deterministic Dev-vs-Prev equivalence and node-count screen (`make -C cpp_impl bench`)
-- `cpp_impl/cg_selfcheck.cpp` — pins the CodinGame port to the engine by checksumming fixed-depth scores and node counts
-- `cpp_impl/opening_book.bin` — frozen 10k-position depth-16-qualified SPRT book
+- `cpp_impl/cg_selfcheck.cpp` — checksums the CodinGame port's fixed-depth scores and node counts (and, with `cg-speed`, times them)
+- `cpp_impl/engine_selfcheck.cpp` — the same checksum over Dev or Prev, so `make -C cpp_impl port-check` can compare a port with Dev
+- `cpp_impl/opening_book.bin` — frozen 50,000-position depth-16-qualified SPRT book
+- `cpp_impl/play_book.hpp` / `play_book_data.hpp` — gameplay opening book runtime and payload; `play_book_*.cpp` are its packer, checker, generator and match tools
+- `cpp_impl/mini_eval.hpp` — retired D8/H4 MiniNet, kept for unit tests
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
+- `tools/cg_perf_gate.py`, `tools/cg_gate/Dockerfile` — the CodinGame performance gate CI runs on every pull request
+- `tools/cg_speed_check.py`, `tools/speed_ab.py` — nodes-per-move through the real protocol, and repeated paired Dev-vs-Prev timing with a confidence interval
+- `tools/nnue_*.py` — MiniNet and macro-head training and header emitters; `tools/experiments/full_nnue/` archives the rejected full-NNUE study (log §53)
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting
 - `documentation/improvement_log.md` — chronological accepted and rejected engine experiments
+- `documentation/hce_and_correction_history.md` — the handcrafted evaluation's features, tables and incremental updates, and the three correction histories
 - `documentation/nnue_training_and_implementation.md` — data, training, packing, and runtime details for the learned evaluator
-- `documentation/opening_book.md` — book selection, binary format, validation, and versioning policy
+- `documentation/opening_book.md` — SPRT book selection, binary format, validation, and versioning policy
+- `documentation/play_book.md` — the gameplay opening book: design, measurements, regeneration
+- `documentation/minification.md` — from readable source to the 100,000-character paste file

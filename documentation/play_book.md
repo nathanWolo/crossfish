@@ -76,10 +76,24 @@ Old (full coverage) and new book, identical engine, seeds and 90 ms, through
 | Book moves per game, first / second (mode 2) | 5.0 / 4.0 | 5.3 / 6.7 |
 
 A paired book value is about ±27 at 1,000 openings. Mode 2 is the transfer
-test the previous selective books failed: a different engine, and the book
-still gains four times as much. Mode 1 shows the cost of the center-center
-assumption: when the opponent opens elsewhere there is no book, and the
-second player averaged 3.4 book moves, yet the book value still quadrupled.
+test the previous selective books failed: a different engine, and the new book
+still gains far more.
+
+An independent review reran mode 2 for both books on the same new seed (7),
+500 paired openings each (`play_book_match_old 500 2 3 7`):
+
+| Book | With book | Without | Book value | Book moves (first / second) |
+| --- | ---: | ---: | ---: | ---: |
+| Full coverage | +91.0 ± 28.2 | +64.7 ± 26.8 | +26.3 | 5.0 / 4.0 |
+| **uttt.ai** | **+143.9 ± 29.1** | **+71.9 ± 27.2** | **+72.0** | **5.7 / 6.6** |
+
+On identical openings the new book is worth about 2.7 times the old one
+(+46), rather than the four times the table above suggests: the old book read
+higher in this run than in the author's. Compare books on the same seed.
+
+Mode 1 shows the cost of the center-center assumption: when the opponent opens
+elsewhere there is no book, and the second player averaged 3.4 book moves, yet
+the book value still quadrupled.
 
 Against uttt.ai itself, from the empty board (the crossfish CodinGame bot with
 each book vs uttt.ai net4, 90 ms each, one game at a time; crossfish opens
