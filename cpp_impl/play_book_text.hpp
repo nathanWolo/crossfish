@@ -107,6 +107,12 @@ struct Book {
         }
         return (bool)f;
     }
+    // Two line forms. "<key> <mb> <sq> <score> <ply> <prob>": a canonical key
+    // with the move in canonical orientation (play_book_gen). "S <seq> <move>":
+    // the position reached from the empty board by seq (comma-separated cell
+    // indices mb * 9 + sq, or "-" for none) and our move there as a cell index,
+    // in real orientation; it is replayed and keyed here, so an external
+    // generator never has to reproduce the canonical key.
     bool load(const std::string &path) {
         std::ifstream f(path);
         if (!f) return false;
@@ -114,9 +120,36 @@ struct Book {
         while (std::getline(f, line)) {
             std::istringstream in(line);
             std::string k;
+            if (!(in >> k)) continue;
+            if (k == "S") {
+                std::string seq;
+                int move;
+                if (!(in >> seq >> move)) continue;
+                GlobalBoard b;
+                if (seq != "-") {
+                    std::istringstream ms(seq);
+                    std::string cell;
+                    while (std::getline(ms, cell, ',')) {
+                        int c = std::stoi(cell);
+                        b.makeMove(Move{c / 9, c % 9});
+                    }
+                }
+                int t;
+                std::string key = canonical_key(b, t);
+                BookEntry e;
+                e.move = sym_move(t, Move{move / 9, move % 9});
+                e.ply = b.n_moves;
+                entries.emplace(key, e);  // a symmetric duplicate keeps the first
+                continue;
+            }
             BookEntry e;
-            if (in >> k >> e.move.mini_board >> e.move.square >> e.score >> e.ply >> e.prob) entries[k] = e;
+            if (in >> e.move.mini_board >> e.move.square >> e.score >> e.ply >> e.prob) entries[k] = e;
         }
         return true;
+    }
+
+    bool has(GlobalBoard &b) const {
+        int t;
+        return entries.count(canonical_key(b, t)) != 0;
     }
 };

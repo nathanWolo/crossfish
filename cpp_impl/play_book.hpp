@@ -1,14 +1,16 @@
 #pragma once
-// Full-coverage opening book for the CodinGame bot.
+// Opening book for the CodinGame bot.
 //
-// The book covers every opponent reply up to a fixed depth: our first
-// PLAY_BOOK_DEPTH_FIRST stored moves when we move first (after the fixed
-// center-center opening) and PLAY_BOOK_DEPTH_SECOND when we move second.
-// Because coverage is complete, positions need no keys. PbWalker visits the
-// book's positions in one fixed order, and the payload holds only each book
-// move's index among that position's legal moves, packed in mixed radix. The
-// packer (play_book_pack.cpp) and the runtime drive the same walk, so they cannot
-// disagree about the order. See documentation/play_book.md.
+// The book is a tree. Both roots assume the first player opens center-center:
+// when we move first the bot plays it and the book starts at the opponent's
+// reply; when we move second the book starts at our reply to it. At each of our
+// positions the book stores our move and whether the book goes on after it; at
+// each opponent position it stores which replies it covers. Positions need no
+// keys: PbWalker visits the book in one fixed order and the payload holds only
+// mixed-radix digits (our move's index among the legal moves, then a 0/1
+// "continues" digit; one 0/1 "covered" digit per non-terminal opponent reply).
+// The packer (play_book_pack.cpp) and the runtime drive the same walk, so they
+// cannot disagree about the order. See documentation/play_book.md.
 //
 // Positions equivalent under the 8 board symmetries share one entry. The
 // runtime table maps a symmetry-canonical 64-bit hash to the book move in that
@@ -123,49 +125,54 @@ static int pb_map_move(int t, int packed, bool inverse) {
 }
 
 // Walks every book position in the fixed order shared by packer and runtime.
-// choose(board, legal, n) returns the book move's index among the legal moves.
-template <typename Board, typename MoveT, typename Choose>
+// The hooks supply the decisions (the runtime reads them from the payload, the
+// packer from the text book):
+//   choose(b, legal, n)  index of our book move among the legal moves
+//   more(b)              after our move (opponent to move in b): does the book go on?
+//   covers(b, reply)     is this non-terminal opponent reply in the book?
+template <typename Board, typename MoveT, typename Hooks>
 struct PbWalker {
-    Choose &choose;
+    Hooks &hooks;
     std::unordered_set<uint64_t> seen_opponent;
     int entries = 0;
 
-    void ours(Board &b, int idx, int max_idx) {
+    void ours(Board &b) {
         int t;
         uint64_t h = pb_canonical(b, t);
         if (PB_TABLE.count(h)) return;
         MoveT legal[81];
         int n = b.fillLegalMoves(legal);
-        MoveT m = legal[choose(b, legal, n)];
+        MoveT m = legal[hooks.choose(b, legal, n)];
         PB_TABLE[h] = (uint8_t)pb_map_move(t, m.mini_board * 9 + m.square, false);
         entries++;
-        if (idx + 1 >= max_idx) return;
         b.makeMove(m);
-        if (b.checkWinner() == -1) opponent(b, idx + 1, max_idx);
+        if (b.checkWinner() == -1 && hooks.more(b)) opponent(b);
         b.unmakeMove();
     }
 
-    void opponent(Board &b, int idx, int max_idx) {
+    void opponent(Board &b) {
         int t;
         if (!seen_opponent.insert(pb_canonical(b, t)).second) return;
         MoveT legal[81];
         int n = b.fillLegalMoves(legal);
         for (int i = 0; i < n; i++) {
             b.makeMove(legal[i]);
-            if (b.checkWinner() == -1) ours(b, idx, max_idx);
+            if (b.checkWinner() == -1 && hooks.covers(b, legal[i])) ours(b);
             b.unmakeMove();
         }
     }
 
-    // Roots: we move first (after the fixed center-center opening), then second.
-    void run(int depth_first, int depth_second) {
+    // Roots, both after the first player's center-center: we move first (the
+    // bot opened, the opponent replies), then we move second.
+    void run() {
         pb_init_tables();
         PB_TABLE.clear();
         Board we_first;
         we_first.makeMove(MoveT{4, 4});
-        opponent(we_first, 0, depth_first);
+        opponent(we_first);
         Board we_second;
-        opponent(we_second, 0, depth_second);
+        we_second.makeMove(MoveT{4, 4});
+        ours(we_second);
     }
 };
 
@@ -201,10 +208,14 @@ static bool pb_init() {
     static unsigned char buf[PLAY_BOOK_BYTES + 16];
     int n = d16_mini_cjk_decode(PLAY_BOOK_CJK, buf, (int)sizeof(buf));
     if (n < PLAY_BOOK_BYTES) return false;
-    PbReader reader{buf, n};
-    auto choose = [&reader](Board &, MoveT *, int n_legal) { return reader.next(n_legal); };
-    PbWalker<Board, MoveT, decltype(choose)> walker{choose};
-    walker.run(PLAY_BOOK_DEPTH_FIRST, PLAY_BOOK_DEPTH_SECOND);
+    struct Hooks {
+        PbReader reader;
+        int choose(Board &, MoveT *, int n_legal) { return reader.next(n_legal); }
+        bool more(Board &) { return reader.next(2) != 0; }
+        bool covers(Board &, const MoveT &) { return reader.next(2) != 0; }
+    } hooks{PbReader{buf, n}};
+    PbWalker<Board, MoveT, Hooks> walker{hooks};
+    walker.run();
     PB_READY = walker.entries == PLAY_BOOK_ENTRIES;
     if (!PB_READY) PB_TABLE.clear();
     return PB_READY;

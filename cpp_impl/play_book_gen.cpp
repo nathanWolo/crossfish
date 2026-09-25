@@ -2,8 +2,8 @@
 //
 // Every opponent reply is covered; each of our positions gets a long search
 // for its book move. We move first: the bot opens center-center, then the book
-// covers our next <depth_first> moves. We move second: every opponent first
-// move, then our first <depth_second> moves. Positions equivalent under the 8
+// covers our next <depth_first> moves. We move second: the opponent's
+// center-center, then our first <depth_second> moves. Positions equivalent under the 8
 // board symmetries are searched once. Levels are processed shallowest first,
 // so an interrupted run still leaves a complete shallower book on disk.
 //
@@ -106,10 +106,16 @@ int main(int argc, char **argv) {
     };
 
     std::vector<Pending> level;
-    GlobalBoard first;
+    GlobalBoard first;  // we move first: the bot opens center-center
     first.makeMove(Move{4, 4});
     expand(first, 0, level);
-    expand(GlobalBoard(), 0, level);
+    {  // we move second: the book assumes the opponent opened center-center
+        GlobalBoard second;
+        second.makeMove(Move{4, 4});
+        int t;
+        claimed.insert(canonical_key(second, t));
+        level.push_back({second, 0});
+    }
 
     for (int depth = 0; !level.empty(); depth++) {
         std::vector<Pending> next;
