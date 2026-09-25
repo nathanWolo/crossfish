@@ -357,6 +357,33 @@ This section is the other half of the history. Retrying these without a new hypo
   maps): NPS -5.4%; N=1128, -1.85 +/- 14.32. Killed.
 - Root move chosen from a fail-low bound: instrumented, 0 of 616 self-play
   moves affected. Not tested.
+- TT bound as the pruning eval (an EXACT entry, a LOWER bound above or an
+  UPPER bound below the static eval replaces it for RFP and futility):
+  peaked at +14.8 at N=1200, then N=3702, +2.16 +/- 7.93. Killed.
+- Singular extension with a verification search (depth >= 6, margin
+  30 * depth, multi-cut; the pseudo-singular extension kept below depth 6):
+  N=1938, +2.87 +/- 10.81. Killed.
+- Both of the above as one bundle: N=1206, -8.64 +/- 13.94. They do not add;
+  the small positive readings were noise.
+- "Improving" (RFP margin half a margin smaller when the corrected static
+  eval rose since ply-2): N=1812, -2.49 +/- 11.88.
+- Internal iterative reduction replacing IID (no TT hit, depth >= 4: search
+  one ply shallower): N=1206, -5.47 +/- 13.57.
+- Late-move pruning (non-PV, depth <= 3, quiet moves after 3 + 2*depth^2):
+  N=1230, -5.08 +/- 13.68. Only 6.5% of nodes have more than 9 moves.
+- Qsearch plays a forced single move instead of standing pat: N=1212,
+  -6.88 +/- 13.46.
+- Late-game tempo `min(600, 18 * (n_moves - 32))`, fitted to the measured
+  static-vs-search bias (+75 at 32-39 stones up to +544 at 56-63): N=1212,
+  -6.88 +/- 13.51. The correction histories already absorb that bias.
+- MiniNet fine-tune from the shipped net (the packed D16/H8 expands to a
+  CFM2 checkpoint bit-exactly) on 600k depth-12 HCE-leaf labels with target
+  search - HCE - macro: holdout MAE 1057 -> 1025, but N=1812, -0.96 +/- 11.40.
+  `--pin-empty` diverged (loss rose every epoch); `--relative-empty` works.
+- SPSA over the six HCE global weights: after 3,300 pairs at 25 ms every
+  weight was within 3% of its value. Not worth an SPRT.
+- Full Stockfish-style NNUE replacing HCE + MiniNet + macro, including a
+  data-scaling study and qsearch-leaf training data: see section 53.
 - Every SPRT walks the book in the same order, so near-identical engines
   share early noise; three unrelated candidates read -11 to -13 near N=600.
   Use `SPRT_GAME_OFFSET` for independent early readings.
@@ -2215,8 +2242,296 @@ ordering, with the TT latency now hidden. The next speed gain probably needs
 a structural change (for example a specialised depth-1 node, or a smaller
 per-node state) rather than another local rewrite.
 
+---
 
-## 52. An opening book chosen by uttt.ai (24 September 2026)
+## 51. Keep eval pruning away from mate-range bounds (24 September 2026)
+
+Found from outside the SPRT: in a 1,000-game match against a CodinGame-rules
+uttt.ai network, 155 of crossfish's 21,780 searched moves (in 146 games)
+reported a root score between 20,000 and 90,000. That is neither an eval nor a
+mate score (mates are `±(99999 - ply)`). The values clustered at 51,566-51,570,
+which is `99969 - 48400`: a mate score minus the sum of four aspiration
+widenings (400 + 1,200 + 3,600 + 10,800 + 32,400).
+
+### What was wrong
+
+A per-iteration trace of one such position (a forced win in 30) showed every
+depth failing low five times before a wide re-search found the same mate:
+
+```text
+depth 29  window [99569, 100369] -> 99569 FAIL-LOW
+depth 29  window [98369, 100369] -> 98369 FAIL-LOW
+...
+depth 29  window [-45631, 100369] -> 99969            (inside the first window)
+```
+
+74 of 197 iterations in a 3-second search were such mate-window fail-lows,
+and when the 90 ms clock ran out inside a cascade the root reported the
+widened bound (51,569) as its score. With eval pruning disabled the same
+search had none.
+
+The cause is three prunes that compare the static eval with the window:
+
+- **Reverse futility** returns beta when `static_eval - margin >= beta`.
+  With beta at -99,569 any ordinary eval passes, so the node claims to escape
+  the mate without searching.
+- **Futility pruning** skips quiet moves when `static_eval + margin <= alpha`.
+  With alpha at +99,569 it skips every quiet move, including the one that
+  mates sooner.
+- **qsearch delta pruning** does the same for captures.
+
+A static eval says nothing about how soon anyone is mated, so the three prunes
+now run only against bounds outside mate range: reverse futility needs
+`|beta| < CORR_MATE_BOUND`, futility `|alpha| < CORR_MATE_BOUND`, delta
+pruning `alpha < CORR_MATE_BOUND`. Stand-pat is unchanged.
+
+### Measurement
+
+The change alters the tree wherever a mate score appears in it: `bench_ab
+equiv 80 8` differs in 65 of 80 positions, at +1.1% nodes and -0.6% time
+(`bench_ab nodes 120 8`). The symptom, on crossfish turns from recorded games
+searched fresh at 90 ms (`cg/tools/mate_window_probe.py` in the uttt.ai fork):
+
+| | before | after |
+| --- | ---: | ---: |
+| traced position: mate-window fail-lows in 3 s | 74 | 0 |
+| after a mate score (150 positions): searches with any | 20 | 1 |
+| middlegame (150 positions): searches with any | 5 | 0 |
+| bound reported as the score | 2 | 0 |
+| median depth, middlegame | 18 | 18 |
+
+Middlegame move choices differed in 9 of 150 positions, inside the 12 of 150
+that the unchanged build differs from itself at 90 ms; after a mate score
+they differed in 17 of 150 against 1 of 150 for the unchanged build, as the
+search now finds shorter mates (mate in 20 rather than 30 on the traced
+position).
+
+This is a bug fix, so it was gated for **non-regression** (H0 = -5, H1 = 0)
+rather than the +5 bar a search change normally needs. SPRT at 90 ms against
+the round-eleven freeze, six workers on eight physical cores:
+
+```text
+N 2880  W 801 / D 1354 / L 725
+Penta 63 / 345 / 569 / 379 / 84
++9.17 +/- 8.56 Elo
+LLR +3.055 (H0=-5, H1=0) — PASS
+Timeouts: Prev 0 / Dev 0   Maximum response: 90.14 ms / 90.15 ms
+Prev NPS 30,783,360  Dev NPS 31,464,192
+```
+
+A run at the usual bar (H0 = 0, H1 = +5) on fresh openings (`SPRT_GAME_OFFSET=1440`)
+was stopped undecided:
+
+```text
+N 10488  W 2773 / D 5048 / L 2667
+Penta 263 / 1274 / 2094 / 1320 / 293
++3.51 +/- 4.51 Elo
+LLR +0.957 (H0=0, H1=+5) — stopped, undecided
+Timeouts: Prev 0 / Dev 0
+```
+
+Over both runs (13,368 games) the fix measures about +4.7 Elo: a small gain,
+too small to clear +5 in reasonable time, and shipped as a correctness fix.
+
+The CodinGame performance gate (section 47's compiler, `tools/cg_perf_gate.py`)
+passed against `main` with g++ 11.2: nodes per millisecond at full budget
+0.968 [0.936, 1.000] (the candidate now uses its full budget on 93% of replies
+against 71%, adding won positions the old build left early, so the two sets of
+replies differ); inlining 96% of `-O3`; later replies p99 90.1 ms with none at
+or over 100 ms; smoke match 58-77-65 with no timeouts; 40/40 book games.
+
+### Port
+
+The same three guards went into `codingame_nnue.cpp`. A tree-changing port
+cannot be checked by `cg_selfcheck` against itself, so `engine_selfcheck.cpp`
+runs `cg_selfcheck`'s positions and checksum over `CrossfishDev` or
+`CrossfishPrev`: the unported CG file matched Prev at depths 7 and 9, and the
+ported file matches Dev at depths 5, 7, 9 and 11 (and the no-rename minified
+bundle at 7 and 9). `make -C cpp_impl port-check` repeats that comparison.
+`cg_input.cpp`: 80,617 characters (19,383 left). The protocol check kept 40/40
+exact book games, first turn at most 187 ms, later replies median 90.1 ms and
+max 90.2 ms.
+
+### Not fixed
+
+A rarer fault remains: occasional wrong proofs with state carried between
+moves. In one 1-second game crossfish played a move it scored as a forced win
+(+99,976) that a fresh search proves lost; in a 90 ms game it reported a
+forced loss (-99,977) in a position a fresh search proves won, and then
+played the losing move. Neither reproduces from a fresh engine, and replaying
+the game's history reproduced one of them in 1 of 15 tries, so it depends on
+table state and timing. This change does not show whether it helps; the
+probes to chase it (a traced debug build with THINK, PV and switches for each
+pruning and shortcut) are in the uttt.ai fork's `cg/tools/`.
+
+---
+
+## 52. Close the rest of the CodinGame-flags gap (24 September 2026)
+
+Section 47's transform only matched function signatures that fit on one
+line, so every signature wrapped across lines was skipped, and the
+`std::array` sweep did not cover the transposition table, a `std::vector`.
+Built the CodinGame way and disassembled, `CrossfishDev::search` still made
+26 out-of-line calls and `qsearch` 13:
+
+| Call target | `search` | `qsearch` |
+| --- | ---: | ---: |
+| `std::vector<CompactTTBucket>::operator[]` (probe, IID re-probe, 2 prefetches, store) | 5 | 0 |
+| `get_fast_move_scores<FastBoard>` | 5 | 3 |
+| `finish_hce<FastBoard>`, `finish_hce_with_global<FastBoard>` | 2 | 2 |
+| `cached_mini_key<FastBoard>` | 1 | 0 |
+| `d16_mini_hsum256` (`mini_eval_d16.hpp`) | 1 | 1 |
+| `evaluate_macro_key` (`macro_eval.hpp`) | 1 | 1 |
+| recursion | 4 | 1 |
+| `std::chrono` clock read and compare (once per 128 nodes) | 3 | 3 |
+| `memcpy`, `memmove`, `__stack_chk_fail` | 4 | 2 |
+
+The fix, again tree-identical:
+
+- the table becomes a `cf_heap_array<CompactTTBucket>`: the same
+  value-initialized heap allocation (`new T[n]()`, 32-byte aligned through
+  C++17 aligned new), with deep copy, move, and an always-inline
+  `operator[]`. `run_match` resets the engine by move assignment, which the
+  type supports;
+- `always_inline` on the multi-line helpers: `cached_mini_key`,
+  `get_fast_move_scores`, `finish_hce_with_global`, `finish_hce`, and
+  `eval_extra_from_maps` (called only from `finish_hce_with_global`, so it
+  becomes the next call once that one inlines);
+- `always_inline` (and `inline`, which silences GCC's "might not be
+  inlinable" warning on a plain `static`) on `d16_mini_hsum256` and
+  `evaluate_macro_key` in the **shared generated headers**. Dev, Prev and
+  `test_bots` include them too; the attribute changes no code at `-O3`, and
+  `bench_ab nodes 60 9` gives the same 1,681,665 nodes before and after.
+  `tools/nnue_emit_mininet_header.py` and `tools/nnue_emit_macro_header.py`
+  now emit the attribute, so a regenerated header keeps it.
+
+Afterwards `search` makes 12 calls (4 recursion, 3 clock, `memcpy` x2,
+`memmove`, `__stack_chk_fail`, and the never-taken lazy
+`macro_load_packed()` fallback inside `evaluate_macro_key`) and `qsearch` 7
+of the same kinds. `get_fast_move_scores` inlined whole, with nothing out of
+line left inside it.
+
+Search time for the identical tree (`cg_selfcheck 30 13`: 30 positions,
+9,617,942 nodes, same checksum everywhere), g++-11 for every build, mean of
+five interleaved runs with start-up subtracted:
+
+| Build | `main` | This change |
+| --- | ---: | ---: |
+| CodinGame flags | 0.691 s | 0.628 s |
+| `-O3` | 0.633 s | 0.601 s |
+| CodinGame / `-O3` speed | 91.6% | 95.7% |
+
+The CodinGame build is 10% faster and now matches the previous `-O3` build.
+What remains (about 4%) is code generation that per-function `optimize`
+attributes cannot reach under a global `-O0`, not calls.
+
+`tools/cg_speed_check.py` cannot resolve a difference this size: its games
+diverge with timing, so mean nodes per move mixes speed with game phase (two
+builds of the same tree read 630k and 716k on the same seeds). `cg_selfcheck`
+now also prints `seconds=` and `nps=` for its searches (after a depth-1
+warm-up, so table initialization is outside the timed region), and
+`make -C cpp_impl cg-speed` builds it at `-O3` and with CodinGame's flags and
+runs both. The checksum lines must match; the seconds ratio is the gap.
+
+The paste file is 77,647 characters (22,353 left); all 101
+`__attribute__((always_inline))` in the readable source and inlined headers
+survive minification.
+
+New versus `main`, both paste files compiled with CodinGame's flags, 90 ms,
+process referee, 1,000 games:
+
+```text
+N 1000  W 335 / D 345 / L 320   Elo +5.2 +/- 17.4
+```
+
+A 10% speed-up is worth single-digit Elo, so this is a no-regression check,
+not a measurement. The run logged 3 timeouts for the new build and 6 for the
+old one while other jobs shared the machine. On an idle machine the protocol
+check gives the new build a first turn of at most 182.8 ms and later moves
+of median 90.2 ms, max 91.6 ms, with exact book coverage (30/30).
+
+---
+
+## 53. A full Stockfish-style NNUE, and whether data fixes it (24 September 2026)
+
+The CJK14 repack left room for a larger network, so this round asked whether
+a Stockfish-style NNUE can replace the whole evaluation (HCE, MiniNet and the
+macro head) instead of correcting it. Nothing here shipped; the code is in
+`tools/experiments/full_nnue/` with a README.
+
+**Network.** 199 sparse features per perspective: each stone of a live
+miniboard as mine or theirs (162), each decided miniboard as mine, theirs or
+drawn (27), and the move constraint (10, shared). A shared-weight
+accumulator of width 256 per perspective, clipped ReLU, concatenated 512 ->
+32 -> 1. The corrected static eval in interior pruning and the qsearch
+stand-pat both became NNUE + correction history; the HCE's incremental
+threat maps stayed for move ordering and the global-win tactics. A float
+reference implementation matched PyTorch to within one eval unit. The only
+earlier attempt (section 8) had a 32-wide accumulator and depth-6 HCE labels
+and lost about 277 Elo at depth 4.
+
+**Data.** 1.59M self-play positions (30,000 games at 10 ms) and 300k random
+positions, all labeled by the full current engine searching to depth 12
+(about 1.7 ms per position on four threads; 20% of labels are mate scores).
+Every row also carries the current static eval, so the trainer reports the
+baseline on the same 50,000-position holdout.
+
+**First result: better fit, worse play.**
+
+| Evaluator | Holdout WDL-MSE | MAE | Corr | Equal depth 4 vs Prev |
+| --- | ---: | ---: | ---: | ---: |
+| Current static eval (HCE + MiniNet + macro) | 0.02865 | 998 | 0.621 | - |
+| NNUE, sigmoid-MSE (K = 2000), 1.89M rows | **0.02435** | 933 | 0.635 | **-192.7 +/- 34.0** (N=510) |
+| NNUE, Huber, mates dropped | 0.0447 | **792** | **0.689** | **-295.6 +/- 44.0** (N=444) |
+
+No sign or perspective bug: the NNUE agrees in sign with the old eval on 88%
+of positions where the old eval exceeds +/-3000. The better the net
+predicts a deep search's verdict, the worse it orders leaves: its outputs
+are compressed (standard deviation 1,759-1,983 against 2,738) and correlate
+only 0.61-0.65 with the evaluator the search was tuned around.
+
+**Data scaling.** The same net on nested subsets, one holdout, 400 games at
+depth 4 per point (+/- ~40 Elo each):
+
+| Training rows | Holdout WDL-MSE | MAE | Equal depth 4 |
+| ---: | ---: | ---: | ---: |
+| 125,000 | 0.0378 | 1032 | -303 +/- 49 |
+| 250,000 | 0.0339 | 1030 | -344 +/- 49 |
+| 500,000 | 0.0311 | 1006 | -214 +/- 42 |
+| 1,000,000 | 0.0280 | 981 | -172 +/- 37 |
+| 1,837,147 | 0.0243 | 931 | -205 +/- 39 |
+
+Offline error falls steadily with data and has not plateaued. Play improves
+roughly 30-50 Elo per doubling up to 1M rows and then stops within the
+noise. Even at the optimistic slope, reaching parity would take five or six
+more doublings (on the order of 100M labeled positions, about two days of
+labeling per doubling at this machine's rate for the last ones).
+
+**Better-matched data made it worse.** Root self-play positions are not what
+the evaluator is asked about, so 1.52M positions were sampled at qsearch
+entry during 3,000 self-play games at 20 ms (`leaf_dump`, 1 in 4,096 nodes)
+and labeled the same way. Leaf positions are sharp: the mean depth-12 score
+for the side to move is +4,771 (roots: +96) and 26% are mates. There the
+current evaluator is better even offline, and the net trained only on them
+is far worse in play:
+
+| 1M training rows | Holdout WDL-MSE (leaf holdout) | Corr | Equal depth 4 |
+| --- | ---: | ---: | ---: |
+| Current static eval | 0.0504 | 0.638 | - |
+| NNUE on leaf positions (lr 3e-4; lr 1e-3 collapsed to a constant) | 0.0541 | 0.536 | **-474 +/- 75** |
+
+**Reading.** The handcrafted terms and the MiniNet's exact per-miniboard
+pattern tables encode two-in-a-row geometry and threat structure directly.
+A per-cell linear first layer has to rebuild that from 1-2M positions and
+cannot yet, least of all in the tactical positions where qsearch evaluates.
+The architecture that works here is a sharp base with learned corrections
+on top, which is what shipped. A future attempt should start from that:
+an NNUE residual on top of HCE (as the MiniNet is), pattern-level input
+features rather than cells, or a WDL-blended target over far more games.
+Anything that relabels positions must use a `test_bots` built from the
+unpatched Dev, or the experimental net becomes its own teacher.
+
+## 54. An opening book chosen by uttt.ai (24 September 2026)
 
 Section 46's full-coverage book spent its characters on every reply, including
 replies no competent engine plays, and on all 81 first moves when moving
