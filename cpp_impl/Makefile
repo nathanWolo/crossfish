@@ -31,7 +31,7 @@ CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX
 # pragmas and always_inline attributes make the submission fast there.
 CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
 
-.PHONY: all test bench cg-gate port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol clean
+.PHONY: all test bench cg-gate port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol datagen clean
 
 all: test
 
@@ -82,6 +82,12 @@ port-check: $(BIN)/cg_selfcheck $(BIN)/engine_selfcheck
 	  if [ "$$cg" = "$$dev" ]; then echo "port-check depth $$d: IDENTICAL ($$cg)"; \
 	  else echo "port-check depth $$d: MISMATCH"; echo "  cg:  $$cg"; echo "  dev: $$dev"; exit 1; fi; \
 	done
+
+# Eval training data (documentation/eval_data.md).
+$(BIN)/datagen: datagen.cpp test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ datagen.cpp $(FILESYSTEM_LIB)
+
+datagen: $(BIN)/datagen
 
 $(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_gen.cpp
