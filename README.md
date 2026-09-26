@@ -15,6 +15,9 @@ Detailed project documentation:
   record of every accepted and rejected experiment, with its gate
 - [Handcrafted evaluation and correction history](documentation/hce_and_correction_history.md)
 - [NNUE training and runtime implementation](documentation/nnue_training_and_implementation.md)
+- [Eval training data and testing tools](documentation/eval_data.md): the self-play/labeling
+  pipeline, the win-probability trainer, isolated candidate builds, SPRT shards on a second
+  machine and round-robin ratings
 - [CodinGame submission and minifier](documentation/minification.md)
 - [Gameplay opening book](documentation/play_book.md): the book the CodinGame bot plays from
 - [SPRT opening book](documentation/opening_book.md): the frozen starting positions the SPRT harness uses
@@ -498,10 +501,12 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `tools/cg_perf_gate.py`, `tools/cg_gate/Dockerfile` — the CodinGame performance gate CI runs on every pull request
 - `tools/cg_speed_check.py`, `tools/speed_ab.py` — nodes-per-move through the real protocol, and repeated paired Dev-vs-Prev timing with a confidence interval
 - `tools/nnue_*.py` — MiniNet and macro-head training and header emitters; `tools/experiments/full_nnue/` archives the rejected full-NNUE study (log §53)
+- `cpp_impl/datagen.cpp`, `tools/eval_*.py`, `tools/nnue_train_blend.py`, `tools/round_robin.py`, `tools/sprt_merge.py`, `tools/sprt_worker.py` — eval data, training and testing tools (log §55, `documentation/eval_data.md`); `tools/experiments/capacity/` holds the architecture probes
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting
 - `documentation/improvement_log.md` — chronological accepted and rejected engine experiments
 - `documentation/hce_and_correction_history.md` — the handcrafted evaluation's features, tables and incremental updates, and the three correction histories
 - `documentation/nnue_training_and_implementation.md` — data, training, packing, and runtime details for the learned evaluator
+- `documentation/eval_data.md` — the eval data pipeline, win-probability trainer, candidate A/B builds, pooled SPRTs and round robins
 - `documentation/opening_book.md` — SPRT book selection, binary format, validation, and versioning policy
 - `documentation/play_book.md` — the gameplay opening book: design, measurements, regeneration
 - `documentation/minification.md` — from readable source to the 100,000-character paste file

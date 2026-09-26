@@ -2692,3 +2692,144 @@ for the old book. The review also confirmed that the committed payload is
 reproduced byte for byte by `play_book_pack` from the uttt.ai fork's
 `cg/book/uttt_book_v1.txt`, and that the merged paste file is 90,095
 characters (9,905 left).
+
+## 55. Retraining the evaluation on 4.8M positions: better fit, no Elo (25-26 September 2026)
+
+The engine had gained a lot since the MiniNet was last trained, so this round
+retrained the evaluation (MiniNet + macro head on top of the fixed HCE) on
+fresh, much larger data, Stockfish style: a win-probability loss on searched
+evals and game results. None of the resulting nets beats the shipped one at
+real time controls. The round did produce a bug fix, a reusable dataset and a
+test toolchain, and it settled several questions about how to test an eval.
+Nothing in the engine or the CodinGame bot changed. The pipeline is in
+[eval_data.md](eval_data.md).
+
+**Data.** 4.8M positions, each with a depth-14 search score from the current
+engine and uttt.ai net4's value, and (for the 93% played after the last
+random move) its game's result under CodinGame rules:
+
+- 3.5M from 69,626 crossfish self-play games at 40 ms (`datagen play`), 45%
+  starting after 0-8 random plies, 35% from uttt.ai self-play openings at
+  plies 4-24, 20% after 9-20 random plies; before ply 40, 8% of moves are drawn
+  from the moves within 300 of the best at depth 4.
+- 1.32M from the uttt.ai fork's 25,000 self-play games (generations 1-5).
+
+**A loader bug that has corrupted labels for a long time.** `test_bots`'s
+`load_utttai_state` read a free-move position with stones on the board (a
+player sent to a decided miniboard) as a pass: it set `prev_move_was_pass`,
+which only `pass()`/`unpass()` ever clear, so every move in the tree searched
+from that position was also a free move. About 11% of rows (530,000 here) got
+such labels, and so did every older dataset relabeled through this loader
+(the `NNUEWDL1` `dump search` / `relabel` / `rank` paths). The fix records the
+free move as a last move into a decided miniboard; a round-trip self-test in
+`test_bots verify` (encode, reload, compare legal moves at the position and
+after every reply) fails on the old code at the first such position. After
+relabeling, 22% of the affected labels changed (the rest scored a mate or
+exactly 0 both times, or had one live miniboard left, where the rule does not
+matter), and the depth-14 labels predict results much better: the fitted
+sigmoid scale K fell from 3,150 to 1,600 and the result log loss from 0.506
+to 0.459. 61 self-play games that had started from a free-move opening, and
+so were played entirely under the bug, were dropped.
+
+**Candidates.** Win-probability MSE, 10 epochs, the shipped MiniNet and macro
+decoded exactly as the starting point, 10% of games held out. Equal-depth
+screens are depth 8 against the shipped eval; the first 4,000 games of each use
+the same 2,000 openings.
+
+| Net | Labels | What changed | Held-out loss vs shipped | Depth 8 |
+| --- | --- | --- | ---: | ---: |
+| A_search | buggy | search target only | -1.9% | +12.8 ± 9.2 (4k), +2.6 ± 5.2 (next 12k) |
+| A_blend | buggy | 30% game result | -3.6%* | +2.0 ± 9.1 |
+| A_blend_uttt | buggy | + 25% uttt.ai value | -5.4%* | +3.5 ± 9.2 |
+| B_blend_hce | buggy | + HCE weights trained | -4.8%* | **-25.0 ± 9.1** |
+| F_search | fixed | K 1,600 (fitted) | -4.4% | -1.6 ± 9.2, +0.3 ± 5.2 (12k) |
+| F_full | fixed | all 19,683 pattern embeddings, re-clustered | -7.0% | **+17.8 ± 9.1, +8.3 ± 5.2 (12k)** |
+| F_hce | fixed | HCE weights trained | -9.0% | -10.0 ± 9.2 |
+| F_k3150 / F_k2400 | fixed | K fixed | -2.1% / -2.7% | -6.7 / +3.6 (± 9) |
+| D_full | fixed | F_full on an HCE that treats drawn miniboards as blocking lines | -7.0% | +9.3 ± 4.5 (16k) |
+| a2 | fixed | F_full with the MiniNet's duplicate hidden units re-initialised | -11.5% | +5.9 ± 4.6 (16k) |
+
+\* against that run's own target, which includes results or uttt.ai values. Loss
+percentages are only comparable between runs with the same labels and K
+(3,150 for the buggy labels, 1,600 after the fix unless stated); a2's is the
+float model before re-clustering (-10.9% packed).
+
+Timed results (pentanomial SPRT, H0 0 / H1 5):
+
+| Net | 90 ms | Games |
+| --- | ---: | ---: |
+| F_full | +1.9 ± 2.9, stopped as not a gainer (LLR -1.39) | 26,436 (desktop + Linux worker) |
+| a2 | -3.0 ± 5.9, H0 accepted | 6,640 |
+| A_search | +4.7 ± 6.6 when paused for the loader fix | 5,220 |
+
+F_full also ran 4.8% (desktop) and 4.0% (laptop) fewer nodes per second at
+90 ms, which eats into its equal-depth gain.
+
+Round robins (`tools/round_robin.py`, ratings with shipped anchored at 0):
+
+| Net | Depth 8 (42,000 games) | 20 ms (20,000 games) |
+| --- | ---: | ---: |
+| F_full | +9.7 ± 6.9 | -4.0 ± 7.2 |
+| D_full | +8.8 ± 6.8 | -9.7 ± 7.2 |
+| a2 | +6.9 ± 6.9 | -9.5 ± 7.3 |
+| A_search | +6.4 ± 6.8 | +0.8 ± 7.2 |
+| hcedraw (the drawn-miniboard HCE fix alone) | +2.9 ± 6.9 | - |
+| F_search | +1.4 ± 6.9 | - |
+
+**What the round showed about testing an eval.**
+
+- *Depth-8 screens are the wrong proxy for eval changes.* Four of the five
+  retrained nets in the depth-8 round robin gained 6-10 there (F_search
+  +1.4), and none gained at 20 or 90 ms. Depth mode turns off futility-style
+  pruning and correction-history updates and ignores speed; the 20 ms timed
+  round robin ordered the nets like the 90 ms SPRTs did. Use a 20 ms round
+  robin as the screen and 90 ms to confirm.
+- *4,000-game screens on one opening block are optimistic.* The first block
+  read 9-12 Elo higher than the next 12,000 games, on fresh openings, for
+  three of the four candidates re-run.
+- *Offline loss does not rank play.* Three times the run with the lower loss on
+  the same target played worse: B_blend_hce against A_blend, F_hce against
+  F_search, and a2 against F_full.
+- *Search scores are the better teacher.* Blending in 40 ms self-play results
+  or uttt.ai's value lowered the equal-depth result.
+- *Training the HCE weights jointly hurts* (-25 and -10 at equal depth), as
+  round ten's SPSA suggested: the shipped HCE weights are close to optimal for
+  play even though a better fit is available.
+- *The pruning margins are not what holds the retrained nets back.* The
+  retrained nets' learned correction is larger (standard deviation
+  1,240-1,390 for the round-robin nets against 1,076 for the shipped one on
+  20,000 sample positions), so the qsearch fail-high shortcut
+  (`QHCE_FAIL_HIGH_MARGIN`, 640) is wrong more often for them. Widening it to
+  1,344 did not help (20 ms, 9,000 games per engine): F_full +0.4, shipped
+  with 1,344 -1.1, F_full with 1,344 -6.3 (all ± 6.6).
+
+**Architecture study** (offline probes on the same data and split, with rough
+cost and character-budget estimates):
+
+- A typical NNUE (width 128-256) or a transformer at the leaves does not fit
+  the 9,905 free characters (the probes' pattern NNUE has 22.7M new
+  parameters, the transformer 0.64M); a rough speed estimate, not measured in
+  play, put their cost at 100-230 Elo.
+- With a 10x higher learning rate (3e-3), the same D16/H8 net reaches -17.4%
+  held-out loss after packing (not yet played); more MiniNet capacity then
+  gains at most one more point (D32/H32: -19.1% against -18.1%, both float)
+  and starts to overfit within 3-4 epochs.
+- The shipped MiniNet's eight hidden units are four near-identical copies
+  each of two units; un-collapsing them (a2) did not help in play.
+- Storing the weights as fp16 would free roughly 7,500 characters (an
+  estimate from the payload sizes; not built), the most promising use of
+  which is a bigger gameplay book.
+
+**Other.** nelhage/ultimattt's minimax player lost 18 / 25 / 957 to the
+crossfish CodinGame bot at 90 ms (1,000 games, +601 ± 56 for crossfish under
+CodinGame rules) while using about 50% more time than its budget.
+
+**Tools added** (all described in [eval_data.md](eval_data.md)):
+`cpp_impl/datagen.cpp` (self-play, labeling, HCE features);
+`tools/eval_data.py`, `tools/eval_pipeline.py` (resumable data pipeline);
+`tools/nnue_train_blend.py` (win-probability trainer);
+`tools/eval_candidate.py` (headers, isolated A/B builds, exactness checks,
+matches); `tools/sprt_merge.py` and `tools/sprt_worker.py` (SPRT shards on a
+second, Linux machine, pooled with test_bots's own LLR);
+`tools/round_robin.py` (round-robin ratings); `tools/vs_ultimattt.py`;
+`tools/experiments/capacity/` (the probes).
