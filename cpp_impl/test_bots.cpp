@@ -974,7 +974,52 @@ static void verify_utttai_state() {
         std::cerr << "utttai depth-1 markers/stm mismatch" << std::endl;
         std::exit(1);
     }
-    std::cout << "utttai state parse: OK" << std::endl;
+    // Round trip through the 93-digit encoding along random games: a loaded
+    // position must have the same legal moves as the original, and so must
+    // every child (a free-move position once loaded as a pass, which left
+    // every later move free).
+    NnueNet enc;
+    std::mt19937 rng(4242);
+    int free_checked = 0;
+    for (int g = 0; g < 300; g++) {
+        GlobalBoard orig;
+        while (orig.checkWinner() == -1) {
+            char s93[93];
+            enc.encode_state(orig, s93);
+            GlobalBoard loaded;
+            if (!load_utttai_state(loaded, s93)) {
+                std::cerr << "utttai round trip: load failed at ply " << orig.n_moves << std::endl;
+                std::exit(1);
+            }
+            free_checked += s93[91] == '9' && orig.n_moves > 0;
+            std::vector<Move> a = orig.getLegalMoves();
+            std::vector<Move> b = loaded.getLegalMoves();
+            auto same = [](std::vector<Move> x, std::vector<Move> y) {
+                auto key = [](const Move &m) { return m.mini_board * 9 + m.square; };
+                std::vector<int> kx, ky;
+                for (auto &m : x) kx.push_back(key(m));
+                for (auto &m : y) ky.push_back(key(m));
+                std::sort(kx.begin(), kx.end());
+                std::sort(ky.begin(), ky.end());
+                return kx == ky;
+            };
+            if (!same(a, b)) {
+                std::cerr << "utttai round trip: legal moves differ at ply " << orig.n_moves << std::endl;
+                std::exit(1);
+            }
+            for (const Move &m : a) {
+                GlobalBoard oc = orig, lc = loaded;
+                oc.makeMove(m);
+                lc.makeMove(m);
+                if (oc.checkWinner() == -1 && !same(oc.getLegalMoves(), lc.getLegalMoves())) {
+                    std::cerr << "utttai round trip: child legal moves differ at ply " << orig.n_moves << std::endl;
+                    std::exit(1);
+                }
+            }
+            orig.makeMove(a[rng() % a.size()]);
+        }
+    }
+    std::cout << "utttai state parse: OK (round trip, " << free_checked << " free-move positions)" << std::endl;
 }
 
 static void verify_eval_linear() {
@@ -2286,9 +2331,16 @@ static bool load_utttai_state(GlobalBoard &board, const char *s) {
     board.n_moves = occupied;
     int constraint = s[91] - '0';
     if (constraint == 9) {
-        board.prev_move_was_pass = occupied > 0;
-        // fillLegalMoves always reads move_history.top() when n_moves > 0.
-        if (occupied > 0) board.move_history.push(Move{0, 0});
+        // A free move with stones on the board: the last move sent the player
+        // to a decided miniboard, so record that as the last move. Setting
+        // prev_move_was_pass instead would make every move searched from here
+        // free as well (only pass()/unpass() ever clear it).
+        if (occupied > 0) {
+            int decided = board.mini_board_states[0] | board.mini_board_states[1]
+                        | board.mini_board_states[2];
+            if (decided == 0) return false;
+            board.move_history.push(Move{0, __builtin_ctz(decided)});
+        }
     } else if (constraint >= 0 && constraint <= 8) {
         board.move_history.push(Move{0, constraint});
     } else {
