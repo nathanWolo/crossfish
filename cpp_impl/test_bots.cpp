@@ -4073,7 +4073,7 @@ int main(int argc, char** argv) {
               << (g_fixed_search_depth > 0
                       ? std::string("off")
                       : std::to_string(REFEREE_MOVE_TIMEOUT_MS) + "ms")
-              << " eval=HCE+MiniNet"
+              << " eval=NNUE-B64"
               << " nnue_mode=" << g_nnue_mode
               << " residual=" << g_nnue_residual
               << " opening="

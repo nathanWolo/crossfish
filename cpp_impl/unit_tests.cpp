@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <stack>
@@ -1061,6 +1062,325 @@ static void test_lut_capture_block_tiar(TestCtx &ctx) {
     }
 }
 
+// ---------------------------------------------------------------- NNUE (nnue_b64.hpp)
+
+// The table hash of the verified CodinGame build's table_hash.cpp (datasets/nnue2/cg/d5M57): FNV-1a with
+// offset basis 1469598103934665603. tools/nnue_emit_b64_header.py --check prints the same hashes.
+static uint64_t nnue_table_hash(const void *p, size_t n) {
+    uint64_t h = 1469598103934665603ull;
+    const unsigned char *c = (const unsigned char *)p;
+    for (size_t i = 0; i < n; i++) {
+        h ^= c[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+// load() must bake exactly the tables of the build that was verified with CodinGame's compiler
+// (datasets/nnue2/cg/d5M57/build/table_hash_local.txt): same payload, same float bake, same quantization.
+static void test_nnue_tables_match_verified_build(TestCtx &ctx) {
+    b64::load();
+    CHECK_EQ(B64_QA, 9);
+    CHECK_EQ(B64_QPS, 13);
+    CHECK_EQ(B64_QB, 13);
+    CHECK_EQ(B64_Q2, 13);
+    CHECK_EQ(B64_QO, 10);
+    const struct {
+        const char *name;
+        const void *p;
+        size_t n;
+        uint64_t want;
+    } tables[] = {
+        {"T", b64::T, sizeof(b64::T), 0xc3718aafd7197724ull},
+        {"TP", b64::TP, sizeof(b64::TP), 0x5edc1a4e4378e972ull},
+        {"F", b64::F, sizeof(b64::F), 0x72808cbb45146238ull},
+        {"FP", b64::FP, sizeof(b64::FP), 0xd33a1a161da4ee6eull},
+        {"DEC", b64::DEC, sizeof(b64::DEC), 0x1acf9b2262e2b091ull},
+        {"DECP", b64::DECP, sizeof(b64::DECP), 0x115526174de81ab9ull},
+        {"CON", b64::CON, sizeof(b64::CON), 0xc7514736914495a2ull},
+        {"CONP", b64::CONP, sizeof(b64::CONP), 0xc93bc1f65320f933ull},
+        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x9fdc6a38eeaf72d2ull},
+        {"BIASP", &b64::BIASP, sizeof(b64::BIASP), 0x9a691300c548b8fbull},
+        {"W1p", b64::W1p, sizeof(b64::W1p), 0x5c7b831d1580a26full},
+        {"B1", b64::B1, sizeof(b64::B1), 0xcd75ffd4e90f0aa1ull},
+        {"W2p", b64::W2p, sizeof(b64::W2p), 0xd48a475988a2051full},
+        {"B2", b64::B2, sizeof(b64::B2), 0x8aa4ec8ba25e3c7aull},
+        {"WO", b64::WO, sizeof(b64::WO), 0x8d2f093665c63e73ull},
+        {"BO", &b64::BO, sizeof(b64::BO), 0xd07bf2a1719acedeull},
+    };
+    for (const auto &t : tables) {
+        const uint64_t got = nnue_table_hash(t.p, t.n);
+        if (got != t.want) {
+            std::cerr << "  FAIL " << ctx.name << ": table " << t.name << " hash " << std::hex << got << " != "
+                      << t.want << std::dec << std::endl;
+            ctx.fails++;
+        }
+    }
+}
+
+// The same integers as the AVX2 head, computed independently: int32 accumulators rebuilt from the tables,
+// dense layers in int64 without the sparse pair loop, the final division instead of the sign-symmetric shift.
+template <class Board>
+static int nnue_scalar_eval(const Board &b, int c) {
+    using namespace b64;
+    int32_t acc[2][A], ps[2];
+    const int oop = b.mini_board_states[0] | b.mini_board_states[1] | b.mini_board_states[2];
+    for (int P = 0; P < 2; P++) {
+        ps[P] = BIASP;
+        for (int i = 0; i < A; i++) acc[P][i] = BIAS[i];
+        for (int mb = 0; mb < 9; mb++) {
+            const int16_t *row;
+            if (oop >> mb & 1) {
+                const int st = (b.mini_board_states[2] >> mb & 1) ? 2 : ((b.mini_board_states[0] >> mb & 1) ? 0 : 1);
+                const int d = mb * 3 + (st == 2 ? 2 : (st == P ? 0 : 1));
+                row = DEC[d];
+                ps[P] += DECP[d];
+            } else {
+                int pat = 0;
+                for (int sq = 8; sq >= 0; sq--) {
+                    const int cell = (b.mini_boards[mb].markers[P] >> sq & 1) ? 1
+                                   : (b.mini_boards[mb].markers[P ^ 1] >> sq & 1) ? 2 : 0;
+                    pat = pat * 3 + cell;
+                }
+                row = T[mb][pat];
+                ps[P] += TP[mb][pat];
+            }
+            for (int i = 0; i < A; i++) acc[P][i] += row[i];
+        }
+    }
+    const int stm = b.n_moves & 1;
+    int64_t act[2 * A];
+    int32_t psd = ps[stm] - ps[stm ^ 1] + CONP[c] - CONP[10 + c];
+    for (int v = 0; v < 2; v++) {
+        const int P = v ? stm ^ 1 : stm;
+        const int16_t *con = CON[v ? 10 + c : c];
+        int fpat = -1;
+        if (c < 9) {
+            fpat = 0;
+            for (int sq = 8; sq >= 0; sq--) {
+                const int cell = (b.mini_boards[c].markers[P] >> sq & 1) ? 1
+                               : (b.mini_boards[c].markers[P ^ 1] >> sq & 1) ? 2 : 0;
+                fpat = fpat * 3 + cell;
+            }
+            psd += v ? -FP[fpat] : FP[fpat];
+        }
+        for (int i = 0; i < A; i++) {
+            const int32_t x = acc[P][i] + con[i] + (fpat >= 0 ? F[fpat][i] : 0);
+            act[v * A + i] = x < 0 ? 0 : (x > (1 << QA) ? (1 << QA) : x);
+        }
+    }
+    auto lo = [](int32_t w) { return (int64_t)(int16_t)(w & 0xFFFF); };
+    auto hi = [](int32_t w) { return (int64_t)(int16_t)((uint32_t)w >> 16); };
+    int64_t h1[L1], out = BO;
+    for (int k = 0; k < L1; k++) {
+        int64_t s = B1[k];
+        for (int j = 0; j < 2 * A; j++) s += act[j] * (j & 1 ? hi(W1p[j / 2][k]) : lo(W1p[j / 2][k]));
+        s = s < 0 ? 0 : (s > H1MAX ? H1MAX : s);
+        h1[k] = (s + H1_ROUND) >> H1_SHIFT;
+    }
+    for (int k = 0; k < L2; k++) {
+        int64_t s = B2[k];
+        for (int j = 0; j < L1; j++) s += h1[j] * (j & 1 ? hi(W2p[j / 2][k]) : lo(W2p[j / 2][k]));
+        s = s < 0 ? 0 : (s > H2MAX ? H2MAX : s);
+        out += ((s + H2_ROUND) >> H2_SHIFT) * WO[k];
+    }
+    const int64_t x = 1000 * (out * OUT_MUL + (int64_t)psd * PS_MUL);
+    return (int)(x / (1LL << FIN_SHIFT));
+}
+
+// Fixed positions: the empty board, the centre opening, positions at fixed plies of seeded random games,
+// then the first position of a seeded game with a property (a drawn miniboard; one after ply 40; a free
+// move; ply 60 or more). None is a finished game.
+static bool nnue_position_ok(const GlobalBoard &b, int kind) {
+    const int oop = b.mini_board_states[0] | b.mini_board_states[1] | b.mini_board_states[2];
+    const bool free_move = b.n_moves > 0 && (oop >> b.move_history.top().square & 1);
+    switch (kind) {
+    case 0: return b.mini_board_states[2] != 0;
+    case 1: return b.mini_board_states[2] != 0 && b.n_moves >= 40;
+    case 2: return free_move;
+    default: return b.n_moves >= 60;
+    }
+}
+
+static void nnue_position(int i, GlobalBoard &b) {
+    b = GlobalBoard();
+    if (i == 0) return;
+    if (i == 1) {
+        b.makeMove({4, 4});
+        return;
+    }
+    if (i < 12) {
+        static const int plies[] = {3, 7, 12, 18, 24, 30, 36, 42, 48, 54};
+        std::mt19937 rng(20260927u + (unsigned)i);
+        while (b.n_moves < plies[i - 2] && b.checkWinner() == -1) {
+            std::vector<Move> legal = b.getLegalMoves();
+            b.makeMove(legal[rng() % legal.size()]);
+        }
+        return;
+    }
+    for (unsigned seed = 1;; seed++) {
+        std::mt19937 rng(seed * 7919u + (unsigned)i);
+        b = GlobalBoard();
+        while (b.checkWinner() == -1) {
+            if (nnue_position_ok(b, i - 12)) return;
+            std::vector<Move> legal = b.getLegalMoves();
+            b.makeMove(legal[rng() % legal.size()]);
+        }
+    }
+}
+
+// Evals of the verified CodinGame build's own runtime (datasets/nnue2/cg/d5M57/src) on those positions:
+// a change to the net, the bake, the quantization or the kernels shows up here.
+static void test_nnue_fixed_positions(TestCtx &ctx) {
+    static const int want[16] = {800,  -781,  -351,  -276,  888,  599,  1361, 1435,
+                                 2779, -2663, 10547, 16267, 8286, 9896, 6299, 17476};
+    CrossfishDev dev;
+    int drawn = 0, free_moves = 0, decided = 0;
+    for (int i = 0; i < 16; i++) {
+        GlobalBoard b;
+        nnue_position(i, b);
+        CHECK_EQ(b.checkWinner(), -1);
+        const int c = d16_mini_board_constraint(b);
+        CHECK_EQ(b64::evaluate_board(b, c), want[i]);
+        CHECK_EQ(nnue_scalar_eval(b, c), want[i]);
+        CHECK_EQ(dev.evaluate(b), want[i]);
+        drawn += b.mini_board_states[2] != 0;
+        free_moves += c == 9 && b.n_moves > 0;
+        decided += (b.mini_board_states[0] | b.mini_board_states[1]) != 0;
+    }
+    CHECK(drawn >= 2 && free_moves >= 3 && decided >= 6);
+    // g_force_hce_eval still gives the HCE (test_bots' HCE tools).
+    GlobalBoard b;
+    nnue_position(8, b);
+    g_force_hce_eval = true;
+    CHECK_EQ(dev.evaluate(b), dev.evaluate_hce(b));
+    g_force_hce_eval = false;
+}
+
+// The fields of a board b64::Stack reads, with a Zobrist key in the role of the engine's tt_hash. Like the
+// engine's, the empty board's key is 0, which is why the stack marks empty entries with kNoKey.
+struct NnueWalkBoard {
+    std::array<MiniBoard, 9> mini_boards;
+    std::array<int, 3> mini_board_states;
+    int n_moves;
+    uint64_t tt_hash;
+    int active_board;
+};
+
+struct NnueWalkKeys {
+    uint64_t stone[2][9][9], con[10], stm;
+    NnueWalkKeys() {
+        uint64_t x = 0x243F6A8885A308D3ull;
+        auto next = [&x]() {  // splitmix64
+            uint64_t z = (x += 0x9E3779B97F4A7C15ull);
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+            return z ^ (z >> 31);
+        };
+        for (auto &p : stone)
+            for (auto &mb : p)
+                for (uint64_t &k : mb) k = next();
+        for (int c = 0; c < 9; c++) con[c] = next();
+        con[9] = 0;
+        stm = next();
+    }
+};
+
+static NnueWalkBoard nnue_walk_board(const GlobalBoard &g, const NnueWalkKeys &keys) {
+    NnueWalkBoard b;
+    for (int mb = 0; mb < 9; mb++) b.mini_boards[mb] = g.mini_boards[mb];
+    for (int s = 0; s < 3; s++) b.mini_board_states[s] = g.mini_board_states[s];
+    b.n_moves = g.n_moves;
+    b.active_board = d16_mini_board_constraint(g);
+    b.tt_hash = keys.con[b.active_board] ^ ((g.n_moves & 1) ? keys.stm : 0);
+    for (int p = 0; p < 2; p++)
+        for (int mb = 0; mb < 9; mb++)
+            for (int sq = 0; sq < 9; sq++)
+                if (g.mini_boards[mb].markers[p] >> sq & 1) b.tt_hash ^= keys.stone[p][mb][sq];
+    return b;
+}
+
+struct NnueWalk {
+    TestCtx &ctx;
+    const NnueWalkKeys &keys;
+    b64::Stack &stack;
+    std::mt19937 &rng;
+    long long evals = 0;
+
+    void check(const NnueWalkBoard &b) {
+        const int c = b.active_board;
+        const int keyed = stack.evaluate_keyed(b, c, b.tt_hash);
+        const int direct = stack.evaluate(b, c);
+        const int scratch = b64::evaluate_board(b, c);
+        const int scalar = nnue_scalar_eval(b, c);
+        if (keyed != scratch || direct != scratch || scalar != scratch) {
+            std::cerr << "  FAIL " << ctx.name << ": n_moves " << b.n_moves << " constraint " << c << ": keyed "
+                      << keyed << " incremental " << direct << " scratch " << scratch << " scalar " << scalar
+                      << std::endl;
+            ctx.fails++;
+        }
+        evals++;
+    }
+
+    // A search-like walk: make records each move on the stack (before n_moves++, as make_move_fast does),
+    // siblings overwrite the deeper entries, nodes are evaluated before and after their children.
+    void walk(GlobalBoard &g, int depth) {
+        const NnueWalkBoard b = nnue_walk_board(g, keys);
+        if (rng() % 10 < 7) check(b);
+        if (depth == 0 || g.checkWinner() != -1) return;
+        std::vector<Move> legal = g.getLegalMoves();
+        const int stm = g.n_moves & 1;
+        for (int k = 0; k < 3 && !legal.empty(); k++) {
+            const size_t pick = rng() % legal.size();
+            const Move m = legal[pick];
+            legal.erase(legal.begin() + (long)pick);
+            GlobalBoard child = g;
+            child.makeMove(m);
+            NnueWalkBoard hook = nnue_walk_board(child, keys);
+            hook.n_moves = g.n_moves;
+            int decided = -1;
+            for (int s = 0; s < 3; s++)
+                if ((child.mini_board_states[s] & ~g.mini_board_states[s]) >> m.mini_board & 1) decided = s;
+            stack.on_make(hook, m.mini_board, m.square, stm, decided, g.mini_boards[m.mini_board].markers[stm],
+                          b.tt_hash);
+            walk(child, depth - 1);
+        }
+        if (rng() % 10 < 3) check(b);
+    }
+};
+
+// Incremental (the lazy keyed stack, with its eval cache) == from scratch == the scalar reference over a
+// search-like walk of about 20,000 evaluations from 300 random roots.
+static void test_nnue_incremental_matches_scratch(TestCtx &ctx) {
+    static NnueWalkKeys keys;
+    std::unique_ptr<b64::Stack> stack(new b64::Stack());
+    std::mt19937 rng(20260927);
+    NnueWalk w{ctx, keys, *stack, rng};
+    GlobalBoard empty;
+    CHECK_EQ(nnue_walk_board(empty, keys).tt_hash, 0ull);
+    // A new stack used at the empty board (key 0) and below it with no refresh_root: an entry holding no
+    // position must not pass for the empty board (the kNoKey sentinel).
+    w.check(nnue_walk_board(empty, keys));
+    w.walk(empty, 2);
+    int roots = 0;
+    for (int r = 0; r < 300; r++) {
+        GlobalBoard root;
+        const int plies = r == 0 ? 0 : (int)(rng() % 64);
+        while (root.n_moves < plies && root.checkWinner() == -1) {
+            std::vector<Move> legal = root.getLegalMoves();
+            root.makeMove(legal[rng() % legal.size()]);
+        }
+        if (root.checkWinner() != -1) continue;
+        // Every fifth root is not refreshed: the stack must see from the keys that none of its entries holds
+        // this position or an ancestor, and rebuild from scratch.
+        if (r % 5 != 4) stack->refresh_root(nnue_walk_board(root, keys));
+        w.walk(root, 4);
+        roots++;
+    }
+    CHECK(roots >= 250);
+    CHECK(w.evals >= 10000);
+}
+
 using TestFn = void (*)(TestCtx &);
 
 int main() {
@@ -1093,6 +1413,9 @@ int main() {
         {"cjk14_decoder", test_cjk14_decoder},
         {"play_book", test_play_book},
         {"lut_capture_block_tiar", test_lut_capture_block_tiar},
+        {"nnue_tables_match_verified_build", test_nnue_tables_match_verified_build},
+        {"nnue_fixed_positions", test_nnue_fixed_positions},
+        {"nnue_incremental_matches_scratch", test_nnue_incremental_matches_scratch},
     };
 
     int passed = 0;

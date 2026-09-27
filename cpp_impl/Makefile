@@ -25,6 +25,11 @@ PLAY_BOOK_TXT ?= $(BIN)/play_book.txt
 PLAY_BOOK_FIRST ?= 5
 PLAY_BOOK_SECOND ?= 4
 PLAY_BOOK_SEARCH_MS ?= 2000
+# The evaluation: the NNUE runtime and its generated payload
+# (tools/nnue_emit_b64_header.py), included by crossfish_dev.hpp and by the
+# CodinGame bot, which also includes the helpers it keeps from mini_eval_d16.hpp.
+NNUE_HDRS := nnue_b64.hpp nnue_b64_net.hpp
+CG_HDRS := d16_helpers.hpp macro_eval.hpp $(NNUE_HDRS) play_book.hpp play_book_data.hpp
 
 CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX))
 # CodinGame's own C++ command line: g++ 11.2, no -O flag. Only the source's
@@ -38,16 +43,16 @@ all: test
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp play_book.hpp play_book_data.hpp | $(BIN)
+$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) play_book.hpp play_book_data.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ unit_tests.cpp
 
-$(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+$(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ test_bots.cpp $(FILESYSTEM_LIB)
 
 $(BIN)/crossfish: crossfish.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ crossfish.cpp
 
-$(BIN)/codingame_nnue: codingame_nnue.cpp mini_eval_d16.hpp macro_eval.hpp play_book.hpp play_book_data.hpp | $(BIN)
+$(BIN)/codingame_nnue: codingame_nnue.cpp $(CG_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ codingame_nnue.cpp
 
 $(BIN)/cg_input: cg_input.cpp | $(BIN)
@@ -56,19 +61,19 @@ $(BIN)/cg_input: cg_input.cpp | $(BIN)
 $(BIN)/cg_input_cgflags: cg_input.cpp | $(BIN)
 	$(CG_CXX) $(CG_FLAGS) -o $@ cg_input.cpp -lm -lpthread -ldl -lcrypt
 
-$(BIN)/cg_selfcheck: cg_selfcheck.cpp codingame_nnue.cpp mini_eval_d16.hpp macro_eval.hpp play_book.hpp play_book_data.hpp | $(BIN)
+$(BIN)/cg_selfcheck: cg_selfcheck.cpp codingame_nnue.cpp $(CG_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ cg_selfcheck.cpp
 
-$(BIN)/cg_selfcheck_cgflags: cg_selfcheck.cpp codingame_nnue.cpp mini_eval_d16.hpp macro_eval.hpp play_book.hpp play_book_data.hpp | $(BIN)
+$(BIN)/cg_selfcheck_cgflags: cg_selfcheck.cpp codingame_nnue.cpp $(CG_HDRS) | $(BIN)
 	$(CG_CXX) $(CG_FLAGS) -o $@ cg_selfcheck.cpp
 
 $(BIN)/cg_legend: cg_legend_hce.cpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ cg_legend_hce.cpp
 
-$(BIN)/bench_ab: bench_ab.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+$(BIN)/bench_ab: bench_ab.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ bench_ab.cpp
 
-$(BIN)/engine_selfcheck: engine_selfcheck.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+$(BIN)/engine_selfcheck: engine_selfcheck.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ engine_selfcheck.cpp
 
 # After porting a Dev change into codingame_nnue.cpp: the CG search must match
@@ -84,12 +89,12 @@ port-check: $(BIN)/cg_selfcheck $(BIN)/engine_selfcheck
 	done
 
 # Eval training data (documentation/eval_data.md).
-$(BIN)/datagen: datagen.cpp test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+$(BIN)/datagen: datagen.cpp test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ datagen.cpp $(FILESYSTEM_LIB)
 
 datagen: $(BIN)/datagen
 
-$(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+$(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_gen.cpp
 
 $(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp global_board.hpp | $(BIN)
@@ -98,7 +103,7 @@ $(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp globa
 $(BIN)/play_book_check: play_book_check.cpp play_book.hpp play_book_data.hpp play_book_text.hpp mini_eval_d16.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_check.cpp
 
-$(BIN)/play_book_match: play_book_match.cpp play_book.hpp play_book_data.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp | $(BIN)
+$(BIN)/play_book_match: play_book_match.cpp play_book.hpp play_book_data.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_match.cpp
 
 test-cpp: $(BIN)/unit_tests

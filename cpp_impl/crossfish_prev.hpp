@@ -1,5 +1,6 @@
 #include "mini_eval_d16.hpp"
 #include "macro_eval.hpp"
+#include "nnue_b64.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -9,15 +10,30 @@
 #include <mutex>
 #include <vector>
 
-// Frozen mate-window pruning fix on 2026-09-24: the round-eleven engine with
-// reverse futility, futility and qsearch delta pruning kept away from
-// mate-range bounds (section 51). A bug fix, gated for non-regression at
-// 90 ms vs the round-eleven freeze: N=2880, 801-1354-725, +9.17 +/- 8.56 Elo,
-// LLR +3.055 (H0=-5, H1=0) PASS; at H0=0/H1=+5 it stopped undecided at
-// N=10488, +3.51 +/- 4.51 Elo.
+// Frozen NNUE evaluation on 2026-09-27 (section 56): the round-eleven search
+// with the mate-window pruning fix (section 51), with the B-64
+// pattern-generator NNUE B64_d5M_57ep (nnue_b64.hpp) as the stand-pat and the
+// static eval in place of HCE + D16 MiniNet + macro residual, and without the
+// depth-1 reverse-futility MiniNet prefilter. Official 90 ms SPRT vs the
+// mate-window freeze, two pooled shards: N=420, 296-106-18, penta
+// 0/1/29/81/99, +276.63 +/- 30.44 Elo, LLR +3.000 (H0=0, H1=+5) PASS, zero
+// timeouts. The HCE, MiniNet and macro code stays for the tools that still
+// read it (datagen's HCE labels, test_bots' HCE tuning and dumps, the macro
+// correction history's prior).
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
+#endif
+#ifndef CROSSFISH_NNUE_LOAD_ONCE
+#define CROSSFISH_NNUE_LOAD_ONCE
+// b64::load() uses a plain ready flag, as the single-threaded CodinGame bot
+// needs; the harnesses construct engines on many threads at once, so every
+// engine (Dev and Prev alike: one inline function, one flag) bakes the tables
+// through this once-flag before its accumulator stack is built.
+inline void crossfish_nnue_load_once() {
+    static const bool loaded = (b64::load(), true);
+    (void)loaded;
+}
 #endif
 
 class CrossfishPrev {
@@ -1220,6 +1236,13 @@ class CrossfishPrev {
         };
         static_assert(sizeof(MoveUndo) == 32);
         std::array<MoveUndo, 128> move_undo{};
+        // Bakes the NNUE tables once per process (crossfish_nnue_load_once)
+        // before the stack's constructor calls b64::load().
+        struct NnueLoadOnce {
+            NnueLoadOnce() { crossfish_nnue_load_once(); }
+        } nnue_load_once;
+        // The NNUE's lazy accumulator stack and eval cache (nnue_b64.hpp).
+        b64::Stack fnnue_stack;
 
         void make_move_fast(FastBoard &board, const Move &move) {
             const int stm = board.n_moves & 1;
@@ -1246,7 +1269,7 @@ class CrossfishPrev {
             }
             board.move_history.push(move);
             board.mini_boards[mb].markers[stm] = before | bit;
-            update_mini_code(board, mb);
+            // The MiniNet codes are not read with the NNUE eval.
             xor_move_combo(board, stm, mb, move.square);
             int decided_state = -1;
             if (fast_win_moves[before] & bit) {
@@ -1274,12 +1297,19 @@ class CrossfishPrev {
                  && (board.out_of_play & bit) == 0)
                 ? (uint8_t)move.square
                 : (uint8_t)9;
+            fnnue_stack.on_make(board, mb, move.square, stm, decided_state, before, u.tt_hash);
             board.n_moves++;
             if (hce_acc_ready) {
-                set_hce_mb(board, mb);
-                if (decided_state >= 0) {
-                    hce_global_score = evaluate_hce_global(board);
-                }
+                // NNUE eval: only the tiar maps of the HCE state are still read
+                // (has_immediate_global_win, has_forced_global_win_after_reply);
+                // the local score lookup and the global terms were the HCE eval's.
+                const int nn_bit = 1 << mb;
+                const int nn_flags = (board.out_of_play & nn_bit) ? 0
+                    : fast_tiar_flags[(board.mini_boards[mb].markers[0] << 9)
+                                      | board.mini_boards[mb].markers[1]];
+                hce_mb_flags[mb] = (uint8_t)nn_flags;
+                hce_tiar_maps[0] = (hce_tiar_maps[0] & ~nn_bit) | ((nn_flags & 1) << mb);
+                hce_tiar_maps[1] = (hce_tiar_maps[1] & ~nn_bit) | (((nn_flags >> 1) & 1) << mb);
             }
         }
 
@@ -1477,6 +1507,7 @@ class CrossfishPrev {
             init_hce_acc(board);
             init_macro_key(board);
             sync_terminal(board);
+            fnnue_stack.refresh_root(board);
             killer_moves = {};
             killer_bits = {};
             for (auto &by_player : history_table) {
@@ -1549,6 +1580,7 @@ class CrossfishPrev {
             init_hce_acc(board);
             init_macro_key(board);
             sync_terminal(board);
+            fnnue_stack.refresh_root(board);
             killer_moves = {};
             killer_bits = {};
             history_table = {};
@@ -1596,18 +1628,10 @@ class CrossfishPrev {
                 }
             }
             CorrEntry &qstruct = corr_entry(board);
-            int hce = evaluate_hce_incremental(board)
-                    + qstruct.applied;
-            if (hce - QHCE_FAIL_HIGH_MARGIN >= beta) {
-                return beta;
-            }
-            int stand_pat;
-            if (hce + MINI_MAX + MACRO_CLIP < alpha) {
-                stand_pat = hce + MINI_MAX + MACRO_CLIP;
-            } else {
-                stand_pat = hce + evaluate_mini_cached(board)
-                          + evaluate_macro_cached(board);
-            }
+            // The NNUE replaces HCE + MiniNet + macro (no HCE fail-high shortcut).
+            int stand_pat = fnnue_stack.evaluate_keyed(
+                                board, active_board_index(board), board.tt_hash)
+                          + qstruct.applied;
             if (stand_pat >= beta) {
                 return beta;
             }
@@ -1761,7 +1785,9 @@ class CrossfishPrev {
             if (!pv_node && !g_disable_eval_prune) {
                 static_corr_refs = corr_refs(board);
                 static_eval = corrected_eval(
-                    evaluate_hce_incremental(board), static_corr_refs);
+                    fnnue_stack.evaluate_keyed(
+                        board, active_board_index(board), board.tt_hash),
+                    static_corr_refs);
                 have_static = true;
 
                 // A static eval says nothing about how soon anyone is mated,
@@ -1774,12 +1800,6 @@ class CrossfishPrev {
                 if (beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
                     int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                     if (static_eval - reverse_futility_margin * depth >= beta) {
-                        return beta;
-                    }
-                    if (depth == 1
-                        && static_eval + 2500 - reverse_futility_margin >= beta
-                        && static_eval + evaluate_mini_cached(board)
-                           - reverse_futility_margin >= beta) {
                         return beta;
                     }
                 }
@@ -2800,9 +2820,7 @@ class CrossfishPrev {
             if (g_force_hce_eval) {
                 return evaluate_hce(board);
             }
-            return evaluate_hce(board)
-                 + d16_evaluate_mini_fast(board)
-                 + evaluate_macro_fast(board);
+            return b64::evaluate_board(board, d16_mini_board_constraint(board));
         }
 
 };
