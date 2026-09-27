@@ -2,22 +2,28 @@
 
 Entry for the UVicAI UTTT tournament (first place) and a CodinGame Ultimate Tic-Tac-Toe engine.
 
-The **active engine is C++**. `cpp_impl/codingame_nnue.cpp` is the readable
-CodinGame engine and includes the generated packed-eval headers;
-`cpp_impl/cg_input.cpp` is the bundled/minified file to paste into CodinGame.
-Local SPRT compares `cpp_impl/crossfish_dev.hpp` against the frozen previous
-in `cpp_impl/crossfish_prev.hpp`. `cpp_impl/cg_legend_hce.cpp` is a snapshot
-from the first Legend hit. The Python tree under `python_impl/` is legacy.
+The **active engine is C++**. Its evaluation is a 35,243-parameter
+pattern-generator NNUE (`cpp_impl/nnue_b64.hpp`, payload
+`cpp_impl/nnue_b64_net.hpp`) with integer, incremental AVX2 inference.
+`cpp_impl/codingame_nnue.cpp` is the readable CodinGame engine and includes
+the eval headers; `cpp_impl/cg_input.cpp` is the bundled/minified file to
+paste into CodinGame. Local SPRT compares `cpp_impl/crossfish_dev.hpp` against
+the frozen previous in `cpp_impl/crossfish_prev.hpp`.
+`cpp_impl/cg_legend_hce.cpp` is a snapshot from the first Legend hit. The
+Python tree under `python_impl/` is legacy.
 
 Detailed project documentation:
 
 - [Engine improvement log](documentation/improvement_log.md): the chronological
   record of every accepted and rejected experiment, with its gate
+- [NNUE training and runtime implementation](documentation/nnue_training_and_implementation.md):
+  the pattern-generator NNUE that is the evaluation, and the MiniNet and macro heads before it
 - [Handcrafted evaluation and correction history](documentation/hce_and_correction_history.md)
-- [NNUE training and runtime implementation](documentation/nnue_training_and_implementation.md)
 - [Eval training data and testing tools](documentation/eval_data.md): the self-play/labeling
   pipeline, the win-probability trainer, isolated candidate builds, SPRT shards on a second
   machine and round-robin ratings
+- The NNUE experiments' own tools and results: [trainers](tools/experiments/nnue2/README.md) and
+  [fast inference, candidate builds, checks and two-net matches](tools/experiments/fast_nnue/README.md)
 - [CodinGame submission and minifier](documentation/minification.md)
 - [Gameplay opening book](documentation/play_book.md): the book the CodinGame bot plays from
 - [SPRT opening book](documentation/opening_book.md): the frozen starting positions the SPRT harness uses
@@ -104,7 +110,8 @@ submission cap is **100,000 characters**.
 | --- | --- | --- |
 | `cpp_impl/crossfish_prev.hpp` | Frozen baseline. `CrossfishPrev` in SPRT. | Only when **freezing** a landed win. Never during an experiment. |
 | `cpp_impl/crossfish_dev.hpp` | The experiment. `CrossfishDev` in SPRT. | The only search/eval file you change while testing. |
-| `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` | Generated packed evaluators shared by Dev, Prev and the CG bot. | Regenerate only for an accepted eval candidate, with the emitters in `tools/`. |
+| `cpp_impl/nnue_b64.hpp` / `nnue_b64_net.hpp` | The evaluation: the NNUE runtime and its generated payload, shared by Dev, Prev and the CG bot. | Regenerate the payload only for an accepted net, with `tools/nnue_emit_b64_header.py`; the unit tests pin its table hashes. |
+| `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` | The D16/H8 MiniNet and macro heads the NNUE replaced. The engines still include them: the macro net is the macro correction history's prior, and the MiniNet header supplies the constraint helper and the CJK14 decoder (the CG bot keeps `macro_eval.hpp` and takes those helpers from `d16_helpers.hpp`). The MiniNet itself no longer evaluates anything. | Leave them. |
 | `cpp_impl/mini_eval.hpp` | The retired D8/H4 MiniNet, kept for unit tests of the packed-net code paths. | Do not change. |
 | `cpp_impl/global_board.hpp` | Board, movegen, make/unmake, Zobrist. Shared by everyone. | Rules/hash only. Perft is frozen. |
 | `cpp_impl/codingame_nnue.cpp` | Readable CG bot; local eval headers are bundled for submission. | After a pass, when porting. Not the experiment. |
@@ -258,9 +265,11 @@ Run `make test` after any rules, hash, eval, or search edit. It builds C++ unit 
 
 If you change HCE, `eval_consistency` in `unit_tests.cpp` still has to match `eval_diffs` / `eval_parts`. A LUT rewrite that disagrees with the linear features is a bug even if it is faster.
 
+If you change the NNUE runtime (`nnue_b64.hpp`) or its payload, the `nnue_*` unit tests must pass: the baked tables' hashes and scales (update them only with a new net, from `python tools/nnue_emit_b64_header.py --check`), fixed-position evals through three paths, and incremental == from scratch == a scalar reference over a search-like walk, including the empty board (tt_hash 0; an unset stack entry is `kNoKey`). The bake must stay bit-exact: fixed float operation order and **no FMA**. A new search entry point must call `fnnue_stack.refresh_root(board)` (a missing one is still correct, just slower: a broken chain refreshes from scratch).
+
 If you change the MiniNet or its packing, the scalar reference `d16_evaluate_mini` and the fast factored path `d16_evaluate_mini_fast` must agree within 8 eval units on random games, and the macro lookup must equal `evaluate_macro_key` exactly (`d16_fast_matches_scalar` in `unit_tests.cpp`). The AVX paths are **mul+add, not FMA**, so they match the scalar net.
 
-Large tables (`1<<18` scores, threat maps, MiniNet projections) must be `static inline` (BSS), not instance members. Instance arrays of that size overflow the 1 MB Windows stack and kill `match` workers. CodinGame's Linux stack may hide this. `codingame_nnue.cpp` already hit it.
+Large tables (`1<<18` scores, threat maps, MiniNet projections, the NNUE's 25.6 MB of baked rows) must be `static inline` (BSS), not instance members. Instance arrays of that size overflow the 1 MB Windows stack and kill `match` workers. CodinGame's Linux stack may hide this. `codingame_nnue.cpp` already hit it.
 
 Do not put a 1 MB table on `main`'s stack in the CG file.
 
@@ -281,14 +290,15 @@ These have already fooled people in this repo:
 - **Holdout MAE / correlation.** A net can fit search scores better and still play the same moves (equal-depth ~0 Elo).
 - **Beating static HCE on a dump.** MiniNet only runs at qsearch leaves when HCE is inside the window. Training on mates and fail-highs that search never asks the net about is the wrong target.
 - **Scaling MiniNet width (D) on old HCE-only depth-6 labels.** Extra unused concat; mixer stays tiny. Measured ~0 Elo at equal depth vs the D=8 H=4 residual shipped at the time. (The later D16/H8 net won because it was trained on better labels and packed to stay cheap.)
-- **A full Stockfish-style NNUE with a better holdout fit.** It replaced HCE, MiniNet and macro and lost 193-296 Elo at equal depth; parity looked like it would need on the order of 100M labeled positions (improvement log section 53).
+- **A full Stockfish-style NNUE with a better holdout fit.** The per-cell one of section 53 replaced HCE, MiniNet and macro and lost 193-296 Elo at equal depth. What won (section 56) was a pattern-level first layer, 176M self-labelled positions, the 8 board symmetries, a much longer schedule, and integer incremental inference: the same kind of net as a float hook lost 255 Elo at 20 ms at 0.8% of the speed.
+- **More data, or more epochs, for the NNUE.** At equal steps all 176M depth-8 rows lost 40 Elo to 57 epochs on 9.34M rows; 114 and 200 epochs lost 10 and 21; a 128-lane net fitted better and lost 6 to its speed (improvement log section 56).
 - **A much wider mixer (H=128) at 20 ms.** NPS collapse, hundreds of Elo lost.
 - **A slower better leaf.** A +10 Elo equal-depth eval with a 5% NPS tax can be ~0 at 20 ms.
 - **SPRT against a Prev you just weakened or against old HCE when the ship is MiniNet.** Gate vs the frozen ship, not vs a convenient opponent.
 - **Nodes per move in a CodinGame log, compared across games.** `N` depends on the position and on how much of the clock the search used; compare the same position, or use `make -C cpp_impl cg-speed` and the CI gate.
 - **A local speed-up alone.** The SPRT builds at `-O3`; CodinGame builds without `-O`. A change that is fast locally can be slow on CodinGame, and the reverse (improvement log section 47 was worth +163 there and nothing locally).
 
-Early-game positions are where HCE is weakest (minis not yet decided). If you train a net, bias data toward low ply with MiniNet-search labels, not only late self-play.
+Early-game positions are where HCE is weakest (minis not yet decided). If you train a net, bias data toward low ply, not only late self-play. Label with a `datagen` built from an unpatched Dev, or the candidate becomes its own teacher.
 
 ### Shipping to CodinGame
 
@@ -298,9 +308,15 @@ a freeze:
 
 1. Port accepted search changes into `codingame_nnue.cpp`, following the
    CodinGame compiler rules below (`always_inline` helpers, no `std::`
-   containers on the hot path). For eval changes, regenerate
-   `mini_eval_d16.hpp` and/or `macro_eval.hpp` with the matching tools. Keep
-   large LUTs in static storage.
+   containers on the hot path). For a new net, regenerate
+   `nnue_b64_net.hpp` with `tools/nnue_emit_b64_header.py` (it derives the
+   integer scales itself) and update the values the tests pin: the table
+   hashes, scales and 16 fixed-position evals in `unit_tests.cpp`, and the
+   payload hash, length, scales and table hashes in
+   `tools/test_nnue_emit_b64_header.py` (see section 10 of
+   `documentation/nnue_training_and_implementation.md`);
+   Dev, Prev and the bot all read that one header. Keep large LUTs in static
+   storage.
 2. Prove the port: `make -C cpp_impl port-check` must print IDENTICAL at every
    depth (the CG search against Dev). For a tree-identical change,
    `cg_selfcheck` checksums must also match their pre-port values.
@@ -310,13 +326,13 @@ a freeze:
 4. Confirm the minifier's count is under 100,000 and that the CodinGame
    performance gate passes. Paste **that** file into CodinGame, not the
    readable source. Its first line must be `#pragma GCC optimize("O3")`; a
-   paste without it searches about 130k nodes per move instead of 600k-900k,
+   paste without it searches about a fifth of its normal nodes per move,
    which the bot's `N` output shows at once.
 5. Record the result: the SPRT line (N, W/D/L, pentanomial counts, Elo, LLR,
    hypotheses, timeouts, NPS) in a new improvement-log section, and a row in
    **Latest strength result**.
 
-`nnue_emit_mininet_cg.py` minifies by default and has a coarse vs-HCE match (`Elo < -80` fails). That is a packing-smoke test, not the Dev-vs-Prev gate.
+`nnue_emit_mininet_cg.py` (the legacy MiniNet packer) minifies by default and has a coarse vs-HCE match (`Elo < -80` fails). That is a packing-smoke test, not the Dev-vs-Prev gate.
 
 ### Compiler and local builds
 
@@ -349,17 +365,18 @@ of the std versions. Keep it that way:
   table was a `std::vector` until round ten's follow-up).
 - Mark every new hot-path helper `always_inline`, including templated ones
   and ones whose signature wraps across lines. That includes helpers in the
-  generated eval headers: `tools/nnue_emit_mininet_header.py` and
-  `tools/nnue_emit_macro_header.py` emit `d16_mini_hsum256` and
-  `evaluate_macro_key` with the attribute, so regenerate rather than
-  hand-edit.
+  eval headers: `nnue_b64.hpp`'s per-move and per-evaluation helpers carry
+  it, and `tools/nnue_emit_macro_header.py` emits `evaluate_macro_key` with
+  it, so regenerate rather than hand-edit.
 - To see what is still out of line, build the readable source the CodinGame
   way and list the `call` targets inside `CrossfishDev::search`,
   `CrossfishDev::qsearch` and `CrossfishDev::search_leaf`:
   `g++-11 -std=gnu++17 -Werror=return-type -g -pthread -Icpp_impl -o /tmp/cg cpp_impl/codingame_nnue.cpp && objdump -d -C --no-show-raw-insn /tmp/cg`.
   Only recursion, the `std::chrono` clock read (once per 128 nodes),
-  `memcpy`/`memmove`, `__stack_chk_fail` and the never-taken lazy
-  `macro_load_packed()` branch should remain.
+  `memcpy`/`memmove`, `__stack_chk_fail`, the never-taken lazy
+  `macro_load_packed()` branch and the NNUE's `b64::eval_avx` and
+  `b64::Stack::sync` (one call per uncached evaluation, as in the build
+  verified before the port) should remain.
 
 **CodinGame performance gate.** Every pull request (and every push to a
 branch other than `main`) runs `tools/cg_perf_gate.py` in a `gcc:11.2` Linux container
@@ -371,10 +388,18 @@ file exactly as CodinGame does and compares it with `main`:
 | fresh | `cg_input.cpp` is not the minifier's current output of `codingame_nnue.cpp` |
 | size | over 100,000 characters (UTF-16 units) |
 | speed | nodes per millisecond over full-budget replies (80 ms or more), paired protocol games vs a random opponent: slower than base by more than 5% *and* the 95% interval below 1 |
+| eval change | not a check of its own: `tools/cg_gate/eval_change.json` declares an intentional eval-architecture change against one base paste file (by sha256). Against that base, **speed** passes only inside the declared nodes/ms range and fails outside it at either end; against any other base the file is ignored and the summary says so. A malformed file fails the gate |
 | inlining | the CodinGame-flags build below 85% of the same source at `-O3` (a hot helper lost `always_inline`) |
 | latency | first reply 1,000 ms or more, or the 99th percentile of later replies 95 ms or more |
 | smoke | candidate vs base at 90 ms (200 games, random openings): timeouts over 1%, or a score significantly below base (Elo is informational; strength is the SPRT's job) |
 | book | `tools/play_book_protocol_check.py` fails on the candidate build |
+
+A net that is slower per node but stronger would fail **speed** on the change
+itself, so its pull request checks in `eval_change.json` with the reason and
+evidence, the base's `cg_input.cpp` sha256 and the expected ratio range
+(the NNUE declared [0.45, 0.70] and measured 0.553 on the laptop). Delete the
+file once the change has merged; `--ignore-eval-change` and
+`--eval-change FILE` override it.
 
 Locally: `make -C cpp_impl cg-gate` (needs Docker; `CG_GATE_BASE=<rev>` to
 compare with another revision), or `python tools/cg_perf_gate.py` on Linux with
@@ -408,9 +433,10 @@ enable FMA in MiniNet; it will disagree with the scalar reference.
 ## CodinGame file and minifier
 
 CodinGame's source cap is **100,000 characters**, counted as UTF-16 code
-units. The network weights and the opening book are packed at 14 bits per
-character using CJK ideographs (see `documentation/minification.md`), so the file is larger in
-bytes than in counted characters; trust the minifier's count, not `wc -c`. Paste
+units. The NNUE generator (30,923 characters), the macro net (1,758) and the
+opening book (13,456) are packed at 14 bits per character using CJK ideographs
+(see `documentation/minification.md`), so the file is larger in bytes than in
+counted characters; trust the minifier's count, not `wc -c`. Paste
 **`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
 headers are intentionally kept separate for review.
 
@@ -428,7 +454,7 @@ See the [minification guide](documentation/minification.md) for the complete
 source-to-submission pipeline, neural payload encoding, minifier
 implementation, and validation procedure.
 
-`--no-rename` is whitespace-only (no identifier shortening). When regenerating the submission from a net, `tools/nnue_emit_mininet_cg.py` minifies by default; pass `--no-minify` to keep the readable file.
+`--no-rename` is whitespace-only (no identifier shortening). A new net goes in through `tools/nnue_emit_b64_header.py` (it writes `cpp_impl/nnue_b64_net.hpp`), followed by `make -C cpp_impl cg-input`.
 
 ## Opening book
 
@@ -454,11 +480,31 @@ procedure are in `documentation/play_book.md`.
 ## Latest strength result
 
 The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
-search with the mate-window pruning fix, the D16/H8 MiniNet and macro
-residual, the CodinGame-compiler inlining work and the uttt.ai opening book.
-It is **90,095 characters**, 9,905 under the cap (the minifier's count; `wc -c`
-reports UTF-8 bytes). Replies take 90.1-90.6 ms against the 100 ms referee,
-and the first turn about 140-230 ms of its 1,000 ms.
+search with the mate-window pruning fix, the B64_d5M_57ep pattern-generator
+NNUE as its whole evaluation, the CodinGame-compiler inlining work and the
+uttt.ai opening book. It is **94,897 characters**, 5,103 under the cap (the
+minifier's count; `wc -c` reports UTF-8 bytes). Built with CodinGame's flags
+on the laptop, replies take 90.2-90.5 ms against the 100 ms referee, and the
+first turn about 175-220 ms of its 1,000 ms alone, and up to about 380-470 ms
+when two bots start together on one pinned laptop E-core in referee games (it
+bakes the NNUE's tables in about 50 ms).
+
+On 2026-09-27 the NNUE passed the official 90 ms SPRT against the mate-window
+freeze, two shards (desktop and laptop) pooled:
+
+```text
+90 ms: N 420 W 296 D 106 L 18
+Penta: 0 / 1 / 29 / 81 / 99
+Elo diff: +276.63 +/- 30.44
+LLR: +3.000 (H0=0, H1=+5) — PASS
+Timeouts: Prev=0 Dev=0
+Prev NPS: 31,197,568  Dev NPS: 15,953,280
+```
+
+It runs at about half to 62% of the old evaluator's nodes per second (51% in
+the SPRT header's 1 s start-position NPS, 58-62% in `bench_ab nodes 400 9`,
+0.55 of the old paste file's nodes/ms built CodinGame's way) and completes
+about one ply less at 90 ms. See section 56 of the improvement log.
 
 Each accepted step, newest first. Elo is against the step before it unless
 stated, at 90 ms with the external referee, H0=0 / H1=+5, pentanomial pairs on
@@ -466,6 +512,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-09-27 | NNUE evaluation: the B64_d5M_57ep pattern generator replaces HCE + MiniNet + macro | N=420, 296-106-18, +276.63 ± 30.44, LLR +3.00 PASS (two pooled shards) | §56 |
 | 2026-09-24 | uttt.ai opening book | paired book value vs the round-six engine +72.0 (full-coverage book +26.3), same 500 openings | §54 |
 | 2026-09-24 | Inline the remaining CodinGame hot-path calls | +4.6% to +8.7% nodes/ms with CodinGame's flags, tree identical | §52 |
 | 2026-09-24 | Mate-window pruning fix (bug fix) | N=13212, +0.26 ± 4.17, LLR +3.05 (H0=-5, H1=0) PASS | §51 |
@@ -487,7 +534,8 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `cpp_impl/global_board.hpp` — board, movegen, make/unmake (shared by tests and SPRT)
 - `cpp_impl/crossfish_dev.hpp` / `crossfish_prev.hpp` — search + eval
 - `cpp_impl/codingame_nnue.cpp` — readable CodinGame search source
-- `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` — generated packed eval
+- `cpp_impl/nnue_b64.hpp` / `nnue_b64_net.hpp` — the evaluation: NNUE runtime and generated payload (`tools/nnue_emit_b64_header.py`)
+- `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` — the previous MiniNet and macro heads; the macro net is the macro correction history's prior; `d16_helpers.hpp` holds the three MiniNet-header helpers the CG bot keeps
 - `cpp_impl/cg_input.cpp` — bundled/minified paste file for the CodinGame IDE
 - `cpp_impl/crossfish.cpp` — self-contained HCE CG bot (packing source for MiniNet)
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
@@ -498,14 +546,16 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `cpp_impl/play_book.hpp` / `play_book_data.hpp` — gameplay opening book runtime and payload; `play_book_*.cpp` are its packer, checker, generator and match tools
 - `cpp_impl/mini_eval.hpp` — retired D8/H4 MiniNet, kept for unit tests
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
-- `tools/cg_perf_gate.py`, `tools/cg_gate/Dockerfile` — the CodinGame performance gate CI runs on every pull request
+- `tools/cg_perf_gate.py`, `tools/cg_gate/Dockerfile` — the CodinGame performance gate CI runs on every pull request; `tools/cg_gate/eval_change.json` declares an intentional eval change for it (delete after merge)
 - `tools/cg_speed_check.py`, `tools/speed_ab.py` — nodes-per-move through the real protocol, and repeated paired Dev-vs-Prev timing with a confidence interval
-- `tools/nnue_*.py` — MiniNet and macro-head training and header emitters; `tools/experiments/full_nnue/` archives the rejected full-NNUE study (log §53)
+- `tools/nnue_emit_b64_header.py` — the NNUE payload emitter and checker (`--check`)
+- `tools/experiments/nnue2/`, `tools/experiments/fast_nnue/` — the NNUE's trainers, and its candidate builds, exactness checks, two-net matches and Linux worker (log §56; each has a README)
+- `tools/nnue_*.py` (the rest) — MiniNet and macro-head training and header emitters; `tools/experiments/full_nnue/` archives the rejected per-cell full-NNUE study (log §53)
 - `cpp_impl/datagen.cpp`, `tools/eval_*.py`, `tools/nnue_train_blend.py`, `tools/round_robin.py`, `tools/sprt_merge.py`, `tools/sprt_worker.py` — eval data, training and testing tools (log §55, `documentation/eval_data.md`); `tools/experiments/capacity/` holds the architecture probes
 - `python_impl/crossfish.py` — original tournament entry; `python_impl/bots.py` has older bots used for backtesting
 - `documentation/improvement_log.md` — chronological accepted and rejected engine experiments
-- `documentation/hce_and_correction_history.md` — the handcrafted evaluation's features, tables and incremental updates, and the three correction histories
-- `documentation/nnue_training_and_implementation.md` — data, training, packing, and runtime details for the learned evaluator
+- `documentation/hce_and_correction_history.md` — the handcrafted evaluation's features, tables and incremental updates (no longer the search's eval), and the three correction histories
+- `documentation/nnue_training_and_implementation.md` — the NNUE's architecture, training, quantization, payload and runtime, and the MiniNet and macro heads before it
 - `documentation/eval_data.md` — the eval data pipeline, win-probability trainer, candidate A/B builds, pooled SPRTs and round robins
 - `documentation/opening_book.md` — SPRT book selection, binary format, validation, and versioning policy
 - `documentation/play_book.md` — the gameplay opening book: design, measurements, regeneration

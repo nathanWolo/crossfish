@@ -1,10 +1,16 @@
 # Eval training data and the win-probability trainer
 
-This pipeline retrains the shipped evaluation (HCE + D16/H8 MiniNet + macro
-head) on millions of positions from current Crossfish and uttt.ai play,
-labeled by a deep Crossfish search. It replaces the `NNUEWDL1` dumps of
+This pipeline was built to retrain the evaluation that shipped until
+2026-09-27 (HCE + D16/H8 MiniNet + macro head) on millions of positions from
+current Crossfish and uttt.ai play, labeled by a deep Crossfish search. It
+replaces the `NNUEWDL1` dumps of Part II of
 [nnue_training_and_implementation.md](nnue_training_and_implementation.md)
-for new work; the runtime evaluator and its packing are unchanged.
+for new work. The pattern-generator NNUE that replaced that evaluation
+(improvement log section 56) trains on the same records: this file's data
+(eval2) plus self-labelled depth-8 play (section 2), with its own trainer in
+`tools/experiments/nnue2/` (Part I of the same document). The trainer and
+candidate tools of sections 4-5 remain the hybrid's; see the note in
+section 5.
 
 ```text
 datagen play ──► cf_play.cfdg ─┐
@@ -29,7 +35,7 @@ memory-mapped:
 | `result` | i8 | game result for the side to move: 1, 0, -1 (CodinGame rules) |
 | `flags` | u8 | 1 result valid, 2 search labeled, 4 uttt.ai value, 8 uttt.ai root value |
 | `game` | u32 | game id, unique within a file |
-| `hce`, `static_eval`, `search` | i32 | static HCE, full static eval, fixed-depth search score (side to move) |
+| `hce`, `static_eval`, `search` | i32 | static HCE, full static eval (the NNUE from `datagen` builds since section 56 of the improvement log; HCE + MiniNet + macro before), fixed-depth search score (side to move) |
 | `game_score` | i32 | Crossfish's root score when it played the move |
 | `uttt_q`, `uttt_v` | f32 | uttt.ai MCTS root value and network value (side to move) |
 
@@ -57,6 +63,24 @@ position after the last uniform-random move.
 
 **uttt.ai self-play**: the 1.32M positions of the fork's generations 1-5
 (25,000 games at 800 simulations, `tools/eval_data.py import-utttai`).
+
+**Self-labelling fixed-depth play** (`datagen play OUT N dDEPTH THREADS SEED
+[OPENINGS]`, the NNUE round's `d8` data). Give the move time as `dN` and every
+Crossfish move is one full-window search to depth N (the engine's
+`g_fixed_search_depth`) whose root score, clamped to +/-20,000, becomes that
+row's `search` label and `game_score`. Positions Crossfish does not move from
+(the random prefix and the soft-random moves) are searched to the same depth
+by the scorer engine. Each row also gets its statics (`hce`, `static_eval`)
+and flag 2 in the same pass, so no `datagen label` pass follows. Openings,
+random prefixes and soft-random moves are the timed mode's; results are
+recorded as in that mode. The round's 176M rows came from
+`datagen play datasets/nnue2/d8_a.cfdg 64000000 d8 16 SEED datasets/eval2/uttt_openings.txt`:
+about 14,500 positions a second on the desktop's 16 threads (64M in 73
+minutes), two files there and two of 24M on the laptop. 90.3% of the rows
+have a valid result and 16.4% of the labels are clamped mates. The labels come
+from the process that played, so the old free-move loader bug (improvement
+log section 55) cannot reach them. The `d8` files were made with the
+pre-NNUE engine; a `datagen` built today plays and labels with the NNUE.
 
 ## 3. Labels
 
@@ -133,6 +157,17 @@ section 55; the shipped static eval alone would fit 2,350).
   candidate's `dev_patches.json`.
 
 ## 5. Candidates
+
+These tools build MiniNet / macro / HCE-weight candidates of the hybrid
+evaluator. Since the NNUE replaced it (improvement log section 56) the
+search no longer reads the MiniNet or the HCE score, so a candidate built from
+the current engine changes nothing the search evaluates, and `verify`'s
+"static = HCE + MiniNet + macro" no longer holds for the NNUE engine's
+statics. Run them in a checkout of the pre-NNUE engine (`c278cde`) to
+reproduce section 55. The NNUE's own candidate builds, exactness checks and
+two-net pairings are in
+[`tools/experiments/fast_nnue/`](../tools/experiments/fast_nnue/README.md),
+which patch that same pre-NNUE engine.
 
 `tools/eval_candidate.py`:
 
@@ -275,6 +310,12 @@ From the retraining round (improvement log section 55):
   higher than the next 12,000 games for three of four candidates.
 - Do not rank candidates by held-out loss: lower loss on the same target
   played worse three times.
+- The NNUE round (improvement log section 56) followed this: two 20 ms round
+  robins of nine engines (72,000 games each, played on both machines) picked
+  the net, and 90 ms SPRTs confirmed it against the previous net and then
+  against the shipped engine. Held-out loss again did not decide: the
+  128-lane net fitted better than the winner and played 6 Elo worse, being
+  slower.
 
 ## 9. Crossfish vs ultimattt
 

@@ -10,11 +10,12 @@ before shipping a regenerated submission.
 The short version is:
 
 ```text
-accepted NN checkpoints              gameplay text book
+accepted NNUE export (BGN1)          gameplay text book
         |                                    |
         v                                    v
-generated evaluator headers          play_book_pack
-  mini_eval_d16.hpp + macro_eval.hpp   play_book_data.hpp (+ play_book.hpp)
+tools/nnue_emit_b64_header.py        play_book_pack
+  nnue_b64_net.hpp (+ nnue_b64.hpp)    play_book_data.hpp (+ play_book.hpp)
+  macro_eval.hpp, d16_helpers.hpp            |
         |                                    |
         +---------- included by -------------+
                             |
@@ -40,10 +41,14 @@ evaluator inputs, then regenerate it.
 | File | Responsibility |
 | --- | --- |
 | `cpp_impl/codingame_nnue.cpp` | Readable, standalone CodinGame engine logic. |
-| `cpp_impl/mini_eval_d16.hpp` | Generated D16/H8 local-pattern evaluator, packed payload, decoder, and runtime tables. |
-| `cpp_impl/macro_eval.hpp` | Generated macro-context residual and exact runtime lookup table builder. |
-| `tools/nnue_emit_mininet_header.py` | Converts an accepted D16/H8 checkpoint into `mini_eval_d16.hpp`. |
+| `cpp_impl/nnue_b64.hpp` | The evaluation's runtime: payload reader, start-up bake and quantization, lazy accumulator stack, AVX2 kernels. Shared with the local engines. |
+| `cpp_impl/nnue_b64_net.hpp` | Generated NNUE payload (the pattern generator, CJK14) and its integer scales. |
+| `tools/nnue_emit_b64_header.py` | Converts an accepted net's lane-paired BGN1 export into `nnue_b64_net.hpp`; `--check` verifies any header. |
+| `cpp_impl/macro_eval.hpp` | Generated macro-context net and exact lookup table builder; the bot uses it as the macro correction history's prior. |
+| `cpp_impl/d16_helpers.hpp` | The CJK14 byte decoder, the constraint helper and the horizontal sum the bot keeps from `mini_eval_d16.hpp`. |
+| `cpp_impl/mini_eval_d16.hpp` | The retired D16/H8 MiniNet evaluator (Dev and Prev still include it; the paste file does not). |
 | `tools/nnue_emit_macro_header.py` | Converts an accepted macro checkpoint into `macro_eval.hpp`. |
+| `tools/nnue_emit_mininet_header.py` | Converts a D16/H8 checkpoint into `mini_eval_d16.hpp` (no longer shipped). |
 | `tools/nnue_cjk14.py` | Deterministic 14-bits-per-character payload encoder and decoder shared by the emitters. |
 | `cpp_impl/play_book.hpp` / `play_book_data.hpp` | Gameplay opening book runtime and its generated CJK14 payload ([play_book.md](play_book.md)). |
 | `tools/cg_minify.py` | Bundles local headers, tokenizes C++, shortens identifiers, and emits one compact source file. |
@@ -83,21 +88,108 @@ immediately before token minification.
 
 ## 3. Neural evaluation included in the submission
 
-The shipped evaluation is hybrid:
+The evaluation is the pattern-generator NNUE B64_d5M_57ep (35,243
+parameters). The paste file carries two networks:
 
-- a fast handcrafted evaluation supplies the baseline;
-- a D16/H8 local-pattern network adds learned miniboard information at selected
-  search nodes;
-- a compact macro residual adds learned super-board and forced-board context.
+- the NNUE's generator (section 3.1), from which the bot bakes its 25.6 MB of
+  integer tables at start-up;
+- the compact macro-context net (section 3.2), which the NNUE bot uses only
+  as the prior of its macro correction history.
 
-The minification process does not retrain, quantize, or otherwise alter either
-network. It transports the exact accepted payload bytes into a single source
-file.
+The D16/H8 MiniNet payload of the earlier hybrid evaluator (section 3.3) is no
+longer in the paste file.
+
+The minification process does not retrain, quantize, or otherwise alter any
+network (the NNUE is quantized by its emitter, before the header exists). It
+transports the exact accepted payload bytes into a single source file.
 
 For the full model and training rationale, see the
 [NNUE training and implementation guide](nnue_training_and_implementation.md).
 
-### 3.1 D16/H8 local-pattern payload
+### 3.1 NNUE generator payload
+
+The baked tables would be 9 x 3^9 + 3^9 rows of 65 int16 values; the payload
+is the generator that makes them. `tools/nnue_emit_b64_header.py` writes it
+as one MSB-first bit stream of 11 matrices, each row one output unit with its
+bias in column 0:
+
+| Matrix | Rows x columns | Content |
+| --- | --- | --- |
+| `enc0`, `enc1`, `enc2` | 64 x 28, 64 x 65, 32 x 65 | the encoder, one-hot 27 -> 64 -> 64 -> 32 |
+| `proj` | 585 x 33 | row 65m + j: lane j of location m's projection (lane 64 is the PSQT lane) |
+| `fwd` | 65 x 33 | the forced-board projection, one row per lane |
+| `dec`, `con` | 65 x 27, 65 x 20 | decided and constraint rows, transposed to one row per lane |
+| `bias` | 1 x 65 | the accumulator bias |
+| `d1`, `d2`, `do` | 16 x 129, 32 x 17, 1 x 33 | the head, 128 -> 16 -> 32 -> 1 |
+
+Each matrix starts with its bf16 scales (one per row; `proj`'s nine locations
+share one per lane, because the accumulator needs the same absolute step for
+every location), then two 4-bit Rice parameters (normal rows, PSQT rows),
+then every value as Rice(zigzag(q)). A value is `float32(q) * scale`, the same
+IEEE single arithmetic in numpy and in C++.
+
+- **Bits.** enc 14, proj 12, fwd 12, dec 14, con 13, dense 14; the PSQT rows
+  and the bias 14. The PSQT rows get their own scale and width because an
+  error there moves the eval 500 times as far.
+- **Rounding.** `proj`, `fwd` and the head are first refit by least squares
+  to the float net's outputs given the already-quantized inputs; then GPTQ
+  rounds column by column, feeding each rounding error back through the
+  inverse input Hessian. The encoder and projections are calibrated on the
+  11,093 live patterns weighted by their frequency in real positions, the
+  head on positions passed through the quantized first layer; `dec`, `con`
+  and `bias` round to nearest. The encoder is GPTQ-rounded but not refit: on
+  this net its refit moved rare patterns' embeddings (max error 116 against 11
+  at 16 bits everywhere).
+- **Size.** 54,114 bytes = **30,923 CJK14 characters** (payload sha256
+  `f3092c99...`, pinned by `tools/test_nnue_emit_b64_header.py`).
+- **Error.** The integer engine is 4.73 mean / 164 max eval units from the
+  float net on 20,000 positions whatever the payload; with this payload the
+  bot is at 4.72 / 163 (the dequantized generator alone: 0.91 / 61). A
+  29,472-character configuration (enc 14, proj 11, fwd 12, dec 14, con 12,
+  dense 14, psqt 14) would free 1,450 characters for about 0.1 more mean
+  error, if the headroom is ever needed.
+
+At start-up `b64::load()` reads the bits straight from the CJK14 characters
+(`b64::Bits`, no byte buffer), then bakes and quantizes the tables in about
+50 ms, inside the 1,000 ms first turn
+([nnue_training_and_implementation.md](nnue_training_and_implementation.md)
+section 6). The bake runs in a fixed float order without FMA, so every
+compiler bakes the same tables; the unit tests pin their hashes.
+
+### 3.2 Macro residual payload
+
+The macro network sees the state of all nine won/drawn miniboard cells and the
+current forced-board constraint. Its exporter preprojects categorical
+embeddings through a 16-unit hidden layer before packing.
+
+Its binary layout is:
+
+| Field | Count | Encoding | Bytes |
+| --- | ---: | --- | ---: |
+| Hidden bias/base | 16 | little-endian `float32` | 64 |
+| Constraint projections | 10 × 16 | little-endian `float32` | 640 |
+| Super-board projections | 9 × 4 × 16 | little-endian `float32` | 2,304 |
+| Output weights | 16 | little-endian `float32` | 64 |
+| Output bias | 1 | little-endian `float32` | 4 |
+| **Total** |  |  | **3,076** |
+
+The generated header reuses the D16 CJK14 decoder. On first load it expands
+the network into:
+
+```text
+MACRO_SCORE[10][1 << 18]
+```
+
+Each 18-bit key stores two bits for each of nine super-board cells. The table
+contains the exact clipped network result for every constraint/key pair. It
+occupies roughly 5 MiB at runtime, but only the 3,076-byte model payload and
+table-building code appear in the source.
+
+### 3.3 The retired D16/H8 local-pattern payload
+
+This payload shipped from round seven until the NNUE replaced it on
+2026-09-27. It is no longer in the paste file; `mini_eval_d16.hpp` still
+carries it for the local engines' tools and unit tests.
 
 Every 3x3 local board has nine cells with three states: empty, mine, or
 opponent. That gives:
@@ -143,41 +235,12 @@ At startup, `d16_mini_load_packed()`:
 The textual payload is compact, while the larger speed-oriented tables exist
 only in process memory and therefore do not consume source characters.
 
-### 3.2 Macro residual payload
-
-The macro network sees the state of all nine won/drawn miniboard cells and the
-current forced-board constraint. Its exporter preprojects categorical
-embeddings through a 16-unit hidden layer before packing.
-
-Its binary layout is:
-
-| Field | Count | Encoding | Bytes |
-| --- | ---: | --- | ---: |
-| Hidden bias/base | 16 | little-endian `float32` | 64 |
-| Constraint projections | 10 × 16 | little-endian `float32` | 640 |
-| Super-board projections | 9 × 4 × 16 | little-endian `float32` | 2,304 |
-| Output weights | 16 | little-endian `float32` | 64 |
-| Output bias | 1 | little-endian `float32` | 4 |
-| **Total** |  |  | **3,076** |
-
-The generated header reuses the D16 CJK14 decoder. On first load it expands
-the network into:
-
-```text
-MACRO_SCORE[10][1 << 18]
-```
-
-Each 18-bit key stores two bits for each of nine super-board cells. The table
-contains the exact clipped network result for every constraint/key pair. It
-occupies roughly 5 MiB at runtime, but only the 3,076-byte model payload and
-table-building code appear in the source.
-
 ## 4. CJK14 payload encoding
 
-Both evaluator payloads use the deterministic encoder in
-`tools/nnue_cjk14.py`. The gameplay opening book packs its mixed-radix digits
-into the same CJK14 alphabet and decodes with the same decoder
-([play_book.md](play_book.md)).
+The network payloads (the NNUE generator, the macro net and the retired D16
+MiniNet) use the deterministic encoder in `tools/nnue_cjk14.py`. The gameplay
+opening book packs its mixed-radix digits into the same CJK14 alphabet and
+decodes with the same decoder ([play_book.md](play_book.md)).
 
 ### 4.1 Why not ASCII
 
@@ -213,9 +276,11 @@ submission is larger in bytes than in counted characters.
 
 Decoding yields `floor(14 * characters / 8)` bytes. When the final group
 carries eight or more padding bits that is one zero byte more than the input.
-Both loaders size their reads from the known layout (`count < need` fails,
-extra bytes are ignored), so the padding is harmless. The current payloads pad
-by fewer than eight bits and decode to exactly their input length.
+Every loader sizes its reads from the known layout (`count < need` fails,
+extra bytes are ignored; the NNUE reader stops at the end of its last
+matrix), so the padding is harmless. The macro payload pads by 4 bits and
+decodes to exactly its input length; the NNUE payload pads by 10, so a byte
+decoder would return one extra zero byte, which its bit reader never reaches.
 
 ### 4.3 Raw-string delimiter safety
 
@@ -232,7 +297,8 @@ terminating sequence `)~"`. This is a structural guarantee.
 
 ### 4.4 Decoder behavior
 
-`d16_mini_cjk_decode()` reads the UTF-8 bytes of the ordinary narrow literal:
+`d16_mini_cjk_decode()` (in the bot, from `d16_helpers.hpp`) reads the UTF-8
+bytes of the ordinary narrow literal:
 
 - skips every byte that does not start a three-byte UTF-8 sequence, including
   formatting newlines;
@@ -246,14 +312,19 @@ sequence, including the little-endian `float32` representation expected by the
 AVX2 x86 runtime. `tools/nnue_cjk14.py` also holds the decoder source the
 emitters write into generated headers, and a Python mirror used by its tests.
 
-The committed tests pin the current payloads to:
+The NNUE payload is read differently: `b64::Bits` pulls 14-bit groups
+straight from the characters (skipping the formatting newlines the same way)
+and hands the Rice decoder one bit field at a time, so no byte buffer exists.
 
-| Payload | Bytes | Characters | FNV-1a 64 |
+The committed tests pin the payloads to:
+
+| Payload | Bytes | Characters | Pinned hash |
 | --- | ---: | ---: | --- |
-| D16 local evaluator | 42,855 | 24,489 | `e35e987c17a453cf` |
-| Macro residual | 3,076 | 1,758 | `626e29f3a8d65679` |
+| NNUE generator | 54,114 | 30,923 | sha256 `f3092c99d4ac9d37...` (`tools/test_nnue_emit_b64_header.py`), plus the 16 baked tables' hashes (`unit_tests.cpp`) |
+| Macro residual | 3,076 | 1,758 | FNV-1a 64 `626e29f3a8d65679` |
+| D16 local evaluator (retired) | 42,855 | 24,489 | FNV-1a 64 `e35e987c17a453cf` |
 
-These are the same bytes and hashes the ASCII85 encoding decoded to.
+The macro and D16 bytes are the same the ASCII85 encoding decoded to.
 
 ## 5. Local-header bundling
 
@@ -282,13 +353,13 @@ Angle-bracket system includes are never inlined:
 #include <immintrin.h>
 ```
 
-This produces one translation unit containing the readable engine, both
-generated evaluator implementations and the opening book. For the current
-submission:
+This produces one translation unit containing the readable engine, the NNUE
+runtime and payload, the macro net, the MiniNet helpers and the opening book.
+For the current submission:
 
 ```text
-readable codingame_nnue.cpp: 139,732 characters
-after local-header bundling: 204,984 characters
+readable codingame_nnue.cpp: 108,020 characters
+after local-header bundling: 196,506 characters
 ```
 
 The bundled form is intentionally larger than the readable source. Its purpose
@@ -455,20 +526,28 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 139732 (bundled 204984)
--> cpp_impl/cg_input.cpp 90095
-saved 114889
-cap 9905 left
+cpp_impl/codingame_nnue.cpp 108020 (bundled 196506)
+-> cpp_impl/cg_input.cpp 94897
+saved 101609
+cap 5103 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
 translation unit, not with the readable top-level source.
 
 Sizes are UTF-16 code units, which is what CodinGame counts. Everything
-outside the two payload literals is ASCII, and every payload character is one
-UTF-16 unit, so the unit count equals Python's `len`. It does not equal
-`wc -c`: each payload character is three UTF-8 bytes, and the file is 169,501
+outside the three payload literals is ASCII, and every payload character is
+one UTF-16 unit, so the unit count equals Python's `len`. It does not equal
+`wc -c`: each payload character is three UTF-8 bytes, and the file is 187,171
 bytes. The CLI exits with failure when output is 100,000 units or larger.
+
+| Part of `cg_input.cpp` | UTF-16 units |
+| --- | ---: |
+| code (minified engine, NNUE runtime, book reader) | 48,760 |
+| NNUE generator payload | 30,923 |
+| gameplay opening book payload | 13,456 |
+| macro net payload | 1,758 |
+| **total** | **94,897** (5,103 left) |
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
@@ -477,8 +556,14 @@ submission to 92,759 characters. Round nine brought it to 96,887, leaving
 first (full-coverage) opening book added 8,312, for 74,043. The CodinGame
 compiler work (`always_inline` attributes and the `cf_*` helpers, section 13)
 and speed rounds ten and eleven brought it to 81,317, and the larger uttt.ai
-opening book (13,456 payload characters against 4,656) to **90,095, with
-9,905 left**. Headroom is again worth watching.
+opening book (13,456 payload characters against 4,656) to 90,095, with
+9,905 left. The NNUE (improvement log section 56) replaced the MiniNet's
+24,489 payload characters with the generator's 30,923 and took the HCE and
+MiniNet code out of the bot (50,392 code characters down to 48,760): **94,897,
+with 5,103 left**. Headroom is again worth watching: a smaller NNUE payload
+configuration would free about 1,450 (section 3.1), and the two templates the
+bot never instantiates (`evaluate_macro_fast` in the shared `macro_eval.hpp`
+and `b64::evaluate_board`) cost 688.
 
 ## 11. Reproducible generation procedure
 
@@ -495,13 +580,25 @@ changed.
 
 ### 11.2 When an evaluator changed
 
-First export the accepted checkpoints:
+For a new NNUE, emit its payload from the accepted net's lane-paired BGN1
+export ([nnue_training_and_implementation.md](nnue_training_and_implementation.md)
+section 10), then take the new table hashes and scales for the tests from
+`--check`:
 
 ```bash
-python3 tools/nnue_emit_mininet_header.py \
-  artifacts/mininet_d16h8.bin \
-  -o cpp_impl/mini_eval_d16.hpp
+python3 tools/nnue_emit_b64_header.py datasets/nnue2/fast/NAME_perm.bin --label NAME
+python3 tools/nnue_emit_b64_header.py --check
+```
 
+The shipped header came from
+`python tools/nnue_emit_b64_header.py datasets/nnue2/fast/B64_d5M_57ep_perm.bin --label B64_d5M_57ep`
+with every other option at its default; the emitter's GPTQ calibration reads
+`datasets/nnue2/d8_a.cfdg`, which is not in the repository.
+
+The macro net has its own emitter (and so does the retired MiniNet,
+`tools/nnue_emit_mininet_header.py`):
+
+```bash
 python3 tools/nnue_emit_macro_header.py \
   artifacts/macro_d8h16.pt \
   -o cpp_impl/macro_eval.hpp \
@@ -583,8 +680,11 @@ Coverage relevant to this pipeline includes:
 - known C++ CJK14 decoder vectors and the overflow return;
 - UTF-16 unit counting for the cap, including astral characters counting double;
 - exact D16 and macro payload lengths and hashes;
-- scalar versus optimized evaluator paths;
-- NNUE incremental-state refresh consistency.
+- the NNUE payload's sha256 and the 16 baked tables' hashes, in C++ and in the
+  emitter's Python mirror of `load()`;
+- NNUE evals at 16 fixed positions, and incremental == from scratch == a
+  scalar reference along a search-like walk;
+- scalar versus optimized evaluator paths.
 
 ### 12.4 Behavioral and timing checks
 
@@ -614,8 +714,11 @@ optimization the submission gets is what its own source asks for, which is why
 `#include`s. At a global `-O0` that pragma optimizes each function body, but
 GCC then inlines only functions marked `always_inline`, so:
 
-- every hot-path helper in `codingame_nnue.cpp` and in the generated eval
-  headers carries `__attribute__((always_inline))` (the emitters write it);
+- every hot-path helper in `codingame_nnue.cpp` and in the eval headers
+  carries `__attribute__((always_inline))` (`nnue_b64.hpp`'s per-move and
+  per-evaluation helpers, and what the macro emitter writes). The NNUE's
+  `eval_avx` and `Stack::sync` stay real calls, one per uncached evaluation,
+  as in the build that was verified with CodinGame's compiler;
 - the hot path uses `cf_array`, `cf_heap_array`, `cf_min` and `cf_max` instead
   of `std::array`, `std::vector`, `std::min` and `std::max`;
 - the `#pragma GCC target("avx2,...")` line stays *after* the includes (GCC 13
@@ -651,6 +754,11 @@ local test measured (improvement log sections 47 and 52). The README's
 
 ### The network fails to initialize
 
+- For the NNUE: run `python tools/nnue_emit_b64_header.py --check` on the
+  header (it decodes, bakes and prints the table hashes without C++) and the
+  `nnue_*` unit tests, which compare the C++ bake with the same hashes. A
+  different hash with an unchanged payload points at the bake's float order
+  (an FMA, a reordered sum) rather than the payload.
 - Run the payload length/hash unit test.
 - Check the emitter's field order against the loader's `memcpy` order.
 - Confirm all floating-point arrays are emitted as little-endian `float32`.
@@ -658,11 +766,14 @@ local test measured (improvement log sections 47 and 52). The README's
   return `-1`.
 - Verify the raw-string payload contains no hand edits.
 
-### CodinGame shows about 130k nodes per move
+### CodinGame shows about a fifth of the usual nodes per move
 
-The bot prints `N<nodes>` after each searched move. Around 130k at 90 ms,
-against 600k-900k normally, is the signature of a build without the
-optimize pragma or the `always_inline` attributes (section 13). The usual cause
+The bot prints `N<nodes>` after each searched move. About a fifth of the usual
+count (with the MiniNet evaluator: around 130k at 90 ms against 600k-900k) is
+the signature of a build without the optimize pragma or the `always_inline`
+attributes (section 13). The NNUE bot searches about 55% of the MiniNet bot's
+nodes per millisecond by design (about 1.1M nodes per move at 90 ms on the
+laptop); compare with that, not with the old numbers. The usual cause
 is pasting an old or wrong file: the first line of the paste must be
 `#pragma GCC optimize("O3")`. If the paste is right, build it with
 `make -C cpp_impl cg-flags` and look for new out-of-line calls.
@@ -672,9 +783,13 @@ is pasting an old or wrong file: the first line of the paste must be
 Minification reduces source size, not runtime initialization work. Profile:
 
 - CJK14 decoding;
-- D16 fast-table construction;
+- the NNUE bake and quantization (about 50 ms);
 - macro lookup-table construction;
+- the opening book decode;
 - opening warm-up search.
+
+On the laptop with CodinGame's flags the whole first turn takes about 175-220
+ms, and 474 ms at worst with two bots starting on one core at once.
 
 The submitted engine must keep this combined initialization and first response
 inside CodinGame's first-turn allowance, while later searches remain below the

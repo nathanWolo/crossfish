@@ -7,8 +7,18 @@ This document describes the two non-neural parts of Crossfish's evaluation:
 - **correction history**, three tables the search fills during play with the
   HCE's measured errors and adds back to it.
 
-The learned parts that sit on top (the D16/H8 MiniNet and the macro residual)
+The learned parts that sat on top (the D16/H8 MiniNet and the macro residual)
 are in [nnue_training_and_implementation.md](nnue_training_and_implementation.md).
+
+**Status since 2026-09-27** (improvement log section 56): the search's
+evaluation is the pattern-generator NNUE of that document's Part I, not the
+HCE. The correction histories below now correct the NNUE's static eval, with
+the same tables, keys and updates, and the macro net is still the macro
+table's prior. Of the HCE, the search keeps only the two-in-a-row threat maps
+(section 4.3), which the global-win checks read; `datagen` still records the
+HCE of every position, and `test_bots`' tuning and dump modes still use it.
+Everything else below describes the HCE as it ran until then, and as
+`evaluate_hce` still computes it.
 The chronology of every change mentioned here, with its SPRT, is in the
 [improvement log](improvement_log.md).
 

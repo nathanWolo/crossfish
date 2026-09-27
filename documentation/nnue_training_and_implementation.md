@@ -1,13 +1,327 @@
 # NNUE training and runtime implementation
 
-This document describes the learned evaluation stack Crossfish has shipped
-since round seven. The network weights have not changed since then; the
-runtime around them was made faster in rounds nine and ten (improvement log
-sections 44 and 48) without changing any score. It covers the data format, teacher-label generation, feature
-encoding, PyTorch models, training objectives, checkpoint formats, compression,
-generated C++ headers, runtime evaluation, and strength validation.
+Since 2026-09-27 (improvement log section 56) Crossfish's whole evaluation is
+one small NNUE, **B64_d5M_57ep**: a pattern-generator net with 35,243
+parameters, integer and incremental at run time, shared by the local engines
+(`crossfish_dev.hpp`, `crossfish_prev.hpp`) and the CodinGame bot. It replaced
+the hybrid that shipped from round seven: a handcrafted evaluation (HCE) plus
+a D16/H8 MiniNet residual plus a macro residual.
 
-The short version is:
+- **Part I** (sections 1-10) describes the NNUE: architecture, data,
+  training, quantization, payload, runtime, search integration, tests and
+  how to ship a new net.
+- **Part II** (sections 11-26) describes the hybrid it replaced, as it
+  shipped. Parts of it still run: the macro net is the macro correction
+  history's prior, datagen still records the HCE, and the old data formats
+  and tools remain.
+
+The experiments behind the NNUE have their own READMEs:
+[`tools/experiments/nnue2/`](../tools/experiments/nnue2/README.md) (trainers,
+data, results) and [`tools/experiments/fast_nnue/`](../tools/experiments/fast_nnue/README.md)
+(the integer inference as it was developed, candidate builds, exactness
+checks, two-net matches, the Linux worker). Their round-by-round write-ups
+stay with the data in `datasets/nnue2/` (not in the repository).
+
+# Part I. The pattern-generator NNUE
+
+## 1. The evaluator in one picture
+
+```text
+per perspective P (both are kept; the side to move's comes first in the head)
+
+  live miniboard m, pattern p (3^9)  -> T[m][p]         generated: proj_m(enc(p))
+  decided miniboard m (won/lost/drawn) -> DEC[3m + s]
+  bias                                -> BIAS
+  ------------------------------------------------ stored accumulator, 64 lanes + 1 PSQT lane
+  + constraint c (0..8 forced, 9 free) -> CON[c] (P to move) or CON[10 + c]
+  + forced board's pattern (c < 9)     -> F[p_c]        generated: fwd(enc(p_c))
+  ------------------------------------------------ at evaluation time
+
+  clamp(acc_stm[:64]) ++ clamp(acc_other[:64]) -> 16 -> clamp -> 32 -> clamp -> 1
+  eval = 1000 * (out + (psqt_stm - psqt_other) / 2)        side to move's view
+```
+
+Qsearch stands pat on this plus the structural correction history; interior
+pruning uses it plus all three correction histories (section 7).
+
+## 2. Architecture
+
+**Features.** A miniboard's pattern is `p = sum_i cell_i 3^i` over its nine
+squares, with 0 empty, 1 the perspective's stone, 2 the other side's. The
+opponent's view swaps 1 and 2. Only the 11,093 patterns with no line and not
+full occur on a live board; decided boards contribute their state (won by P,
+won by the other, drawn) instead, and their stones are ignored, as they are in
+the transposition key.
+
+**The generator.** Rather than learning 9 x 3^9 free rows (a first probe of
+such direct tables had 22.7M parameters and stopped at -28% held-out loss:
+too many rows for the data), every pattern row is computed by a small
+network:
+
+| Part | Shape | Parameters |
+| --- | --- | ---: |
+| encoder: one-hot 27 (3 states x 9 squares) -> 64 -> 64 -> 32, ReLU between | shared by all rows | 8,032 |
+| projection per location: `T[m][p] = enc(p) @ proj_w[m] + proj_b[m]` | 9 x (32 x 65 + 65) | 19,305 |
+| forced-board projection: `F[p] = enc(p) @ fwd_w + fwd_b` | 32 x 65 + 65 | 2,145 |
+| bias, decided rows (27), constraint rows (20: 10 per side) | 48 x 65 | 3,120 |
+| head: 128 -> 16 -> 32 -> 1 | | 2,641 |
+| **total** | | **35,243** |
+
+Lane 64 of every row is a PSQT lane: it bypasses the head and enters the
+output directly, so the accumulators carry a linear material-style term for
+free.
+
+**Why this shape.** The same data and epochs gave -47.4% held-out loss for
+B-64 against -39.6% for a per-cell net with twice the parameters (improvement
+log section 53's 199-feature design). A pattern row sees the whole 3 x 3 geometry at once, which
+a per-cell first layer has to rebuild from data. B-128 (61,483 parameters)
+fitted 0.4 points better and played 6 Elo worse at 20 ms, being about 15%
+slower.
+
+## 3. Training data
+
+`tools/nnue_train_blend.py` and `tools/eval_data.py` supply the 128-byte
+record format and loaders ([eval_data.md](eval_data.md) section 1).
+
+| Set | What | Rows |
+| --- | --- | ---: |
+| eval2 | section 55's positions: 3.5M from crossfish self-play, 1.32M from uttt.ai, depth-14 labels | 4.82M |
+| d8 | `datagen play OUT N d8 THREADS SEED datasets/eval2/uttt_openings.txt`: self-play at a fixed depth of 8 whose root scores are the labels ([eval_data.md](eval_data.md) section 2), about 2.5 hours on two machines | 176M |
+| **d5M** (the training set) | eval2's training games + the labeled rows of the first 5M d8 records | 9.34M |
+| V2 (holdout) | 10% of the eval2 games | 482,136 |
+| D8H (holdout) | 1% of the d8 games, never streamed | 1.71M |
+
+Mates are clamped to +/-20,000 in both label sources. The d8 labels come from
+the process that played the moves, so the old free-move loader bug (improvement
+log section 55) cannot reach them. Label with a `datagen` built from an unpatched Dev:
+since the NNUE shipped, `datagen`'s `static_eval` column is the NNUE, and its
+`hce` column is still the HCE.
+
+## 4. Training recipe
+
+`tools/experiments/nnue2/gen_nnue.py train --run B64_d5M_57ep,64,16x32,1e-2,epochs=57`:
+
+- **Target and loss.** `sigmoid(search / 1600)` and the squared error of the
+  predicted win probability `sigmoid(eval / 1600)`. K = 1600 is the fitted
+  scale of the depth-14 labels (improvement log section 55).
+- **Augmentation.** The 8 symmetries of the board (D4), applied to all nine
+  miniboards and their positions together.
+- **Optimizer.** AdamW, peak lr 1e-2 (no weight decay on the first layer,
+  1e-5 on the head), 2% linear warmup, cosine decay to 1e-5, batches of
+  16,384, seed 1.
+- **Length.** 57 epochs of 570 steps (32,490 steps): 14 minutes on the
+  desktop's GPU through DirectML.
+- **Result.** V2 -51.41% and D8H -47.28% against the old static eval's loss
+  on the same rows; correlation with the search label 0.788 on non-mate rows.
+
+What the recipe search found (improvement log section 56):
+
+- **Steps, not data.** Streaming all 176M d8 rows for the same number of
+  steps was worse (-40 Elo for B-64); ten passes did not help.
+- **57 epochs at lr 1e-2 is the best point.** 114 and 200 epochs were worse
+  (-10, -21 Elo), and not from overfitting: the long high-lr phase leaves
+  fewer lanes in the linear range and larger first-layer rows. At lr 5e-3,
+  114 epochs tie it.
+- **The d8 rows matter.** eval2 alone for the same steps memorizes eval2 and
+  loses 19 Elo.
+- **Held-out loss did not rank play reliably** here either; every decision
+  was made on 20 ms round robins and confirmed at 90 ms.
+
+## 5. Export and quantization
+
+**Export.** `tools/experiments/fast_nnue/export_bgn.py export B64_d5M_57ep OUT.bin --perm`
+writes the checkpoint as a BGN1 file: the baked float tables, the head and the
+generator. `--perm` reorders the 64 lanes so that lanes which fire together
+share an activation pair of the sparse head kernel (a maximum-weight matching
+on co-activation), which cuts the nonzero pairs per evaluation from 37.7 to
+28.6 without changing the function: the quantized evals are bit-identical.
+
+**Integer scales.** Every table is quantized to a power of two:
+
+| Scale | What | This net |
+| --- | --- | ---: |
+| `B64_QA` | the 64 accumulator lanes (int16) | 2^9 |
+| `B64_QPS` | the PSQT lane (int16, separate arrays) | 2^13 |
+| `B64_QB` | first dense layer weights (int16), sums int32 | 2^13 |
+| `B64_Q2` | second dense layer | 2^13 |
+| `B64_QO` | output weights | 2^10 |
+
+`QA` is the largest value for which every row, every stored accumulator and
+every accumulator plus constraint row plus forced-board row stays inside
+int16 over every position the features can express. The bound is exact per
+board (the extremes of each board's rows by the pattern's stone difference)
+and is combined under the stone balance of a real game (the side to move has
+as many stones as the other side or one fewer; search never passes). The
+other scales are the largest that keep their layer's int32 sums bounded.
+Hidden layers shift back with rounding to nearest; the output truncates
+toward zero, as the float reference does. Nothing is clipped, so int16
+arithmetic that wraps in between still ends exact.
+
+**Error.** On 20,000 fixed positions the integer engine is 4.73 eval units
+from the float net on average (max 164; the float evals' standard deviation
+is 2,881), mostly at late plies. Its held-out loss equals the float net's to
+within 3e-6.
+
+**The payload.** The source carries the generator, not the tables: 35,243
+parameters, rounded with GPTQ and a least-squares refit, one bf16 scale per
+row, a bit width per group and Rice coding, in 30,923 CJK14 characters
+([minification.md](minification.md) section 3.1).
+`tools/nnue_emit_b64_header.py NET.bin --label NAME` writes
+`cpp_impl/nnue_b64_net.hpp` from the lane-paired export and derives the five
+scales itself (a port of the loader's bound). The payload's own rounding keeps
+the bot at 4.72 / 163 from the float net, the same as the unrounded net.
+
+## 6. Runtime (`cpp_impl/nnue_b64.hpp`)
+
+**Start-up.** `b64::load()` decodes the payload into the generator, runs the
+encoder on the 11,093 live patterns, projects each through the nine location
+projections and the forced-board one, and quantizes every row as it is made:
+25.6 MB of static int16 tables in about 50 ms. The float operations run in a
+fixed order without FMA, so every compiler and flag set bakes the same floats;
+the unit tests pin the hashes of all 16 integer tables. `load()` uses a plain
+ready flag, which the single-threaded bot needs; the engines call it through
+one shared once-flag (`crossfish_nnue_load_once`) because the harnesses build
+engines on many threads at once.
+
+**Accumulators.** Both perspectives are kept per absolute player, so a move
+never swaps them. A move in a live miniboard subtracts the board's old
+pattern row and adds the new one, per perspective (6.6 ns); a move that
+decides it swaps the pattern row for a decided row. The constraint and
+forced-board rows are added at evaluation time and never stored.
+
+**The lazy stack** (`b64::Stack`, one per engine):
+
+- `on_make` in `make_move_fast(FastBoard&)`, just before `n_moves++`, only
+  records the move (board, square, mover, decided state, the board's markers
+  before, the parent's and the child's `tt_hash`) and prefetches the rows the
+  update and the evaluation will read. Unmake does nothing.
+- An evaluation walks back from the current ply while the recorded moves lead
+  to the position it needs, and replays forward from the first entry that
+  holds a parent. Siblings overwrite deeper entries, which is why entries are
+  keyed by the position they hold: an entry is reused only for its own
+  position.
+- The empty board's `tt_hash` is 0, so an entry holding no position is marked
+  `kNoKey`, not 0.
+- A chain that reaches no valid entry refreshes from scratch, so a search
+  entered without `refresh_root` is still exact, only slower. `getMove` and
+  `search_fixed_depth` call `refresh_root` at the root.
+- `evaluate_keyed` puts a 2^14-entry direct-mapped cache in front, keyed by
+  `tt_hash` (which determines every feature). A third to a half of all
+  evaluations hit it.
+
+**Kernels.** AVX2 throughout: the accumulator add of the constraint and
+forced rows, a clamp to [0, 2^QA], a 64-bit mask of the nonzero activation
+pairs, and the first dense layer as `_mm256_madd_epi16` over those pairs
+only; the 16 -> 32 -> 1 layers are dense. About 43 ns per uncached
+evaluation. On the CodinGame build `eval_avx` and `Stack::sync` are real
+calls (one per uncached evaluation); the per-move and per-evaluation helpers
+are `always_inline`.
+
+**Memory.** Each engine carries about 290 KB of stack and cache besides the
+shared tables.
+
+## 7. Search integration
+
+The same wiring is in Dev, Prev and `codingame_nnue.cpp` (`make -C cpp_impl
+port-check` proves the bot searches exactly like Dev):
+
+- **Qsearch** stands pat on `NNUE + structural correction`. The HCE fail-high
+  shortcut and the MiniNet/macro upper bound of Part II are gone.
+- **Interior static eval** (reverse futility, futility) is the NNUE corrected
+  by all three correction histories, which now learn the NNUE's errors. The
+  depth-1 reverse-futility MiniNet check is gone. Pruning still stays away
+  from mate-range bounds (improvement log section 51).
+- **Make** keeps only the HCE's threat maps, which `has_immediate_global_win`
+  and `has_forced_global_win_after_reply` read; the local and global HCE
+  scores are no longer updated during search.
+- **`evaluate(GlobalBoard&)`** (tests, `datagen label` depth 0) is
+  `b64::evaluate_board`, computed from scratch; under `g_force_hce_eval` it
+  still returns the HCE.
+- **The macro net** stays as the macro correction history's prior
+  (`corr_macro_entry`), and the HCE, MiniNet and macro code still compile in
+  the engines for the tools that read them. The CodinGame bot drops the HCE
+  evaluators and the MiniNet entirely and keeps three helpers of the MiniNet
+  header in `d16_helpers.hpp`.
+
+## 8. Tests
+
+- `unit_tests` (`make test`):
+  - `nnue_tables_match_verified_build`: the 16 table hashes and the five
+    scales of the build checked with CodinGame's compiler.
+  - `nnue_fixed_positions`: 16 positions (decided and drawn boards, forced
+    boards, free moves) through `evaluate_board`, an independent scalar int64
+    reference and Dev's `evaluate()`, against the verified bot's own evals;
+    and `g_force_hce_eval` still gives the HCE.
+  - `nnue_incremental_matches_scratch`: about 24,000 evaluations along a
+    search-like walk from 300 random roots (siblings overwriting entries,
+    evaluations before and after children, roots without `refresh_root`, a
+    new stack at the empty board): keyed == incremental == from scratch ==
+    scalar.
+- `tools/test_nnue_emit_b64_header.py` (numpy only): the committed header
+  decodes to the verified payload, its scales are the ones the net needs, the
+  Python bake gives the pinned table hashes, and pack/unpack round-trips.
+- `python tools/nnue_emit_b64_header.py --check [HEADER]` decodes any header,
+  bakes it in float32 in `load()`'s order, derives the scales and prints the
+  table hashes.
+- `make -C cpp_impl port-check`: the bot against Dev at depths 5, 7, 9.
+
+(`test_bots verify`'s "nnue incremental vs refresh" line checks the older
+sparse `nnue.hpp` path, not this net.)
+
+## 9. Strength and speed
+
+Official 90 ms SPRT against the hybrid (the mate-window freeze), two pooled
+shards: **N=420, 296-106-18, +276.6 +/- 30.4 Elo**, LLR +3.00 (H0=0, H1=+5),
+0 timeouts. Against the hybrid it runs at 58-62% of the nodes per second
+(`bench_ab nodes 400 9`), needs 87% of the nodes to reach depth 9, completes
+about one ply less at 90 ms, and runs at 0.553 of the old paste file's
+nodes/ms when both are built with CodinGame's flags. Improvement log section
+56 has the full record, including the round robins that picked the net.
+
+## 10. Shipping a new net
+
+```bash
+PY=toolchains/py312-dml/Scripts/python.exe    # torch for training and export; the emitter needs numpy only
+$PY tools/experiments/nnue2/gen_nnue.py train --run NAME,64,16x32,1e-2,epochs=57
+$PY tools/experiments/fast_nnue/export_bgn.py export NAME datasets/nnue2/fast/NAME_perm.bin --perm
+$PY tools/experiments/fast_nnue/export_bgn.py verify datasets/nnue2/fast/NAME_perm.bin NAME
+$PY tools/nnue_emit_b64_header.py datasets/nnue2/fast/NAME_perm.bin --label NAME
+python tools/nnue_emit_b64_header.py --check  # new table hashes and scales for unit_tests.cpp
+make -C cpp_impl cg-input && make test && make -C cpp_impl port-check
+```
+
+- **Update the pinned values in both test files.** In `cpp_impl/unit_tests.cpp`,
+  the five `B64_Q*` checks and the 16 table hashes come from `--check`; take
+  `want[16]` from the failing `nnue_fixed_positions` `CHECK_EQ` output after
+  checking the new evals against the float net. In
+  `tools/test_nnue_emit_b64_header.py`, update `PAYLOAD_SHA256`, the payload
+  length, `SCALES` and `TABLE_HASHES` from the emitter and `--check` output.
+
+- **Screen before shipping.** A new net is an eval change: screen it with a
+  20 ms round robin against the current one and confirm it with the 90 ms
+  SPRT. The candidate and pairing tools in `tools/experiments/fast_nnue/`
+  patch the pre-NNUE engine (commit `c278cde`); for a net of the same shape,
+  swapping `nnue_b64_net.hpp` in Dev's build is the simpler A/B, but Dev and
+  Prev then need separately named copies of the runtime (the fast_nnue README
+  explains why one shared header silently gives both engines one net).
+- **Same shape only.** The runtime is specialised to B-64 with a 16 -> 32
+  head; another shape needs `nnue_b64.hpp` changed with it, and the unit
+  tests' expected values regenerated.
+- **Calibration data.** The emitter's GPTQ and refit read
+  `datasets/nnue2/d8_a.cfdg` (`--calib`), which is not in the repository.
+  Its `--check` path is what CI runs.
+- **Record** the checkpoint (`datasets/nnue2/probe/NAME.pt` and `.json`), the
+  export's CRC, the payload sha256 (in the header's comment), the emitter
+  command and the SPRT, as section 25 asks.
+
+# Part II. The hybrid evaluator it replaced (rounds seven to twelve)
+
+This part describes the evaluator that shipped from round seven until the
+NNUE (2026-09-13 to 2026-09-27), as it shipped: HCE, plus a D16/H8 MiniNet
+residual, plus a macro residual. Its numbers (payload sizes, the
+90,095-character paste file) are that ship's. The engines still contain its
+code: the macro net is the macro correction history's prior, `datagen`
+records the HCE, and the data formats and trainers below remain in `tools/`.
 
 ```text
 position
@@ -23,28 +337,30 @@ position
 qsearch stand pat = HCE + local residual + macro residual
 ```
 
-The current evaluator is deliberately hybrid. The HCE remains a fast,
-well-behaved baseline. The learned heads predict corrections to that baseline
-instead of replacing it. This was stronger and much easier to fit than asking a
-small network to relearn all of the known Ultimate Tic-Tac-Toe structure.
+The hybrid was deliberately a sharp base with learned corrections: the HCE
+stayed a fast, well-behaved baseline and the learned heads predicted
+corrections to it. That was stronger and much easier to fit than asking a
+small network to relearn all of the known Ultimate Tic-Tac-Toe structure,
+until the pattern generator of Part I did so with far more data.
 
-## 1. What “NNUE” means in this repository
+## 11. What “NNUE” means in this repository
 
-The name is historical and should not be read as “the current evaluator is a
-Stockfish-style accumulator updated on every move.”
+Until the pattern-generator net of Part I, the name was historical: the
+evaluator was not a Stockfish-style accumulator updated on every move.
 
 Crossfish has experimented with several learned evaluators:
 
 - a sparse 199-feature dual-accumulator network;
 - the D8/H4 MiniNet that first shipped as an HCE residual;
-- the current D16/H8 MiniNet;
+- the D16/H8 MiniNet of this part;
 - a separate macro-context residual head;
 - a full Stockfish-style NNUE (199 features, 256-wide accumulator) that
   replaced HCE, MiniNet and macro together. It fitted holdout labels better
   and lost 193-296 Elo at equal depth; improvement log section 53 and
-  `tools/experiments/full_nnue/` record it.
+  `tools/experiments/full_nnue/` record it;
+- the pattern-generator NNUE of Part I, which replaced all of the above.
 
-The current local MiniNet is evaluated from the board at selected search nodes,
+The hybrid's local MiniNet was evaluated from the board at selected search nodes,
 but its first layer is heavily preprojected, and the two pieces of its input
 that change rarely (each miniboard's centroid code and the decided-miniboard
 term) are kept up to date by make/unmake. The macro network is reduced to an
@@ -57,7 +373,7 @@ fewer nodes than it traverses, so paying update cost on every search edge was
 more expensive than reconstructing the small preprojected network only when it
 was needed.
 
-## 2. Shipped score composition
+## 12. The hybrid's score composition
 
 Let:
 
@@ -95,7 +411,7 @@ exact value cannot matter:
 3. Otherwise it evaluates the local residual and performs the cached macro
    lookup.
 
-`MINI_MAX` is 8000 and `MACRO_CLIP` is 2000 in the shipped engine.
+`MINI_MAX` is 8000 and `MACRO_CLIP` is 2000 in the hybrid.
 
 Interior reverse-futility pruning normally uses HCE corrected by all three
 histories. At depth one, a selective second check evaluates the D16 local head
@@ -115,9 +431,9 @@ Relevant runtime files:
 The final two files are generated artifacts. Do not hand-edit their packed
 weights.
 
-## 3. Training-data format
+## 13. Training-data format
 
-### 3.1 `NNUEWDL1`
+### 13.1 `NNUEWDL1`
 
 The local and macro trainers consume the repository’s `NNUEWDL1` binary format.
 It starts with:
@@ -162,7 +478,7 @@ The training loader rejects a dataset whose first score field still resembles
 WDL probabilities (`mean(abs(y)) < 2`). This catches the most common pipeline
 mistake, but it cannot detect every semantically bad label set.
 
-### 3.2 Raw self-play data
+### 13.2 Raw self-play data
 
 Build the harness first:
 
@@ -191,7 +507,7 @@ The fixed-depth search dumper expects files named `nnue_pos.bin` and
 `nnue_hce_rand.bin` under `datasets/` unless equivalent paths can be found by
 the harness.
 
-### 3.3 Search-score labels
+### 13.3 Search-score labels
 
 There are three supported labeling routes.
 
@@ -248,7 +564,7 @@ Do not run `dump annotate` on an ordinary WDL dump and assume it has created
 search labels. In an ordinary dump the integer field is already HCE, so the
 result would effectively train HCE against itself.
 
-### 3.4 Label clipping and mate handling
+### 13.4 Label clipping and mate handling
 
 Search scores near the engine’s mate bounds dominate a regression loss while
 providing little useful calibration for ordinary qsearch leaves.
@@ -263,7 +579,7 @@ The round-seven D16/H8 artifact used the drop-mates path with a threshold of
 clips its remaining residual target by dropping rows outside
 `±target_clip` (4000 by default).
 
-### 3.5 Distribution quality
+### 13.5 Distribution quality
 
 Offline loss is only meaningful when the position distribution resembles the
 nodes where the engine actually calls the evaluator.
@@ -288,7 +604,7 @@ Treat that validation loss as an optimizer/early-stopping signal, not as proof
 of generalization. Use a separately generated dump for honest model
 comparison, and use SPRT for the final decision.
 
-## 4. Side-to-move-relative feature encoding
+## 14. Side-to-move-relative feature encoding
 
 Both learned heads are side-to-move relative. One network handles both players.
 
@@ -333,9 +649,9 @@ The constraint is an integer from 0 through 9:
 This canonicalization is important. Without it, the model would need separate
 parameters for positions that are identical after swapping player colors.
 
-## 5. Local D16/H8 MiniNet
+## 15. Local D16/H8 MiniNet
 
-### 5.1 Architecture
+### 15.1 Architecture
 
 The active round-seven local network has:
 
@@ -394,7 +710,7 @@ Most parameters are in the local-pattern table. The hidden mixer is
 intentionally tiny because it runs at many qsearch leaves and must fit inside
 the CodinGame source limit after packing.
 
-### 5.2 Residual objective
+### 15.2 Residual objective
 
 The winning training mode is `--residual`. For each position:
 
@@ -425,7 +741,7 @@ The trainer also supports:
 
 Those are experiment controls, not part of the shipped D16/H8 inference path.
 
-### 5.3 Empty-board anchoring
+### 15.3 Empty-board anchoring
 
 HCE already supplies the empty-position tempo score. A residual network must
 therefore contribute zero on the empty board.
@@ -444,7 +760,7 @@ original_empty_output - packed_empty_output
 This prevents a compression artifact from silently changing the opening
 baseline.
 
-### 5.4 Expanding an existing network
+### 15.4 Expanding an existing network
 
 `--init-mini old.bin` can initialize a larger MiniNet from a smaller CFM2
 checkpoint.
@@ -461,7 +777,7 @@ allowing additional capacity to learn.
 The initializer rejects a request whose target D or H is smaller than the
 source checkpoint.
 
-### 5.5 Training loop
+### 15.5 Training loop
 
 The MiniNet trainer:
 
@@ -483,7 +799,7 @@ Feature caching is keyed by data path, D, row count, mate policy, and upsampling
 configuration. Delete the cache if the underlying dataset is replaced in
 place; the filename alone cannot detect changed file contents.
 
-### 5.6 Representative D16/H8 command
+### 15.6 Representative D16/H8 command
 
 The round-seven artifact is a D16/H8 linear residual with mate rows dropped and
 a learning rate of `2e-4`. A representative invocation is:
@@ -511,7 +827,7 @@ This is a documented template, not a byte-for-byte reconstruction command for
 the checked-in header. The generated header does not contain the original
 dataset path, dataset hash, or complete optimizer invocation.
 
-## 6. CFM2 MiniNet checkpoint
+## 16. CFM2 MiniNet checkpoint
 
 `nnue_train_mininet.py` writes a little-endian float32 CFM2 file:
 
@@ -538,7 +854,7 @@ CFM2 is an inference checkpoint, not a complete experiment record. It does not
 store optimizer state, epoch, data provenance, command-line arguments, or
 validation metrics.
 
-## 7. Packing the local network for C++
+## 17. Packing the local network for C++
 
 The full local embedding table alone is:
 
@@ -549,7 +865,7 @@ The full local embedding table alone is:
 Embedding it literally would exceed CodinGame’s 100,000-character source cap.
 `tools/nnue_emit_mininet_header.py` compresses and preprojects it.
 
-### 7.1 Projection-aware clustering
+### 17.1 Projection-aware clustering
 
 Ordinary k-means in embedding space treats every embedding dimension equally.
 The engine only cares about errors after the first layer and output mixer.
@@ -581,7 +897,7 @@ There are 256 centroid codes:
 Keeping centroids in embedding space preserves the additive decomposition with
 super-state, location, and active-board embeddings.
 
-### 7.2 Packed payload
+### 17.2 Packed payload
 
 The generated payload contains:
 
@@ -601,7 +917,7 @@ The raw C++ string uses `~` as its delimiter. Every payload character is
 non-ASCII, so payload text cannot accidentally terminate the literal. At startup the header decodes the payload
 into static storage and builds runtime tables.
 
-### 7.3 Mask-to-code lookup
+### 17.3 Mask-to-code lookup
 
 The board stores each miniboard as two 9-bit bitboards. The runtime creates:
 
@@ -620,7 +936,7 @@ Overlapping masks map to code zero as a defensive fallback.
 
 This removes ternary-index arithmetic from the hot inference loop.
 
-### 7.4 First-layer factorization
+### 17.4 First-layer factorization
 
 The float model appears to require reconstruction of 160 features followed by
 an `8 × 160` matrix multiply. Almost every term is constant for a small
@@ -667,7 +983,7 @@ Two inputs are maintained by the search rather than looked up per leaf:
   rows are exactly zero (each is `lround(x - x)`).
 
 This is deliberately not a full incremental accumulator: maintaining the whole
-hidden vector on every make/unmake was measured slower (section 1).
+hidden vector on every make/unmake was measured slower (section 11).
 
 All eight hidden lanes fit in one AVX2 vector. The main code table occupies
 72 KiB:
@@ -680,7 +996,7 @@ The scalar path reconstructs the 160 float features and serves as a reference.
 The unit test permits at most eight eval units of difference between the
 scalar packed model and the int32 factored path across randomized games.
 
-### 7.5 Header generation
+### 17.5 Header generation
 
 ```bash
 python3 tools/nnue_emit_mininet_header.py \
@@ -692,13 +1008,13 @@ The emitter currently requires exactly D16/H8 for the factored runtime.
 `--no-reserve-empty` exists for experiments but was weaker than reserving the
 empty pattern exactly.
 
-## 8. Macro-context residual
+## 18. Macro-context residual
 
 The local MiniNet has detailed 3×3 pattern information, but its tiny mixer is
 not an efficient way to learn every interaction among decided miniboards and
 the forced-board constraint. The macro head targets the remaining error.
 
-### 8.1 Target construction
+### 18.1 Target construction
 
 `tools/nnue_train_macro_context.py` loads:
 
@@ -720,7 +1036,7 @@ Rows with `abs(search) >= 8000` are removed. Rows with
 The macro head therefore learns only what remains after both existing
 evaluators.
 
-### 8.2 Features and architecture
+### 18.2 Features and architecture
 
 The macro model sees:
 
@@ -751,7 +1067,7 @@ The accepted model uses embedding width 8 and hidden width 16. Subtracting the
 empty-position output in `forward()` makes zero anchoring structural rather
 than an optimizer preference.
 
-### 8.3 Training
+### 18.3 Training
 
 The macro trainer uses:
 
@@ -784,7 +1100,7 @@ python3 tools/nnue_train_macro_context.py \
 The `.pt` checkpoint stores the model state, D, H, best validation MAE, base
 net path, and data path.
 
-### 8.4 Preprojection
+### 18.4 Preprojection
 
 The macro header emitter folds every categorical embedding through the hidden
 weight matrix:
@@ -815,7 +1131,7 @@ python3 tools/nnue_emit_macro_header.py \
   --clip 2000
 ```
 
-## 9. Exact macro lookup
+## 19. Exact macro lookup
 
 Even a 16-hidden-unit AVX2 macro MLP was expensive at every qsearch leaf.
 There are only:
@@ -871,9 +1187,9 @@ the CodinGame process.
 
 The lookup recovered roughly 6% start-position NPS within the D16 build.
 
-## 10. Search integration
+## 20. Search integration
 
-### 10.1 Initialization
+### 20.1 Initialization
 
 At the start of a search:
 
@@ -882,7 +1198,7 @@ At the start of a search:
 3. both macro keys are reconstructed;
 4. generated packed weights/tables initialize lazily on first evaluation.
 
-### 10.2 Make/unmake
+### 20.2 Make/unmake
 
 For an ordinary move in a still-live miniboard:
 
@@ -902,7 +1218,7 @@ miniboard's HCE entry, both centroid codes, active board, terminal flag and
 decided state) in a 32-byte undo record, and unmake restores from it rather
 than re-deriving each value (round ten).
 
-### 10.3 Qsearch
+### 20.3 Qsearch
 
 The learned stack is primarily a leaf evaluator. Qsearch:
 
@@ -918,7 +1234,7 @@ This placement matters. A network can have better full-position MAE yet lose
 Elo if it is trained on states unlike actual qsearch leaves or costs enough
 nodes to reduce search depth.
 
-### 10.4 Interior pruning
+### 20.4 Interior pruning
 
 The normal reverse-futility and futility checks remain HCE based. This avoids
 paying the full learned evaluator at every interior node. A guarded depth-one
@@ -928,7 +1244,7 @@ bound says it might confirm the cutoff.
 That split is part of the accepted design; moving the networks to every static
 evaluation call is a different search experiment and must be SPRT tested.
 
-## 11. Generating a CodinGame submission
+## 21. Generating a CodinGame submission
 
 After generating both evaluator headers:
 
@@ -942,7 +1258,7 @@ python3 -c "s=open('cpp_impl/cg_input.cpp',encoding='utf-8').read(); print(len(s
 `tools/cg_minify.py --inline-local` recursively expands the local generated
 headers into `codingame_nnue.cpp`, then strips and renames the combined source.
 
-The current `cg_input.cpp` is 90,095 UTF-16 code units, leaving 9,905 below
+The hybrid's last `cg_input.cpp` was 90,095 UTF-16 code units, leaving 9,905 below
 the 100,000-unit limit; the evaluator payloads account for 26,247 of them and
 the opening book for 13,456. `wc -c` reports bytes, which overstate the count
 because each payload character is three UTF-8 bytes; the minifier prints the
@@ -956,7 +1272,7 @@ compiles without `-O`, so a regenerated header must keep its hot helpers
 (`d16_mini_hsum256`, `evaluate_macro_key`) `always_inline`; the emitters write
 the attribute ([minification.md](minification.md) section 13).
 
-## 12. Correctness and equivalence tests
+## 22. Correctness and equivalence tests
 
 Run:
 
@@ -984,7 +1300,7 @@ Do not enable FMA casually. The reference and generated paths are designed
 around the repository’s AVX2 mul-plus-add behavior, and changing floating-point
 association can change the effective network.
 
-## 13. Strength validation
+## 23. Strength validation
 
 Offline validation is diagnostic. It is not the ship criterion.
 
@@ -1036,7 +1352,7 @@ The gain is a mixture:
 - search integration that avoids paying learned inference where HCE already
   proves the bound.
 
-## 14. Failure modes and lessons
+## 24. Failure modes and lessons
 
 ### Better MAE can still lose Elo
 
@@ -1073,7 +1389,7 @@ Centroid assignment, empty-board reservation, projection rounding, output
 scale, clipping, and arithmetic order all define the deployed evaluator. Test
 the packed C++ network, not only the PyTorch checkpoint.
 
-## 15. Reproducibility checklist for future nets
+## 25. Reproducibility checklist for future nets
 
 Large training dumps and the accepted round-seven CFM2/PyTorch checkpoints are
 not currently tracked in Git. The generated headers are the versioned runtime
@@ -1115,10 +1431,16 @@ Whether those large files live in Git, release storage, or external artifact
 storage is a repository policy decision. The hashes and commands should still
 be committed with the generated headers.
 
-## 16. Source map
+## 26. Source map (both parts)
 
 | File | Responsibility |
 | --- | --- |
+| `cpp_impl/nnue_b64.hpp` | the NNUE runtime: decode, bake, quantize, lazy stack, kernels (Part I) |
+| `cpp_impl/nnue_b64_net.hpp` | the generated NNUE payload and its integer scales |
+| `tools/nnue_emit_b64_header.py` | NNUE payload emitter, scale derivation and `--check` |
+| `tools/experiments/nnue2/` | NNUE trainers (`gen_nnue.py`, `gen_nnue_stream.py`) and analyses |
+| `tools/experiments/fast_nnue/` | BGN1 export and parity, the experiments' integer inference, candidate builds, checks, two-net matches |
+| `cpp_impl/datagen.cpp` | self-play (timed or self-labelling fixed depth) and labeling |
 | `cpp_impl/test_bots.cpp` | data generation, search labeling, probes, SPRT |
 | `tools/nnue_train_mininet.py` | local MiniNet feature extraction and training |
 | `tools/nnue_train_macro_context.py` | residual macro-head training |
