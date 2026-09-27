@@ -383,7 +383,8 @@ This section is the other half of the history. Retrying these without a new hypo
 - SPSA over the six HCE global weights: after 3,300 pairs at 25 ms every
   weight was within 3% of its value. Not worth an SPRT.
 - Full Stockfish-style NNUE replacing HCE + MiniNet + macro, including a
-  data-scaling study and qsearch-leaf training data: see section 53.
+  data-scaling study and qsearch-leaf training data: see section 53. (A
+  pattern-generator NNUE on far more data did replace them: section 56.)
 - Every SPRT walks the book in the same order, so near-identical engines
   share early noise; three unrelated candidates read -11 to -13 near N=600.
   Use `SPRT_GAME_OFFSET` for independent early readings.
@@ -415,6 +416,13 @@ This section is the other half of the history. Retrying these without a new hypo
 - Holdout MAE / correlation without a move-level or Elo gate: a net can fit scores and play the same moves
 - Early-game MiniNet teacher (D=8, H=8, extra low-ply data): about **+10 Elo at depth 4**, ~**+1.5 Elo at 20 ms**, killed as not a +5 timed win. Better leaf, ~5% NPS tax. Not a ship.
 - Training on mates and fail-highs qsearch never asks the net about
+- The NNUE round (section 56), against the shipped B64_d5M_57ep at 20 ms:
+  the same net trained on all 176M depth-8 rows at equal steps (-44 head to
+  head), with eval2 upweighted (-20), for 114 or 200 epochs at lr 1e-2 (-10,
+  -21), at lr 5e-3 for 114 epochs (a tie, 11% slower per node; +9.0 +/- 12.0
+  at 90 ms), on eval2 alone (-19), and the 128-lane B128_d5M_57ep (-6, about
+  15% slower). The float per-cell NNUE hook: -255 at 20 ms at 0.8% of the
+  shipped speed.
 
 **Process failures (the kind that fake a pass)**
 
@@ -461,6 +469,10 @@ An honest running story, not a sum:
 16. The uttt.ai opening book (section 54): about **+72** paired book value
     against a different engine, against +26 for the full-coverage book it
     replaced.
+17. The NNUE round (section 56): one 35,243-parameter pattern-generator NNUE
+    replaced HCE + MiniNet + macro. It costs about 40% of the nodes per
+    second and a ply at 90 ms, and passed at **+277** against the
+    mate-window freeze.
 
 CodinGame rank is a different axis. Legend HCE got us into the league. MiniNet
 moved 82 → 68. Absolute ladder Elo is noisy and not what SPRT measures. The
@@ -2692,3 +2704,389 @@ for the old book. The review also confirmed that the committed payload is
 reproduced byte for byte by `play_book_pack` from the uttt.ai fork's
 `cg/book/uttt_book_v1.txt`, and that the merged paste file is 90,095
 characters (9,905 left).
+
+## 55. Retraining the evaluation on 4.8M positions: better fit, no Elo (25-26 September 2026)
+
+The engine had gained a lot since the MiniNet was last trained, so this round
+retrained the evaluation (MiniNet + macro head on top of the fixed HCE) on
+fresh, much larger data, Stockfish style: a win-probability loss on searched
+evals and game results. None of the resulting nets beats the shipped one at
+real time controls. The round did produce a bug fix, a reusable dataset and a
+test toolchain, and it settled several questions about how to test an eval.
+Nothing in the engine or the CodinGame bot changed. The pipeline is in
+[eval_data.md](eval_data.md).
+
+**Data.** 4.8M positions, each with a depth-14 search score from the current
+engine and uttt.ai net4's value, and (for the 93% played after the last
+random move) its game's result under CodinGame rules:
+
+- 3.5M from 69,626 crossfish self-play games at 40 ms (`datagen play`), 45%
+  starting after 0-8 random plies, 35% from uttt.ai self-play openings at
+  plies 4-24, 20% after 9-20 random plies; before ply 40, 8% of moves are drawn
+  from the moves within 300 of the best at depth 4.
+- 1.32M from the uttt.ai fork's 25,000 self-play games (generations 1-5).
+
+**A loader bug that has corrupted labels for a long time.** `test_bots`'s
+`load_utttai_state` read a free-move position with stones on the board (a
+player sent to a decided miniboard) as a pass: it set `prev_move_was_pass`,
+which only `pass()`/`unpass()` ever clear, so every move in the tree searched
+from that position was also a free move. About 11% of rows (530,000 here) got
+such labels, and so did every older dataset relabeled through this loader
+(the `NNUEWDL1` `dump search` / `relabel` / `rank` paths). The fix records the
+free move as a last move into a decided miniboard; a round-trip self-test in
+`test_bots verify` (encode, reload, compare legal moves at the position and
+after every reply) fails on the old code at the first such position. After
+relabeling, 22% of the affected labels changed (the rest scored a mate or
+exactly 0 both times, or had one live miniboard left, where the rule does not
+matter), and the depth-14 labels predict results much better: the fitted
+sigmoid scale K fell from 3,150 to 1,600 and the result log loss from 0.506
+to 0.459. 61 self-play games that had started from a free-move opening, and
+so were played entirely under the bug, were dropped.
+
+**Candidates.** Win-probability MSE, 10 epochs, the shipped MiniNet and macro
+decoded exactly as the starting point, 10% of games held out. Equal-depth
+screens are depth 8 against the shipped eval; the first 4,000 games of each use
+the same 2,000 openings.
+
+| Net | Labels | What changed | Held-out loss vs shipped | Depth 8 |
+| --- | --- | --- | ---: | ---: |
+| A_search | buggy | search target only | -1.9% | +12.8 ± 9.2 (4k), +2.6 ± 5.2 (next 12k) |
+| A_blend | buggy | 30% game result | -3.6%* | +2.0 ± 9.1 |
+| A_blend_uttt | buggy | + 25% uttt.ai value | -5.4%* | +3.5 ± 9.2 |
+| B_blend_hce | buggy | + HCE weights trained | -4.8%* | **-25.0 ± 9.1** |
+| F_search | fixed | K 1,600 (fitted) | -4.4% | -1.6 ± 9.2, +0.3 ± 5.2 (12k) |
+| F_full | fixed | all 19,683 pattern embeddings, re-clustered | -7.0% | **+17.8 ± 9.1, +8.3 ± 5.2 (12k)** |
+| F_hce | fixed | HCE weights trained | -9.0% | -10.0 ± 9.2 |
+| F_k3150 / F_k2400 | fixed | K fixed | -2.1% / -2.7% | -6.7 / +3.6 (± 9) |
+| D_full | fixed | F_full on an HCE that treats drawn miniboards as blocking lines | -7.0% | +9.3 ± 4.5 (16k) |
+| a2 | fixed | F_full with the MiniNet's duplicate hidden units re-initialised | -11.5% | +5.9 ± 4.6 (16k) |
+
+\* against that run's own target, which includes results or uttt.ai values. Loss
+percentages are only comparable between runs with the same labels and K
+(3,150 for the buggy labels, 1,600 after the fix unless stated); a2's is the
+float model before re-clustering (-10.9% packed).
+
+Timed results (pentanomial SPRT, H0 0 / H1 5):
+
+| Net | 90 ms | Games |
+| --- | ---: | ---: |
+| F_full | +1.9 ± 2.9, stopped as not a gainer (LLR -1.39) | 26,436 (desktop + Linux worker) |
+| a2 | -3.0 ± 5.9, H0 accepted | 6,640 |
+| A_search | +4.7 ± 6.6 when paused for the loader fix | 5,220 |
+
+F_full also ran 4.8% (desktop) and 4.0% (laptop) fewer nodes per second at
+90 ms, which eats into its equal-depth gain.
+
+Round robins (`tools/round_robin.py`, ratings with shipped anchored at 0):
+
+| Net | Depth 8 (42,000 games) | 20 ms (20,000 games) |
+| --- | ---: | ---: |
+| F_full | +9.7 ± 6.9 | -4.0 ± 7.2 |
+| D_full | +8.8 ± 6.8 | -9.7 ± 7.2 |
+| a2 | +6.9 ± 6.9 | -9.5 ± 7.3 |
+| A_search | +6.4 ± 6.8 | +0.8 ± 7.2 |
+| hcedraw (the drawn-miniboard HCE fix alone) | +2.9 ± 6.9 | - |
+| F_search | +1.4 ± 6.9 | - |
+
+**What the round showed about testing an eval.**
+
+- *Depth-8 screens are the wrong proxy for eval changes.* Four of the five
+  retrained nets in the depth-8 round robin gained 6-10 there (F_search
+  +1.4), and none gained at 20 or 90 ms. Depth mode turns off futility-style
+  pruning and correction-history updates and ignores speed; the 20 ms timed
+  round robin ordered the nets like the 90 ms SPRTs did. Use a 20 ms round
+  robin as the screen and 90 ms to confirm.
+- *4,000-game screens on one opening block are optimistic.* The first block
+  read 9-12 Elo higher than the next 12,000 games, on fresh openings, for
+  three of the four candidates re-run.
+- *Offline loss does not rank play.* Three times the run with the lower loss on
+  the same target played worse: B_blend_hce against A_blend, F_hce against
+  F_search, and a2 against F_full.
+- *Search scores are the better teacher.* Blending in 40 ms self-play results
+  or uttt.ai's value lowered the equal-depth result.
+- *Training the HCE weights jointly hurts* (-25 and -10 at equal depth), as
+  round ten's SPSA suggested: the shipped HCE weights are close to optimal for
+  play even though a better fit is available.
+- *The pruning margins are not what holds the retrained nets back.* The
+  retrained nets' learned correction is larger (standard deviation
+  1,240-1,390 for the round-robin nets against 1,076 for the shipped one on
+  20,000 sample positions), so the qsearch fail-high shortcut
+  (`QHCE_FAIL_HIGH_MARGIN`, 640) is wrong more often for them. Widening it to
+  1,344 did not help (20 ms, 9,000 games per engine): F_full +0.4, shipped
+  with 1,344 -1.1, F_full with 1,344 -6.3 (all ± 6.6).
+
+**Architecture study** (offline probes on the same data and split, with rough
+cost and character-budget estimates):
+
+- A typical NNUE (width 128-256) or a transformer at the leaves does not fit
+  the 9,905 free characters (the probes' pattern NNUE has 22.7M new
+  parameters, the transformer 0.64M); a rough speed estimate, not measured in
+  play, put their cost at 100-230 Elo.
+- With a 10x higher learning rate (3e-3), the same D16/H8 net reaches -17.4%
+  held-out loss after packing (not yet played); more MiniNet capacity then
+  gains at most one more point (D32/H32: -19.1% against -18.1%, both float)
+  and starts to overfit within 3-4 epochs.
+- The shipped MiniNet's eight hidden units are four near-identical copies
+  each of two units; un-collapsing them (a2) did not help in play.
+- Storing the weights as fp16 would free roughly 7,500 characters (an
+  estimate from the payload sizes; not built), the most promising use of
+  which is a bigger gameplay book.
+
+**Other.** nelhage/ultimattt's minimax player lost 18 / 25 / 957 to the
+crossfish CodinGame bot at 90 ms (1,000 games, +601 ± 56 for crossfish under
+CodinGame rules) while using about 50% more time than its budget.
+
+**Tools added** (all described in [eval_data.md](eval_data.md)):
+`cpp_impl/datagen.cpp` (self-play, labeling, HCE features);
+`tools/eval_data.py`, `tools/eval_pipeline.py` (resumable data pipeline);
+`tools/nnue_train_blend.py` (win-probability trainer);
+`tools/eval_candidate.py` (headers, isolated A/B builds, exactness checks,
+matches); `tools/sprt_merge.py` and `tools/sprt_worker.py` (SPRT shards on a
+second, Linux machine, pooled with test_bots's own LLR);
+`tools/round_robin.py` (round-robin ratings); `tools/vs_ultimattt.py`;
+`tools/experiments/capacity/` (the probes).
+
+## 56. A pattern-generator NNUE replaces the whole evaluation (26-27 September 2026)
+
+Sections 53 and 55 left two answers: a Stockfish-style per-cell NNUE lost
+193-296 Elo at equal depth, and retraining the MiniNet on 4.8M positions fitted
+better without playing better. This round went back to a net that replaces
+HCE + MiniNet + macro, with three changes: far more self-labelled data, a
+pattern-level first layer, and integer incremental inference. The shipped net,
+**B64_d5M_57ep** (35,243 parameters), passed the official 90 ms SPRT at
+**+276.6 +/- 30.4** against the mate-window freeze and is now the evaluation
+of Dev, Prev and the CodinGame bot. The trainers are in
+[`tools/experiments/nnue2/`](../tools/experiments/nnue2/README.md) and the
+engine-side tools (the experiments' candidate builds, checks and two-net
+matches) in [`tools/experiments/fast_nnue/`](../tools/experiments/fast_nnue/README.md);
+[nnue_training_and_implementation.md](nnue_training_and_implementation.md)
+describes the net, its training and its runtime.
+
+### Data and recipe
+
+- **Self-labelled depth-8 data.** `datagen play OUT N d8 ...` (a new depth mode,
+  [eval_data.md](eval_data.md) section 2) plays every move with a fixed
+  depth-8 search and records its root score as the label: 176M positions in
+  about 2.5 hours on the desktop and the laptop together (`d8_*.cfdg`).
+- **Training set "d5M".** Section 55's eval2 training rows (depth-14 labels,
+  4.34M) plus the first 5M records of one depth-8 file: 9.34M rows.
+- **Holdouts.** V2, 10% of the eval2 games (482,136 rows), and D8H, 1% of the
+  depth-8 games (1.71M rows, never trained on). Losses below are the change
+  against the old static eval (HCE + MiniNet + macro) on the same rows.
+- **Recipe.** Win-probability MSE against sigmoid(search / 1600), the 8
+  board symmetries as augmentation, AdamW at 1e-2 with a 2% warmup and a
+  cosine decay to 1e-5, batches of 16,384.
+
+The recipe alone turned section 53's per-cell design (199 features, 256-wide
+accumulator) from a loser into a winner at fixed depth: -140 at depth 8 with
+the old recipe, -12 with section 55's fixed labels, symmetries and a longer
+schedule, +61 with the depth-8 rows, and +231 (+287 with pruning on) at
+learning rate 6e-3, at -39.6% held-out loss. At 20 ms the float
+implementation then lost **-255 +/- 38** (444 games): it recomputed the whole
+net per evaluation and searched 0.8% of the old engine's nodes per second.
+
+### Making it fast (stages 1-3)
+
+- **Integer, incremental, lazy.** int16 accumulators per absolute player, so a
+  move never swaps them; `make` only records the move and an evaluation
+  replays the recorded moves from the nearest ancestor entry; unmake does
+  nothing. The first dense layer runs over nonzero activation pairs with
+  `_mm256_madd_epi16`; a 2^14-entry eval cache keyed by the transposition key
+  saves a third to a half of all evaluations. Every scale is a power of two
+  chosen so that no int16 accumulator and no int32 sum can overflow.
+- **Result on the per-cell net:** 49% of the old engine's nodes per second (64
+  times the float hook), 0 mismatches in 506.9M checked evaluations, and
+  **+182.6 +/- 19.1** at 20 ms (1,000 games).
+- **The pattern generator (B nets).** Each live miniboard contributes one row
+  per perspective, `T[m][pattern]` over its 3^9 patterns, and those rows are
+  generated by a small shared encoder (one-hot 27 -> 64 -> 64 -> 32) and one
+  projection per location to 64 lanes plus a PSQT lane. Decided boards,
+  the move constraint and the forced board's pattern add their own rows; the
+  head is 128 -> 16 -> 32 -> 1. The engine bakes the tables, so a move costs
+  one row out and one row in per perspective (6.6 ns) and an evaluation 43 ns.
+  B-64 reached -47.4% on V2 against -39.6% for the per-cell net with half its
+  parameters; direct pattern tables (22.7M parameters) stopped at -28%.
+
+| Net, against the old eval | Nodes/s vs old | Depth-prune 8 (2,000 games) | 20 ms (1,000 games) |
+| --- | ---: | ---: | ---: |
+| per-cell r10_aug_d8x5M_lr6e3 | 42% | +274.2 +/- 17.9 | +182.6 +/- 19.1 |
+| B64_lr1e2 (10 epochs) | 57% | +365.0 +/- 21.7 | +276.1 +/- 21.8 |
+| B128_lr1e2 | 50% | +392.6 +/- 23.2 | +288.1 +/- 22.9 |
+
+Nodes per second are the in-game `walk 16 40 20` ratios after stage 3; the
+match columns come from stages 1-3. A 24,000-game 20 ms round robin rated them
++190.5, +279.5 and +289.2 against the old eval (+/- 7), and B128_lr1e2 passed
+a 90 ms SPRT against the old engine at 420 games, **+252.7 +/- 30.6** (a
+review rerun: +301 +/- 36).
+
+Three reviews found latent defects, none of them in a game that was played:
+
+- **Stale accumulators.** A search entered without `refresh_root` could be
+  evaluated from another position's entry (200 of 200 in a repro). Every
+  stack entry is now keyed by the position it holds, and a broken chain
+  refreshes from scratch.
+- **The empty board's key is 0.** "No position" needed a sentinel (`kNoKey`):
+  with 0, a fresh stack took its unset first entry for the empty board's
+  accumulator (every evaluation wrong in four repro scenarios, 0 after).
+- **Two nets in one build.** `#pragma once` gave both engines of a two-net
+  `test_bots` the first-included net, silently. Pairings now rename Prev's
+  copy completely, a guard makes any other two-candidate build a compile
+  error, and every log line names each side's net file and CRC-32. Each
+  side's statics and depth-7 searches equalled its own net's single-engine
+  labels on 1,000 positions in 10 of 10 pairings.
+
+### More data did not help; more steps did
+
+| Net | Data, schedule | V2 | D8H | 20 ms vs B64_d5M_57ep |
+| --- | --- | ---: | ---: | ---: |
+| B64_lr1e2 (first CodinGame net) | d5M, 10 epochs | -47.43% | -42.85% | -29.7 +/- 5.0 |
+| **B64_d5M_57ep (shipped)** | d5M, 57 epochs | **-51.41%** | **-47.28%** | 0 |
+| B128_d5M_57ep | d5M, 57 epochs | -51.77% | -47.44% | -6.3 +/- 5.0 |
+| B64_all | all 176M depth-8 rows, 3 passes | -47.83% | -46.75% | -44.0 +/- 11.1 (head to head) |
+| B64_all_e2x10 | all rows, eval2 x10 | -49.66% | -47.29% | -19.8 +/- 10.5 (head to head) |
+| B64_d5M_114ep / 200ep | d5M, 114 / 200 epochs | -50.22% / -48.76% | -45.94% / -44.56% | -9.9 / -20.9 (+/- 5.0) |
+| B64_d5M_114ep_lr5e3 | d5M, 114 epochs, lr 5e-3 | -51.33% | -46.97% | -1.7 +/- 5.0 |
+| B64_e2only_114st | eval2 only, equal steps | -49.16% | -40.66% | -18.8 +/- 5.1 |
+
+Ratings come from two 20 ms round robins of nine engines each
+(`nnue_full_20ms` and `nnue_long_20ms`, 72,000 games apiece, played on the
+desktop and on the Linux laptop through `fast_worker.py`, 0 timeouts), in
+which B64_d5M_57ep was first both times (+318.1 and +300.5 +/- 7 against the
+old eval).
+
+- **Steps, not data, limited the 10-epoch nets.** At equal steps, streaming
+  all 176M depth-8 rows lost to training 57 epochs on the 9.34M rows, for
+  B-64 by 40 Elo; ten passes changed nothing.
+- **57 epochs at lr 1e-2 is the best point.** Longer high-lr training damages
+  the net (fewer lanes in the linear range, larger first-layer rows, worse
+  loss on its own training rows), which is not overfitting. At lr 5e-3 a
+  114-epoch run ties it (+9.0 +/- 12.0 at 90 ms over 1,200 games) but is 11%
+  slower per node.
+- **The depth-8 rows matter.** With the same steps on eval2 alone the net
+  memorizes eval2 and loses 5 points of D8H and 19 Elo.
+- **B-128 does not pay at these time controls:** +0.4 points of V2, about 15%
+  slower.
+- **Quantization costs nothing measurable:** the quantized engine eval's
+  holdout loss equals the float net's within 3e-6 for every net.
+
+B64_d5M_57ep then passed a 90 ms SPRT against B64_lr1e2 at 864 games:
+**+36.3 +/- 14.3**, 0 timeouts.
+
+### CodinGame
+
+- **The payload is the generator, not the tables.** The baked tables are 25.6
+  MB of int16; the generator is 35,243 parameters. Each matrix row gets a bf16
+  scale and its own bit width (the PSQT lane separately: an error there moves
+  the eval 500 times as far), GPTQ rounding over the live patterns weighted
+  by frequency, a least-squares refit of the projections and the dense head,
+  and Rice coding: 54,114 bytes, **30,923 CJK14 characters**
+  ([minification.md](minification.md) section 3.1).
+- **What the rounding may cost.** The integer engine is itself 4.73 mean / 164
+  max eval units from the float net (this net quantizes at 2^9). The chosen
+  bits keep the bot at 4.72 / 163, and the payload's own float error at 0.91.
+  Refitting the encoder hurt: it moved rare patterns' embeddings (max error
+  116 against 11 at 16 bits everywhere), so the encoder is only GPTQ-rounded.
+- **The bot bakes the tables at start-up**, about 50 ms: the 11,093 patterns a
+  live board can hold, in a fixed float operation order and without FMA, so
+  every build bakes the same floats. All 16 integer tables equal the local
+  loader's, with clang and with g++ 11 at -O3 and with CodinGame's flags.
+- **A trial first.** The same port with B64_lr1e2 (90,515 characters) was
+  uploaded to CodinGame before this round finished. Built with CodinGame's
+  flags, it beat the shipped MiniNet bot **+212 +/- 49** at 90 ms (200 games,
+  0 timeouts). The B64_d5M_57ep build scored **+30.3 +/- 14.9** against that
+  trial net at 20 ms (1,000 games; a review rerun +37.8 +/- 17.8 over 600).
+
+### Integration
+
+- **One runtime, three users.** `cpp_impl/nnue_b64.hpp` (the runtime) and
+  `cpp_impl/nnue_b64_net.hpp` (the generated payload) are shared by Dev, Prev
+  and `codingame_nnue.cpp`, so the repository needs no net file to build or
+  test. `tools/nnue_emit_b64_header.py` regenerates the payload byte for byte
+  from the lane-paired export; `--check` decodes any header, bakes it in
+  numpy exactly as `load()` does and prints the table hashes.
+- **Search wiring.** Qsearch stands pat on NNUE + structural correction (the
+  HCE fail-high shortcut is gone); the interior static eval is the NNUE with
+  all three corrections; the depth-1 reverse-futility MiniNet prefilter is
+  gone. `make` keeps only the HCE's threat maps, which the global-win checks
+  read; the macro net stays as the macro correction history's prior. The HCE,
+  MiniNet and macro code still compiles for datagen's HCE labels and
+  test_bots' tuning tools; the CodinGame bot drops them.
+- **Tests.** Three unit tests pin the 16 table hashes and the scales, 16 fixed
+  positions' evals (from the verified bot's own runtime, through three
+  paths), and incremental == from scratch == a scalar reference over about
+  24,000 search-like evaluations including the empty-board case. Setting the
+  sentinel to 0, skipping the decided-board update or corrupting one
+  perspective each fails them.
+- **The CodinGame gate.** The speed check would fail an eval that is slower
+  per node by design, so the pull request declares the change in
+  `tools/cg_gate/eval_change.json`: the reason, the base paste file's hash
+  and the expected nodes/ms range, [0.45, 0.70]. It applies only against that
+  base and fails outside the range at either end. On the laptop (g++ 11.4)
+  the gate passed at 0.553 [0.539, 0.568], with inlining 98%, p99 reply 90.4
+  ms, first reply at most 191 ms and the smoke match +244 +/- 50. Delete the
+  file once this has merged.
+
+### Result
+
+Official 90 ms SPRT against the mate-window freeze (Prev as of `c278cde`),
+pentanomial pairs, two shards pooled with `tools/sprt_merge.py` (desktop,
+clang, 6 threads, openings from 0; laptop, g++ 11.4, 4 threads, openings from
+25000), stopped when the pooled LLR crossed:
+
+```text
+N 420  W 296 / D 106 / L 18
+Penta 0 / 1 / 29 / 81 / 99
++276.63 +/- 30.44 Elo
+LLR +3.000 (H0=0, H1=+5) — PASS
+Timeouts: Prev 0 / Dev 0; slowest reply Prev 90.07 ms / Dev 90.10 ms
+Prev NPS 31,197,568  Dev NPS 15,953,280 (desktop header)
+```
+
+The shards read +287.1 +/- 40.8 (desktop, 252 games) and +261.6 +/- 46.2
+(laptop, 168 games). With no double losses the pentanomial LLR grows by at
+most 0.0143 per pair here, so 420 games is the fewest any pass could take;
+the Elo carries the information, not N.
+
+An early-stopped SPRT overstates the effect, so the same binaries then played
+a 3,000-game fixed-length match (no early stop) on openings disjoint from the
+SPRT's (desktop 1,800 games from opening 30000, laptop 1,200 from 40000):
+
+```text
+N 3000  W 2087 / D 766 / L 147
+Penta 3 / 31 / 195 / 565 / 706
++267.37 +/- 11.86 Elo
+Timeouts: Prev 0 / Dev 0; slowest reply Prev 90.48 ms / Dev 91.14 ms
+```
+
+The shards agree: +274.1 +/- 15.3 (desktop) and +257.6 +/- 18.8 (laptop).
+
+| Speed (`bench_ab`, same binaries) | Desktop, clang | Laptop, g++ 11.4 |
+| --- | ---: | ---: |
+| `nodes 400 9`: Dev nodes/s vs Prev | 61.5% | 58.1% |
+| `nodes 400 9`: nodes to depth 9 vs Prev | 86.9% | 87.4% |
+| `walk 10 40 90`: mean completed depth | 17.37 -> 16.37 | 17.54 -> 16.39 |
+| CodinGame gate: nodes/ms, CodinGame's flags | | 0.553 |
+
+The net costs about a ply at 90 ms and is worth nearly 300 Elo. The paste file
+is **94,897 characters, 5,103 under the cap** (the MiniNet payload's 24,489
+characters gave way to the generator's 30,923, and the HCE and MiniNet code
+left the bot); built with CodinGame's flags it runs at about 100% of its -O3
+speed.
+
+**Freeze.** `crossfish_prev.hpp` is this Dev. One change came with it: Dev
+baked the tables under a once-flag that belonged to its class, so a frozen
+copy would have had a second flag, and the first Dev and Prev engines built
+at the same moment on two threads would have run the bake twice (the pattern
+index table came out doubled in 50 of 50 runs of a repro). The flag is now one
+inline function shared by both engines; nothing else changed.
+`bench_ab equiv` is IDENTICAL at depths 8 and 11 (the SPRT's Dev binary
+searches the same trees), and a depth-7 `test_bots` screen of the pair read
+-4.9 +/- 16.7 over 1,000 games. `test_bots`'s SPRT header now says
+`eval=NNUE-B64`.
+
+**Not settled here.** The file has not been run on CodinGame itself; the
+laptop checks stand in for it (the B64_lr1e2 trial is the one that ran
+there). The MiniNet candidate tools of section 55 (`eval_candidate.py`
+`emit` / `verify`) no longer change or describe the search's eval, and the
+fast-NNUE candidate builds patch the pre-NNUE engine (`c278cde`; the
+`fast_nnue` README says how to get it).

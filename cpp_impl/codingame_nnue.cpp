@@ -103,6 +103,12 @@ template <class T> struct cf_heap_array {
 // The search tree is bit-identical to round eight; only its cost changed.
 // Official 90ms SPRT vs the round-eight freeze: N 2366, 723-1048-595,
 // +18.81 +/- 10.18 Elo, LLR +3.010 (H0=0, H1=+5) PASS, zero timeouts.
+// NNUE evaluation (2026-09-27): the B-64 pattern-generator NNUE B64_d5M_57ep
+// (nnue_b64.hpp, payload nnue_b64_net.hpp) replaces HCE + D16 MiniNet + macro
+// residual as the leaf and static eval; the macro net stays as the macro
+// correction history's prior, and the HCE survives only as its tiar maps (the
+// global-win checks). Dead HCE / MiniNet code removed. The same wiring as
+// crossfish_dev.hpp (port-check identical at depths 5, 7, 9).
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     cf_array<int, 2> markers = {0, 0};
@@ -467,15 +473,15 @@ class GlobalBoard {
 };
 
 // Packed evaluation headers are kept separate for normal builds and inlined by cg_minify.
-#include "mini_eval_d16.hpp"
+#include "d16_helpers.hpp"
 #include "macro_eval.hpp"
+#include "nnue_b64.hpp"
 // Full-coverage opening book; see documentation/play_book.md.
 #include "play_book.hpp"
 
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
 static int g_fixed_search_depth = 0;
 static bool g_disable_eval_prune = false;
-static bool g_force_hce_eval = false;
 // Leave enough of CodinGame's 100 ms turn for setup, scheduler jitter,
 // recursive-search unwinding, and flushing the selected move.
 static constexpr int CODINGAME_MOVE_MS = 90;
@@ -539,14 +545,6 @@ class CrossfishDev {
             int n_moves;
             bool prev_move_was_pass;
             uint32_t macro_key[2]{};
-            // MiniNet centroid code per (perspective, miniboard); only the
-            // played miniboard's two bytes change on a move.
-            uint8_t mini_code[2][9]{};
-            // Sum over miniboards of D16_MN_FACTOR_SUPER[mb][class], per
-            // perspective. It depends only on which miniboards are decided,
-            // so it changes exactly where macro_key changes and the leaf eval
-            // reads one vector instead of nine class-dependent loads.
-            alignas(32) int32_t super_acc[2][8]{};
             uint8_t active_board = 9;
             // check_winner_fast's answer for the current position. Only a move
             // that decides a miniboard can change it, so make/unmake refresh it
@@ -618,14 +616,6 @@ class CrossfishDev {
                         active_board = (uint8_t)sent;
                     }
                 }
-                // Seed the per-miniboard MiniNet codes; make/unmake keep them
-                // current from here on.
-                for (int mb = 0; mb < 9; mb++) {
-                    const int t0 = fast_mini_index[mini_boards[mb].markers[0]];
-                    const int t1 = fast_mini_index[mini_boards[mb].markers[1]];
-                    mini_code[0][mb] = D16_MN_CODE[t0 + 2 * t1];
-                    mini_code[1][mb] = D16_MN_CODE[t1 + 2 * t0];
-                }
                 // Stones inside a decided miniboard can never affect play again.
                 // Remove them from the search key so transpositions that reached
                 // the same won/drawn miniboard through different move orders merge.
@@ -690,23 +680,6 @@ class CrossfishDev {
                 board.mini_boards[mb].markers[perspective ^ 1]);
         }
 
-        // The MiniNet centroid code of a miniboard changes only when that
-        // miniboard changes, so it is maintained here (two bytes per move)
-        // instead of being looked up nine times per evaluated leaf. Search
-        // markers are disjoint, and for disjoint masks the packed table obeys
-        // D16_MN_MASK_CODE[(mine << 9) | opp] == D16_MN_CODE[ternary], where
-        // the ternary index is the sum fast_mini_index already tabulates. So
-        // this reads the same byte the eval used to read, out of a 19 KiB table
-        // through a 1 KiB one rather than out of the 256 KiB packed table.
-        __attribute__((always_inline)) static void update_mini_code(FastBoard &board, int mb) {
-            const int t0 = fast_mini_index[board.mini_boards[mb].markers[0]];
-            const int t1 = fast_mini_index[board.mini_boards[mb].markers[1]];
-            board.mini_code[0][mb] = D16_MN_CODE[t0 + 2 * t1];
-            board.mini_code[1][mb] = D16_MN_CODE[t1 + 2 * t0];
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) static void update_mini_code(Board &, int) {}
 
         __attribute__((always_inline)) static void add_out_of_play(FastBoard &board, int bit) {
             board.out_of_play |= bit;
@@ -774,22 +747,6 @@ class CrossfishDev {
 
         // Same result as sync_macro_key_mb when mini_board_states[state] has
         // just gained mb, without re-reading the three state masks.
-        __attribute__((always_inline)) static void add_super(FastBoard &board, int p, int mb, int cls) {
-            __m256i *acc = (__m256i *)board.super_acc[p];
-            _mm256_store_si256(acc, _mm256_add_epi32(
-                _mm256_load_si256(acc),
-                _mm256_load_si256(
-                    (const __m256i *)D16_MN_FACTOR_SUPER[mb][cls])));
-        }
-
-        __attribute__((always_inline)) static void sub_super(FastBoard &board, int p, int mb, int cls) {
-            __m256i *acc = (__m256i *)board.super_acc[p];
-            _mm256_store_si256(acc, _mm256_sub_epi32(
-                _mm256_load_si256(acc),
-                _mm256_load_si256(
-                    (const __m256i *)D16_MN_FACTOR_SUPER[mb][cls])));
-        }
-
         __attribute__((always_inline)) static void set_macro_key_mb(FastBoard &board, int mb, int state) {
             static constexpr uint32_t CLS[2][3] = {{1, 2, 3}, {2, 1, 3}};
             uint32_t shift = (uint32_t)(2 * mb);
@@ -798,19 +755,12 @@ class CrossfishDev {
                 (board.macro_key[0] & clear) | (CLS[0][state] << shift);
             board.macro_key[1] =
                 (board.macro_key[1] & clear) | (CLS[1][state] << shift);
-            // Only ever called on an undecided slot, whose class-0 term is
-            // exactly zero, so adding the new class is the whole update.
-            add_super(board, 0, mb, (int)CLS[0][state]);
-            add_super(board, 1, mb, (int)CLS[1][state]);
         }
 
         template <typename Board>
         __attribute__((always_inline)) static void set_macro_key_mb(Board &, int, int) {}
 
         __attribute__((always_inline)) static void clear_macro_key_mb(FastBoard &board, int mb) {
-            const uint32_t shift = (uint32_t)(2 * mb);
-            sub_super(board, 0, mb, (int)((board.macro_key[0] >> shift) & 3));
-            sub_super(board, 1, mb, (int)((board.macro_key[1] >> shift) & 3));
             uint32_t clear = ~(3u << (uint32_t)(2 * mb));
             board.macro_key[0] &= clear;
             board.macro_key[1] &= clear;
@@ -824,70 +774,8 @@ class CrossfishDev {
             for (int mb = 0; mb < 9; mb++) {
                 sync_macro_key_mb(board, mb);
             }
-            for (int p = 0; p < 2; p++) {
-                memset(board.super_acc[p], 0, sizeof(board.super_acc[p]));
-                for (int mb = 0; mb < 9; mb++) {
-                    add_super(board, p, mb,
-                              (int)((board.macro_key[p] >> (2 * mb)) & 3));
-                }
-            }
         }
 
-        __attribute__((always_inline)) static int evaluate_macro_cached(const FastBoard &board) {
-            int stm = board.n_moves & 1;
-            int constraint = active_board_index(board);
-            return evaluate_macro_key(
-                constraint, board.macro_key[stm]);
-        }
-
-        // std::lround(float) compiles to an out-of-line lroundf@plt call, one
-        // per evaluated leaf. Truncate, take the fractional part (exact for
-        // |x| < 2^31) and step away from zero when it reaches one half: that
-        // is lround's rounding, in a handful of instructions and no branch.
-        // Checked equal to (int)std::lround for all 2,650,800,128 finite
-        // floats with |x| < 2^31; larger inputs keep the old conversion.
-        __attribute__((always_inline)) static int lround_bits(float x) {
-            if (!(__builtin_fabsf(x) < 2147483648.0f)) return (int)(long)x;
-            const __m128 v = _mm_set_ss(x);
-            const __m128 t = _mm_round_ss(
-                v, v, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC);
-            const float frac = x - _mm_cvtss_f32(t);
-            return _mm_cvttss_si32(t) + (frac >= 0.5f) - (frac <= -0.5f);
-        }
-
-        // Same network and the same arithmetic as d16_evaluate_mini_fast, but
-        // the per-miniboard centroid codes and the super-board classes come out
-        // of FastBoard's incremental caches instead of nine probes into the
-        // 256 KiB packed table plus three state tests per miniboard.
-        __attribute__((always_inline)) static int evaluate_mini_cached(const FastBoard &board) {
-            const int stm = board.n_moves & 1;
-            const int c = active_board_index(board);
-            __m256i hidden = _mm256_add_epi32(
-                _mm256_load_si256(
-                    (const __m256i *)D16_MN_FACTOR_INIT[c]),
-                _mm256_load_si256(
-                    (const __m256i *)board.super_acc[stm]));
-            for (int mb = 0; mb < 9; mb++) {
-                const int code = board.mini_code[stm][mb];
-                hidden = _mm256_add_epi32(
-                    hidden,
-                    _mm256_load_si256(
-                        (const __m256i *)D16_MN_FACTOR_CODE[mb][code]));
-            }
-            if (c < 9) {
-                hidden = _mm256_add_epi32(
-                    hidden,
-                    _mm256_load_si256(
-                        (const __m256i *)D16_MN_FACTOR_ACTIVE[c]));
-            }
-            __m256 value = _mm256_cvtepi32_ps(hidden);
-            value = _mm256_max_ps(value, _mm256_setzero_ps());
-            value = _mm256_mul_ps(value, _mm256_loadu_ps(D16_MN_W2));
-            const float out =
-                D16_MN_B2
-                + d16_mini_hsum256(value) / D16_MN_FACTOR_SCALE;
-            return lround_bits(out);
-        }
 
         std::chrono::milliseconds thinking_time =
             std::chrono::milliseconds(CODINGAME_MOVE_MS);
@@ -952,16 +840,7 @@ class CrossfishDev {
         // move's perspective, so use it directly rather than hashing it.
         cf_array<CorrEntry, CORR_MACRO_KEYS> corr_macro_hist{};
 
-        struct HceUndo {
-            int16_t score = 0;
-            uint8_t flags = 0;
-        };
-        int hce_local_score = 0;
-        int hce_global_score = 0;
         cf_array<int, 2> hce_tiar_maps{};
-        cf_array<int16_t, 9> hce_mb_scores{};
-        cf_array<uint8_t, 9> hce_mb_flags{};
-        cf_array<HceUndo, 128> hce_undo{};
         bool hce_acc_ready = false;
 
         struct CompactTTEntry {
@@ -1047,23 +926,8 @@ class CrossfishDev {
         };
         int depth = 1;
 
-        struct MiniLut {
-            int8_t dead;
-            int8_t p0_tiar;
-            int8_t p1_tiar;
-            int8_t p0_win1;
-            int8_t p1_win1;
-            int8_t p0_center;
-            int8_t p1_center;
-            int8_t p0_corner;
-            int8_t p1_corner;
-            int8_t p0_sq;
-            int8_t p1_sq;
-        };
         static constexpr int MINI_LUT_SIZE = 19683;
-        static inline MiniLut mini_lut[MINI_LUT_SIZE];
-        static inline int16_t mini_score[MINI_LUT_SIZE];
-        static inline int16_t fast_local_score[1 << 18];
+        static inline uint8_t mini_tiar_flags[MINI_LUT_SIZE];
         // Sum of powers of three for each occupied square in a 9-bit mask.
         // For disjoint masks, ternary(p0, p1) = table[p0] + 2*table[p1].
         static inline uint16_t fast_mini_index[1 << 9];
@@ -1080,12 +944,7 @@ class CrossfishDev {
         // indices, so a whole miniboard's empty squares are emitted with one
         // 8-byte store instead of one store per square.
         static inline uint64_t fast_empty_squares[1 << 8];
-        // Number of global two-in-a-row masks in `ours` whose third square
-        // is not occupied by `theirs`, indexed as (ours << 9) | theirs.
-        static inline uint8_t fast_threat_count[1 << 18];
-        // Separate from MiniLut so HCE's hot LUT stays compact. Bit s set iff
-        // playing square s wins / makes a 2-in-a-row for that player.
-        static inline uint16_t mini_win_sq[MINI_LUT_SIZE][2];
+        // Bit s set iff playing square s makes a 2-in-a-row for that player.
         static inline uint16_t mini_tiar_sq[MINI_LUT_SIZE][2];
         static inline std::once_flag mini_lut_once;
         // One pawn = one extra corner square on a live miniboard (smallest HCE feature).
@@ -1096,20 +955,11 @@ class CrossfishDev {
         static constexpr int RFP_PAWNS = 50;
         static constexpr int FP_PAWNS = 80;
         static constexpr int QDELTA_PAWNS = 350;
-        static constexpr int FREE_MOVE_PAWNS = 30;
-        static constexpr int OPP_LATENT_CAPTURE_BONUS = -800;
-        static constexpr int LUT_W_TIAR = 534;
-        static constexpr int LUT_W_CENTER_SQ = 33;
-        static constexpr int LUT_W_CORNER_SQ = PAWN;
-        static constexpr int LUT_W_SQUARES = 33;
         // Random-play MiniNet residuals reached ~4500; slack for search positions.
         static constexpr int MINI_MAX = 8000;
         CrossfishDev() {
-            d16_mini_load_packed();
             macro_load_packed();
         }
-
-        static constexpr int W_FREE_MOVE = FREE_MOVE_PAWNS * PAWN;
 
         __attribute__((always_inline)) static int mini_index(int p0, int p1) {
             return fast_mini_index[p0] + 2 * fast_mini_index[p1];
@@ -1189,7 +1039,6 @@ class CrossfishDev {
                     }
                     fast_empty_squares[mask] = list;
                 }
-                const int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
                 const int n_pairs = (int)(sizeof(tiar) / sizeof(tiar[0]) / 2);
                 for (int idx = 0; idx < MINI_LUT_SIZE; idx++) {
                     int p0 = 0;
@@ -1201,26 +1050,10 @@ class CrossfishDev {
                         if (cell == 1) p0 |= (1 << s);
                         else if (cell == 2) p1 |= (1 << s);
                     }
-                    MiniLut e{};
-                    bool p0_can = false;
-                    bool p1_can = false;
-                    for (int i = 0; i < 8; i++) {
-                        if ((p1 & win[i]) == 0) p0_can = true;
-                        if ((p0 & win[i]) == 0) p1_can = true;
-                    }
-                    e.dead = (!p0_can && !p1_can) ? 1 : 0;
                     int occ = p0 | p1;
-                    uint16_t p0w = 0, p1w = 0, p0t = 0, p1t = 0;
+                    uint16_t p0t = 0, p1t = 0;
                     for (int s = 0; s < 9; s++) {
                         if (occ & (1 << s)) continue;
-                        if (has_win(p0 | (1 << s))) {
-                            e.p0_win1 = 1;
-                            p0w = (uint16_t)(p0w | (1 << s));
-                        }
-                        if (has_win(p1 | (1 << s))) {
-                            e.p1_win1 = 1;
-                            p1w = (uint16_t)(p1w | (1 << s));
-                        }
                         int ours0 = p0 | (1 << s);
                         int ours1 = p1 | (1 << s);
                         for (int i = 0; i < n_pairs; i++) {
@@ -1234,46 +1067,21 @@ class CrossfishDev {
                             }
                         }
                     }
-                    mini_win_sq[idx][0] = p0w;
-                    mini_win_sq[idx][1] = p1w;
                     mini_tiar_sq[idx][0] = p0t;
                     mini_tiar_sq[idx][1] = p1t;
+                    // Live two-in-a-rows per player (the HCE's tiar count), as flags.
+                    int t0 = 0, t1 = 0;
                     for (int i = 0; i < n_pairs; i++) {
-                        e.p0_tiar = (int8_t)(e.p0_tiar + ((__builtin_popcount(p0 & tiar[i * 2]) - __builtin_popcount(p1 & tiar[i * 2 + 1])) / 2));
-                        e.p1_tiar = (int8_t)(e.p1_tiar + ((__builtin_popcount(p1 & tiar[i * 2]) - __builtin_popcount(p0 & tiar[i * 2 + 1])) / 2));
+                        t0 += (__builtin_popcount(p0 & tiar[i * 2]) - __builtin_popcount(p1 & tiar[i * 2 + 1])) / 2;
+                        t1 += (__builtin_popcount(p1 & tiar[i * 2]) - __builtin_popcount(p0 & tiar[i * 2 + 1])) / 2;
                     }
-                    e.p0_center = (p0 >> 4) & 1;
-                    e.p1_center = (p1 >> 4) & 1;
-                    e.p0_corner = (int8_t)__builtin_popcount(p0 & corners);
-                    e.p1_corner = (int8_t)__builtin_popcount(p1 & corners);
-                    e.p0_sq = (int8_t)__builtin_popcount(p0);
-                    e.p1_sq = (int8_t)__builtin_popcount(p1);
-                    mini_lut[idx] = e;
-                    int s = LUT_W_TIAR * (e.p0_tiar - e.p1_tiar)
-                          + LUT_W_CENTER_SQ * (e.p0_center - e.p1_center)
-                          + LUT_W_CORNER_SQ * (e.p0_corner - e.p1_corner)
-                          + LUT_W_SQUARES * (e.p0_sq - e.p1_sq);
-                    if (s > 32767) s = 32767;
-                    if (s < -32768) s = -32768;
-                    mini_score[idx] = (int16_t)s;
+                    mini_tiar_flags[idx] = (uint8_t)((t0 != 0) | ((t1 != 0) << 1));
                 }
                 for (int p0 = 0; p0 < 512; p0++) {
                     for (int p1 = 0; p1 < 512; p1++) {
-                        int packed = (p0 << 9) | p1;
                         if ((p0 & p1) == 0) {
-                            int idx = mini_index(p0, p1);
-                            fast_local_score[packed] = mini_score[idx];
-                            fast_tiar_flags[packed] =
-                                (mini_lut[idx].p0_tiar != 0)
-                                | ((mini_lut[idx].p1_tiar != 0) << 1);
+                            fast_tiar_flags[(p0 << 9) | p1] = mini_tiar_flags[mini_index(p0, p1)];
                         }
-                        int threats = 0;
-                        for (int i = 0; i < N_TIAR_MASKS / 2; i++) {
-                            int pair = two_in_a_row_masks[i * 2];
-                            int third = two_in_a_row_masks[i * 2 + 1];
-                            threats += ((p0 & pair) == pair) && ((p1 & third) == 0);
-                        }
-                        fast_threat_count[packed] = (uint8_t)threats;
                     }
                 }
             });
@@ -1456,50 +1264,24 @@ class CrossfishDev {
         template <typename Board>
         __attribute__((always_inline)) void set_hce_mb(Board &board, int mb) {
             int bit = 1 << mb;
-            hce_local_score -= hce_mb_scores[mb];
             hce_tiar_maps[0] &= ~bit;
             hce_tiar_maps[1] &= ~bit;
-
-            int score = 0;
             int flags = 0;
-            int out_of_play = out_of_play_mask(board);
-            if ((out_of_play & bit) == 0) {
-                int packed = (board.mini_boards[mb].markers[0] << 9)
-                           | board.mini_boards[mb].markers[1];
-                score = fast_local_score[packed];
-                flags = fast_tiar_flags[packed];
+            if ((out_of_play_mask(board) & bit) == 0) {
+                flags = fast_tiar_flags[(board.mini_boards[mb].markers[0] << 9)
+                                        | board.mini_boards[mb].markers[1]];
             }
-            hce_mb_scores[mb] = (int16_t)score;
-            hce_mb_flags[mb] = (uint8_t)flags;
-            hce_local_score += score;
             hce_tiar_maps[0] |= (flags & 1) << mb;
             hce_tiar_maps[1] |= ((flags >> 1) & 1) << mb;
         }
 
         template <typename Board>
         void init_hce_acc(Board &board) {
-            hce_local_score = 0;
             hce_tiar_maps = {};
-            hce_mb_scores = {};
-            hce_mb_flags = {};
             for (int mb = 0; mb < 9; mb++) {
                 set_hce_mb(board, mb);
             }
-            hce_global_score = evaluate_hce_global(board);
             hce_acc_ready = true;
-        }
-
-        __attribute__((always_inline)) void restore_hce_mb(int ply, int mb) {
-            int bit = 1 << mb;
-            hce_local_score -= hce_mb_scores[mb];
-            hce_tiar_maps[0] &= ~bit;
-            hce_tiar_maps[1] &= ~bit;
-            HceUndo old = hce_undo[ply];
-            hce_mb_scores[mb] = old.score;
-            hce_mb_flags[mb] = old.flags;
-            hce_local_score += old.score;
-            hce_tiar_maps[0] |= (old.flags & 1) << mb;
-            hce_tiar_maps[1] |= ((old.flags >> 1) & 1) << mb;
         }
 
         // Everything make_move_fast overwrites that unmake cannot get back
@@ -1510,18 +1292,14 @@ class CrossfishDev {
         // of the decided-state masks.
         struct MoveUndo {
             uint64_t tt_hash;
-            int32_t hce_local;
-            int32_t hce_global;
             int32_t tiar_maps[2];
-            int16_t mb_score;
-            uint8_t mb_flags;
-            uint8_t code[2];
             uint8_t active;
             int8_t terminal;
             int8_t decided;  // -1, or the mini_board_states index gained
         };
-        static_assert(sizeof(MoveUndo) == 32);
         cf_array<MoveUndo, 128> move_undo{};
+        // The NNUE's lazy accumulator stack and eval cache (nnue_b64.hpp).
+        b64::Stack fnnue_stack;
 
         __attribute__((always_inline)) void make_move_fast(FastBoard &board, const Move &move) {
             const int stm = board.n_moves & 1;
@@ -1531,14 +1309,8 @@ class CrossfishDev {
             const int before = board.mini_boards[mb].markers[stm];
             MoveUndo &u = move_undo[board.n_moves];
             u.tt_hash = board.tt_hash;
-            u.hce_local = hce_local_score;
-            u.hce_global = hce_global_score;
             u.tiar_maps[0] = hce_tiar_maps[0];
             u.tiar_maps[1] = hce_tiar_maps[1];
-            u.mb_score = hce_mb_scores[mb];
-            u.mb_flags = hce_mb_flags[mb];
-            u.code[0] = board.mini_code[0][mb];
-            u.code[1] = board.mini_code[1][mb];
             u.active = board.active_board;
             u.terminal = board.terminal;
             if (board.n_moves > 0) {
@@ -1548,7 +1320,6 @@ class CrossfishDev {
             }
             board.move_history.push(move);
             board.mini_boards[mb].markers[stm] = before | bit;
-            update_mini_code(board, mb);
             xor_move_combo(board, stm, mb, move.square);
             int decided_state = -1;
             if (fast_win_moves[before] & bit) {
@@ -1576,12 +1347,17 @@ class CrossfishDev {
                  && (board.out_of_play & bit) == 0)
                 ? (uint8_t)move.square
                 : (uint8_t)9;
+            fnnue_stack.on_make(board, mb, move.square, stm, decided_state, before, u.tt_hash);
             board.n_moves++;
             if (hce_acc_ready) {
-                set_hce_mb(board, mb);
-                if (decided_state >= 0) {
-                    hce_global_score = evaluate_hce_global(board);
-                }
+                // NNUE eval: only the tiar maps of the HCE state are still read
+                // (has_immediate_global_win, has_forced_global_win_after_reply).
+                const int nn_bit = 1 << mb;
+                const int nn_flags = (board.out_of_play & nn_bit) ? 0
+                    : fast_tiar_flags[(board.mini_boards[mb].markers[0] << 9)
+                                      | board.mini_boards[mb].markers[1]];
+                hce_tiar_maps[0] = (hce_tiar_maps[0] & ~nn_bit) | ((nn_flags & 1) << mb);
+                hce_tiar_maps[1] = (hce_tiar_maps[1] & ~nn_bit) | (((nn_flags >> 1) & 1) << mb);
             }
         }
 
@@ -1600,123 +1376,10 @@ class CrossfishDev {
             board.mini_boards[mb].markers[board.n_moves & 1] &=
                 ~(1 << move.square);
             board.tt_hash = u.tt_hash;
-            board.mini_code[0][mb] = u.code[0];
-            board.mini_code[1][mb] = u.code[1];
             board.active_board = u.active;
             board.terminal = u.terminal;
-            hce_local_score = u.hce_local;
-            hce_global_score = u.hce_global;
             hce_tiar_maps[0] = u.tiar_maps[0];
             hce_tiar_maps[1] = u.tiar_maps[1];
-            hce_mb_scores[mb] = u.mb_score;
-            hce_mb_flags[mb] = u.mb_flags;
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) void make_move_fast(Board &board, const Move &move) {
-            int stm = board.n_moves & 1;
-            int bit = 1 << move.square;
-            int mb_bit = 1 << move.mini_board;
-            int before = board.mini_boards[move.mini_board].markers[stm];
-            if (hce_acc_ready) {
-                hce_undo[board.n_moves] = {
-                    hce_mb_scores[move.mini_board],
-                    hce_mb_flags[move.mini_board]
-                };
-            }
-            if (board.n_moves > 0) {
-                xor_position_hash(
-                    board,
-                    board.legal_mini_board_hashes[board.move_history.top().square]);
-            }
-            board.move_history.push(move);
-            board.mini_boards[move.mini_board].markers[stm] = before | bit;
-            update_mini_code(board, move.mini_board);
-            // One lookup folds the stone, the destination-constraint term and
-            // the side-to-move flip that used to be three separate XORs.
-            xor_move_combo(board, stm, move.mini_board, move.square);
-            int decided_state = -1;
-            if (fast_win_moves[before] & bit) {
-                board.mini_board_states[stm] |= mb_bit;
-                xor_position_hash(
-                    board, board.mini_board_hashes[stm][move.mini_board]);
-                decided_state = stm;
-            } else {
-                int occupied = board.mini_boards[move.mini_board].markers[0]
-                             | board.mini_boards[move.mini_board].markers[1];
-                if (occupied == 511) {
-                    board.mini_board_states[2] |= mb_bit;
-                    xor_position_hash(
-                        board, board.mini_board_hashes[2][move.mini_board]);
-                    decided_state = 2;
-                }
-            }
-            if (decided_state >= 0) {
-                add_out_of_play(board, mb_bit);
-                xor_marker_hashes(board, move.mini_board);
-                // The deciding state is already known here, so there is no
-                // need to re-test all three mini_board_states masks.
-                set_macro_key_mb(board, move.mini_board, decided_state);
-                sync_terminal(board);
-            }
-            update_active_board(board, move.square);
-            board.n_moves++;
-            if (hce_acc_ready) {
-                set_hce_mb(board, move.mini_board);
-                // The global terms read only mini_board_states, which change
-                // here exactly when this move decided a miniboard.
-                if (decided_state >= 0) {
-                    hce_global_score = evaluate_hce_global(board);
-                }
-            }
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) void unmake_move_fast(Board &board) {
-            board.n_moves--;
-            Move move = board.move_history.top();
-            board.move_history.pop();
-            int mb_bit = 1 << move.mini_board;
-            bool was_decided = false;
-            if (board.mini_board_states[0] & mb_bit) {
-                board.mini_board_states[0] &= ~mb_bit;
-                xor_position_hash(
-                    board, board.mini_board_hashes[0][move.mini_board]);
-                was_decided = true;
-            } else if (board.mini_board_states[1] & mb_bit) {
-                board.mini_board_states[1] &= ~mb_bit;
-                xor_position_hash(
-                    board, board.mini_board_hashes[1][move.mini_board]);
-                was_decided = true;
-            } else if (board.mini_board_states[2] & mb_bit) {
-                board.mini_board_states[2] &= ~mb_bit;
-                xor_position_hash(
-                    board, board.mini_board_hashes[2][move.mini_board]);
-                was_decided = true;
-            }
-            if (was_decided) {
-                remove_out_of_play(board, mb_bit);
-                xor_marker_hashes(board, move.mini_board);
-                // Undoing a decision always returns the slot to "undecided".
-                clear_macro_key_mb(board, move.mini_board);
-                sync_terminal(board);
-            }
-            int stm = board.n_moves & 1;
-            board.mini_boards[move.mini_board].markers[stm] &= ~(1 << move.square);
-            update_mini_code(board, move.mini_board);
-            xor_move_combo(board, stm, move.mini_board, move.square);
-            if (board.n_moves > 0) {
-                xor_position_hash(
-                    board,
-                    board.legal_mini_board_hashes[board.move_history.top().square]);
-            }
-            if (hce_acc_ready) {
-                restore_hce_mb(board.n_moves, move.mini_board);
-                if (was_decided) {
-                    hce_global_score = evaluate_hce_global(board);
-                }
-            }
-            restore_active_board(board);
         }
 
         Move getMove(
@@ -1737,6 +1400,7 @@ class CrossfishDev {
             init_hce_acc(board);
             init_macro_key(board);
             sync_terminal(board);
+            fnnue_stack.refresh_root(board);
             killer_moves = {};
             killer_bits = {};
             for (auto &by_player : history_table) {
@@ -1807,6 +1471,7 @@ class CrossfishDev {
             init_hce_acc(board);
             init_macro_key(board);
             sync_terminal(board);
+            fnnue_stack.refresh_root(board);
             killer_moves = {};
             killer_bits = {};
             history_table = {};
@@ -1849,18 +1514,10 @@ class CrossfishDev {
             }
 
             CorrEntry &qstruct = corr_entry(board);
-            int hce = evaluate_hce_incremental(board)
-                    + qstruct.applied;
-            if (hce - 640 >= beta) {
-                return beta;
-            }
-            int stand_pat;
-            if (hce + MINI_MAX + MACRO_CLIP < alpha) {
-                stand_pat = hce + MINI_MAX + MACRO_CLIP;
-            } else {
-                stand_pat = hce + evaluate_mini_cached(board)
-                          + evaluate_macro_cached(board);
-            }
+            // The NNUE replaces HCE + MiniNet + macro.
+            int stand_pat = fnnue_stack.evaluate_keyed(
+                                board, active_board_index(board), board.tt_hash)
+                          + qstruct.applied;
             if (stand_pat >= beta) {
                 return beta;
             }
@@ -2009,7 +1666,9 @@ class CrossfishDev {
             if (!pv_node && !g_disable_eval_prune) {
                 static_corr_refs = corr_refs(board);
                 static_eval = corrected_eval(
-                    evaluate_hce_incremental(board), static_corr_refs);
+                    fnnue_stack.evaluate_keyed(
+                        board, active_board_index(board), board.tt_hash),
+                    static_corr_refs);
                 have_static = true;
 
                 // A static eval says nothing about how soon anyone is mated,
@@ -2022,12 +1681,6 @@ class CrossfishDev {
                 if (beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
                     int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
                     if (static_eval - reverse_futility_margin * depth >= beta) {
-                        return beta;
-                    }
-                    if (depth == 1
-                        && static_eval + 2500 - reverse_futility_margin >= beta
-                        && static_eval + evaluate_mini_cached(board)
-                           - reverse_futility_margin >= beta) {
                         return beta;
                     }
                 }
@@ -2571,55 +2224,6 @@ class CrossfishDev {
         }
 
         template <typename Board>
-        __attribute__((always_inline)) int fill_captures_lut(Board &board, Move* dst) {
-            int n = 0;
-            if (board.n_moves == 0) return 0;
-            int active_square = active_board_index(board);
-            int out_of_play = out_of_play_mask(board);
-            int stm = (board.n_moves & 1);
-            auto add_from_mb = [&](int mb) __attribute__((always_inline)) {
-                int mine = board.mini_boards[mb].markers[stm];
-                int occupied = board.mini_boards[mb].markers[0]
-                             | board.mini_boards[mb].markers[1];
-                int wins = fast_win_moves[mine] & ~occupied & 511;
-                while (wins) {
-                    int s = __builtin_ctz(wins);
-                    wins &= wins - 1;
-                    dst[n++] = Move{mb, s};
-                }
-            };
-            if (active_square < 9) {
-                add_from_mb(active_square);
-            } else {
-                for (int i = 0; i < 9; i++) {
-                    if ((out_of_play & (1 << i)) == 0) add_from_mb(i);
-                }
-            }
-            return n;
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) bool is_capture_avx(Board &board, Move &move) {
-            int stm = (board.n_moves & 1);
-            int mine = board.mini_boards[move.mini_board].markers[stm];
-            return (fast_win_moves[mine] & (1 << move.square)) != 0;
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) bool is_block_avx(Board &board, Move &move) {
-            int opp = (board.n_moves + 1) % 2;
-            int theirs = board.mini_boards[move.mini_board].markers[opp];
-            return (fast_win_moves[theirs] & (1 << move.square)) != 0;
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) bool creates_two_in_a_row(Board &board, Move &move) {
-            int idx = cached_mini_key(board, move.mini_board);
-            int stm = (board.n_moves & 1);
-            return (mini_tiar_sq[idx][stm] & (1 << move.square)) != 0;
-        }
-
-        template <typename Board>
         void get_move_scores(Move* moves, int n, Board &board, int &ply,
                              int* scores, bool qs = false) {
             if (n <= 1) {
@@ -2671,244 +2275,6 @@ class CrossfishDev {
         static constexpr int eval_weights[N_EVAL_WEIGHTS] =
             {2410, 836, 464, 1316, 534, 424, 33, PAWN, 33, 112};
 
-        void eval_diffs(GlobalBoard &board, int *d) {
-            init_mini_lut();
-            int p0_miniboards_held = __builtin_popcount(board.mini_board_states[0]);
-            int p1_miniboards_held = __builtin_popcount(board.mini_board_states[1]);
-            int out_of_play = out_of_play_mask(board);
-            int p0_two_in_a_row = 0;
-            int p1_two_in_a_row = 0;
-            int p0_center_squares_held = 0;
-            int p1_center_squares_held = 0;
-            int p0_corner_squares_held = 0;
-            int p1_corner_squares_held = 0;
-            int p0_squares_held = 0;
-            int p1_squares_held = 0;
-            int p0_two_in_a_row_map = 0;
-            int p1_two_in_a_row_map = 0;
-            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
-
-            for (int miniboard = 0; miniboard < 9; miniboard++) {
-                if ((out_of_play & (1 << miniboard)) != 0) {
-                    continue;
-                }
-                const MiniLut &e =
-                    mini_lut[cached_mini_key(board, miniboard)];
-                p0_two_in_a_row += e.p0_tiar;
-                p1_two_in_a_row += e.p1_tiar;
-                p0_two_in_a_row_map |= ((1 << miniboard) * (e.p0_tiar != 0));
-                p1_two_in_a_row_map |= ((1 << miniboard) * (e.p1_tiar != 0));
-                p0_center_squares_held += e.p0_center;
-                p1_center_squares_held += e.p1_center;
-                p0_corner_squares_held += e.p0_corner;
-                p1_corner_squares_held += e.p1_corner;
-                p0_squares_held += e.p0_sq;
-                p1_squares_held += e.p1_sq;
-            }
-
-            int p0_miniboards = board.mini_board_states[0];
-            int p1_miniboards = board.mini_board_states[1];
-            int p0_center_miniboard_held = __builtin_popcount(p0_miniboards & (1 << 4));
-            int p1_center_miniboard_held = __builtin_popcount(p1_miniboards & (1 << 4));
-            int p0_corner_miniboards_held = __builtin_popcount(p0_miniboards & corners);
-            int p1_corner_miniboards_held = __builtin_popcount(p1_miniboards & corners);
-            int p0_global_two_in_a_row = 0;
-            int p1_global_two_in_a_row = 0;
-            int p0_two_in_a_rows_lined_up = 0;
-            int p1_two_in_a_rows_lined_up = 0;
-            for(int i = 0; i < N_TIAR_MASKS / 2; i++) {
-                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
-                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1])) /2);
-                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2 + 1]))  / 2);
-                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2 + 1]))   / 2);
-            }
-            d[0] = p0_miniboards_held - p1_miniboards_held;
-            d[1] = p0_center_miniboard_held - p1_center_miniboard_held;
-            d[2] = p0_corner_miniboards_held - p1_corner_miniboards_held;
-            d[3] = p0_global_two_in_a_row - p1_global_two_in_a_row;
-            d[4] = p0_two_in_a_row - p1_two_in_a_row;
-            d[5] = p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up;
-            d[6] = p0_center_squares_held - p1_center_squares_held;
-            d[7] = p0_corner_squares_held - p1_corner_squares_held;
-            d[8] = p0_squares_held - p1_squares_held;
-            d[9] = 0;
-        }
-
-        // Frozen global terms + tempo, in evaluate() units: stm*global + tempo.
-        // Live miniboard LUT indices are written to idx_out.
-        void eval_parts(GlobalBoard &board, int16_t *idx_out, int &n_out, int &base_out) {
-            init_mini_lut();
-            int stm_sign = ((board.n_moves & 1) == 0) ? 1 : -1;
-            int out_of_play = out_of_play_mask(board);
-            int p0_two_in_a_row_map = 0;
-            int p1_two_in_a_row_map = 0;
-            int corners = (1 << 0) + (1 << 2) + (1 << 6) + (1 << 8);
-            n_out = 0;
-            for (int miniboard = 0; miniboard < 9; miniboard++) {
-                if ((out_of_play & (1 << miniboard)) != 0) {
-                    continue;
-                }
-                int idx = cached_mini_key(board, miniboard);
-                idx_out[n_out++] = (int16_t)idx;
-                const MiniLut &e = mini_lut[idx];
-                p0_two_in_a_row_map |= ((1 << miniboard) * (e.p0_tiar != 0));
-                p1_two_in_a_row_map |= ((1 << miniboard) * (e.p1_tiar != 0));
-            }
-
-            int p0_miniboards = board.mini_board_states[0];
-            int p1_miniboards = board.mini_board_states[1];
-            int p0_global_two_in_a_row = 0;
-            int p1_global_two_in_a_row = 0;
-            int p0_two_in_a_rows_lined_up = 0;
-            int p1_two_in_a_rows_lined_up = 0;
-            for(int i = 0; i < N_TIAR_MASKS / 2; i++) {
-                int third = two_in_a_row_masks[i * 2 + 1];
-                p0_global_two_in_a_row += ((__builtin_popcount(p0_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & third)) /2);
-                p1_global_two_in_a_row += ((__builtin_popcount(p1_miniboards & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & third)) /2);
-                p0_two_in_a_rows_lined_up += ((__builtin_popcount((p0_two_in_a_row_map | p0_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p1_miniboards & third))  / 2);
-                p1_two_in_a_rows_lined_up += ((__builtin_popcount((p1_two_in_a_row_map | p1_miniboards) & two_in_a_row_masks[i * 2]) - __builtin_popcount(p0_miniboards & third))   / 2);
-            }
-            int g = eval_weights[0] * (__builtin_popcount(p0_miniboards) - __builtin_popcount(p1_miniboards));
-            g += eval_weights[1] * (__builtin_popcount(p0_miniboards & (1 << 4)) - __builtin_popcount(p1_miniboards & (1 << 4)));
-            g += eval_weights[2] * (__builtin_popcount(p0_miniboards & corners) - __builtin_popcount(p1_miniboards & corners));
-            g += eval_weights[3] * (p0_global_two_in_a_row - p1_global_two_in_a_row);
-            g += eval_weights[5] * (p0_two_in_a_rows_lined_up - p1_two_in_a_rows_lined_up);
-            base_out = stm_sign * g + eval_weights[9];
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) int eval_extra_from_maps(Board &board,
-                                 int p0_two_in_a_row_map,
-                                 int p1_two_in_a_row_map) {
-            int extra = 0;
-            if (board.n_moves > 0 && active_board_index(board) == 9) {
-                extra += FREE_MOVE_PAWNS * eval_weights[PAWN_IDX];
-            }
-            int live = (~out_of_play_mask(board)) & 511;
-            // Only the side that is not to move is tested, so build that one
-            // mask rather than both.
-            const int other = (board.n_moves & 1) ^ 1;
-            const int other_map =
-                other ? p1_two_in_a_row_map : p0_two_in_a_row_map;
-            bool opponent_has_latent_capture =
-                (fast_win_moves[board.mini_board_states[other]]
-                 & other_map & live) != 0;
-            if (opponent_has_latent_capture) {
-                extra += OPP_LATENT_CAPTURE_BONUS;
-            }
-            return extra;
-        }
-
-        // STM-centric bonuses on top of the linear/LUT eval. This public
-        // reference path reconstructs the local threat maps for consistency
-        // tests; the search passes its incremental maps directly below.
-        template <typename Board>
-        __attribute__((always_inline)) int eval_extra(Board &board) {
-            int live = (~out_of_play_mask(board)) & 511;
-            int p0_two_in_a_row_map = 0;
-            int p1_two_in_a_row_map = 0;
-            while (live) {
-                int miniboard = __builtin_ctz(live);
-                live &= live - 1;
-                int packed = (board.mini_boards[miniboard].markers[0] << 9)
-                           | board.mini_boards[miniboard].markers[1];
-                int flags = fast_tiar_flags[packed];
-                p0_two_in_a_row_map |= (flags & 1) << miniboard;
-                p1_two_in_a_row_map |= ((flags >> 1) & 1) << miniboard;
-            }
-            return eval_extra_from_maps(
-                board, p0_two_in_a_row_map, p1_two_in_a_row_map);
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) int evaluate_hce_global(Board &board) {
-            int p0_miniboards = board.mini_board_states[0];
-            int p1_miniboards = board.mini_board_states[1];
-            const int corners = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 8);
-            int global = eval_weights[0]
-                * (__builtin_popcount(p0_miniboards) - __builtin_popcount(p1_miniboards));
-            global += eval_weights[1]
-                * (((p0_miniboards >> 4) & 1) - ((p1_miniboards >> 4) & 1));
-            global += eval_weights[2]
-                * (__builtin_popcount(p0_miniboards & corners)
-                   - __builtin_popcount(p1_miniboards & corners));
-            global += eval_weights[3]
-                * ((int)fast_threat_count[(p0_miniboards << 9) | p1_miniboards]
-                   - (int)fast_threat_count[(p1_miniboards << 9) | p0_miniboards]);
-            return global;
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) int finish_hce_with_global(Board &board, int local,
-                                   int p0_two_in_a_row_map,
-                                   int p1_two_in_a_row_map,
-                                   int global) {
-            int stm_sign = ((board.n_moves & 1) == 0) ? 1 : -1;
-            int p0_miniboards = board.mini_board_states[0];
-            int p1_miniboards = board.mini_board_states[1];
-            global += eval_weights[5]
-                * ((int)fast_threat_count[
-                       ((p0_miniboards | p0_two_in_a_row_map) << 9) | p1_miniboards]
-                   - (int)fast_threat_count[
-                       ((p1_miniboards | p1_two_in_a_row_map) << 9) | p0_miniboards]);
-            return stm_sign * (global + local) + eval_weights[9]
-                 + eval_extra_from_maps(
-                       board, p0_two_in_a_row_map, p1_two_in_a_row_map);
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) int finish_hce(Board &board, int local,
-                       int p0_two_in_a_row_map,
-                       int p1_two_in_a_row_map) {
-            return finish_hce_with_global(
-                board, local, p0_two_in_a_row_map, p1_two_in_a_row_map,
-                evaluate_hce_global(board));
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) int evaluate_hce(Board &board) {
-            int out_of_play = out_of_play_mask(board);
-            int live = (~out_of_play) & 511;
-            int local = 0;
-            int p0_two_in_a_row_map = 0;
-            int p1_two_in_a_row_map = 0;
-            while (live) {
-                int miniboard = __builtin_ctz(live);
-                live &= live - 1;
-                int packed = (board.mini_boards[miniboard].markers[0] << 9)
-                           | board.mini_boards[miniboard].markers[1];
-                local += fast_local_score[packed];
-                int flags = fast_tiar_flags[packed];
-                p0_two_in_a_row_map |= (flags & 1) << miniboard;
-                p1_two_in_a_row_map |= ((flags >> 1) & 1) << miniboard;
-            }
-            return finish_hce(board, local, p0_two_in_a_row_map,
-                              p1_two_in_a_row_map);
-        }
-
-        template <typename Board>
-        __attribute__((always_inline)) int evaluate_hce_incremental(Board &board) {
-            if (!hce_acc_ready) {
-                return evaluate_hce(board);
-            }
-            // hce_global_score is maintained on every miniboard decision, so
-            // the four popcounts, four multiplies and two 256 KiB threat-table
-            // reads of evaluate_hce_global run once per decided move instead of
-            // once per evaluated node (about 168k times instead of 1.2M in a
-            // 2.1M-node search).
-            return finish_hce_with_global(
-                board, hce_local_score, hce_tiar_maps[0],
-                hce_tiar_maps[1], hce_global_score);
-        }
-
-        int evaluate(GlobalBoard &board) {
-            if (g_force_hce_eval) {
-                return evaluate_hce(board);
-            }
-            return evaluate_hce(board)
-                 + d16_evaluate_mini_fast(board)
-                 + evaluate_macro_fast(board);
-        }
 
 };
 
@@ -2927,18 +2293,6 @@ cf_array<int, 2> move_to_grid_coord(Move move) {
 }
 
 
-
-// Function to aggregate results from multiple runs
-cf_array<int, 3> aggregate_results(std::vector<std::future<cf_array<int, 3>>>& futures) {
-    cf_array<int, 3> total = {0, 0, 0};
-    for (auto& future : futures) {
-        const auto result = future.get();
-        total[0] += result[0];
-        total[1] += result[1];
-        total[2] += result[2];
-    }
-    return total;
-}
 
 static int run_match() {
     CrossfishDev engine;

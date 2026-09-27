@@ -1,0 +1,6 @@
+{
+  "change": "The evaluation becomes the B-64 pattern-generator NNUE B64_d5M_57ep (cpp_impl/nnue_b64.hpp, payload nnue_b64_net.hpp) in place of the HCE + D16 MiniNet + macro residual.",
+  "reason": "Every stand-pat and static eval now runs a 128->16->32->1 integer net over two 64-lane accumulators kept by a lazy stack over 25.6 MB of baked tables, where the old leaf was an incremental HCE lookup with the MiniNet only at qsearch leaves inside the window, so each node costs more by design. Measured: this gate on g++ 11.4 (laptop) 0.553 [0.539, 0.568] of the base's nodes/ms at full budget; bench_ab nodes 400 9 at -O3, Dev at 58-62% of Prev's nodes/s. Stronger anyway: official 90 ms SPRT Dev vs Prev: N=420, 296-106-18, +276.63 +/- 30.44, LLR +3.000 (H0=0, H1=+5) PASS, 0 timeouts; B64_d5M_57ep vs B64_lr1e2 +36.3 +/- 14.3 at 90 ms (SPRT PASS, 864 games); the B64_lr1e2 CodinGame bot vs the shipped one +212 +/- 49 at 90 ms, both built with CodinGame's flags. The range allows for other hosts' caches.",
+  "base_cg_input_sha256": "2f43668b098223925467aa7fb3d140429ebc3281b2149655980739186e783605",
+  "speed_ratio": [0.45, 0.7]
+}

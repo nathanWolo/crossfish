@@ -25,17 +25,31 @@ submitted:
                Elo is informational: strength is the SPRT's job.
   7. book:     tools/play_book_protocol_check.py on the candidate build
 
+An intentional change of the evaluation's architecture can make every node
+dearer by design (a net that is slower per node but stronger). The speed check
+would then fail on the change itself, so such a pull request declares it in
+tools/cg_gate/eval_change.json (see read_eval_change()): a reason, the sha256 of
+the base's cg_input.cpp it replaces, and the nodes/ms ratio range it expects.
+The declaration applies only while the base is that exact file; the speed check
+then passes when the measured ratio lies inside the declared range (both ends:
+above it means the declared slowdown did not happen). Every other check stays
+as it is. Once the change has merged, the base no longer matches, the
+declaration is ignored (the summary says so) and the file should be deleted.
+
 Exit status 1 if any check fails. Needs a real GCC for 3-5 (clang ignores
 GCC's optimize pragmas, so its -O0 build says nothing about CodinGame);
 --allow-non-gcc runs anyway and labels the result.
 
 usage: python tools/cg_perf_gate.py [--base origin/main] [--cxx g++-11]
            [--speed-games 16] [--smoke-games 200] [--workers N] [--tol 0.05]
+           [--eval-change FILE | --ignore-eval-change]
            [--skip-smoke] [--skip-book] [--allow-non-gcc] [--summary FILE]
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import math
 import os
 import random
@@ -54,6 +68,7 @@ from python_impl.operations import ops  # noqa: E402
 
 CPP = ROOT / "cpp_impl"
 CAP = 100_000
+EVAL_CHANGE = ROOT / "tools" / "cg_gate" / "eval_change.json"
 FULL_MS = 80  # a later reply this long used (nearly) the whole 90 ms budget
 CG_FLAGS = ["-std=gnu++17", "-Werror=return-type", "-g", "-pthread"]
 O3_FLAGS = ["-O3", "-std=c++17", "-mavx2", "-mbmi", "-mbmi2", "-mlzcnt", "-mpopcnt", "-pthread",
@@ -73,6 +88,53 @@ def record(check: str, passed: bool, detail: str) -> None:
 
 def utf16_len(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
+
+
+def text_sha256(text: str) -> str:
+    """sha256 of a source file's text with LF line endings (git's form, whatever the checkout's)."""
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def read_eval_change(path: Path, base_sha: str) -> tuple[dict | None, str]:
+    """The declaration of an intentional eval-architecture change, if one applies to this base.
+
+    The file (JSON) holds:
+      "change":               what changed in the evaluation (text)
+      "reason":               why nodes/ms falls by design, with the evidence that the change is
+                              stronger anyway (text)
+      "base_cg_input_sha256": text_sha256() of the base's cpp_impl/cg_input.cpp that the change replaces
+      "speed_ratio":          [lo, hi], the candidate/base nodes/ms range the change is expected to give
+    Returns (declaration, note) when it names this base, (None, note) when it names another base (a
+    stale file, ignored), (None, "") when there is no file. A malformed file is an error.
+    """
+    if not path.exists():
+        return None, ""
+    try:
+        decl = json.loads(path.read_text(encoding="utf-8"))
+        lo, hi = (float(x) for x in decl["speed_ratio"])
+        base = str(decl["base_cg_input_sha256"]).lower()
+        for key in ("change", "reason"):
+            if not str(decl[key]).strip():
+                raise ValueError(f"empty {key}")
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise SystemExit(f"{path}: not a valid eval-change declaration ({e}); see read_eval_change()")
+    if not 0 < lo < hi <= 1.5 or len(base) != 64:
+        raise SystemExit(f"{path}: speed_ratio must be 0 < lo < hi <= 1.5 and base_cg_input_sha256 a sha256")
+    if base != base_sha:
+        return None, (f"{path.name} names base {base[:12]}, but the base's cg_input.cpp is {base_sha[:12]}: "
+                      "ignored, the speed check is the usual one (delete the file once its change has merged)")
+    decl["speed_ratio"] = (lo, hi)
+    return decl, (f"{path.name} applies (base {base_sha[:12]}): speed must be {lo:.2f}-{hi:.2f} of base "
+                  f"nodes/ms. {decl['change'].strip()}")
+
+
+def speed_passes(r: float, hi_ci: float, tol: float, decl: dict | None = None) -> bool:
+    """The speed verdict: without a declaration, fail on a slowdown that is both material (more than tol)
+    and significant (the 95% interval's top below 1); with one, the point ratio must lie in its range."""
+    if decl is not None:
+        lo, hi = decl["speed_ratio"]
+        return lo <= r <= hi
+    return not (r < 1 - tol and hi_ci < 1.0)
 
 
 def pick_compiler(requested: str | None) -> str:
@@ -156,6 +218,9 @@ def main() -> int:
     ap.add_argument("--smoke-games", type=int, default=200)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2 - 1))
     ap.add_argument("--tol", type=float, default=0.05, help="tolerated slowdown in nodes per millisecond")
+    ap.add_argument("--eval-change", type=Path, default=EVAL_CHANGE,
+                    help="declaration of an intentional eval-architecture change (read_eval_change())")
+    ap.add_argument("--ignore-eval-change", action="store_true", help="use the usual speed check regardless")
     ap.add_argument("--skip-smoke", action="store_true")
     ap.add_argument("--skip-book", action="store_true")
     ap.add_argument("--allow-non-gcc", action="store_true")
@@ -194,6 +259,12 @@ def main() -> int:
     base_size = utf16_len(base_text.stdout.replace("\r\n", "\n"))
     record("size", size <= CAP, f"{size:,} characters ({CAP - size:,} left; base {base_size:,}, {size - base_size:+,})")
 
+    # An intentional eval-architecture change (read_eval_change()); shown in the summary either way.
+    decl, decl_note = (None, "") if args.ignore_eval_change else read_eval_change(
+        args.eval_change, text_sha256(base_text.stdout))
+    if decl_note:
+        record("eval change", True, decl_note)
+
     # builds (the base keeps its own source; both land in the work dir)
     base_src = work / "cg_input_base.cpp"
     base_src.write_text(base_text.stdout, encoding="utf-8")
@@ -227,13 +298,14 @@ def main() -> int:
     all_depth = {k: [d for r in per[k] for d in r["depths"]] for k in bins}
     pairs = paired("base", "cand")
     r, lo, hi = ratio_ci(pairs)
-    speed_ok = not (r < 1 - args.tol and hi < 1.0)
+    speed_ok = speed_passes(r, hi, args.tol, decl)
+    expected = f"; declared eval change: expected {decl['speed_ratio'][0]:.2f}-{decl['speed_ratio'][1]:.2f}" if decl else ""
     record("speed" + note, speed_ok,
            f"nodes/ms at full budget: candidate {statistics.mean(y for _, y in pairs):,.0f} vs base "
            f"{statistics.mean(x for x, _ in pairs):,.0f}, ratio {r:.3f} [{lo:.3f}, {hi:.3f}] over "
            f"{len(pairs)} paired games; full-budget replies {full_share('cand'):.0%} vs "
            f"{full_share('base'):.0%}; mean depth {statistics.mean(all_depth['cand']):.1f} vs "
-           f"{statistics.mean(all_depth['base']):.1f}")
+           f"{statistics.mean(all_depth['base']):.1f}{expected}")
     ri, loi, hii = ratio_ci(paired("cand_o3", "cand"))
     record("inlining" + note, ri >= 0.85,
            f"CodinGame-flags build at {ri:.0%} [{loi:.0%}, {hii:.0%}] of the -O3 build's nodes/ms "
