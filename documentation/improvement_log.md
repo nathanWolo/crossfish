@@ -3047,6 +3047,19 @@ The shards read +287.1 +/- 40.8 (desktop, 252 games) and +261.6 +/- 46.2
 most 0.0143 per pair here, so 420 games is the fewest any pass could take;
 the Elo carries the information, not N.
 
+An early-stopped SPRT overstates the effect, so the same binaries then played
+a 3,000-game fixed-length match (no early stop) on openings disjoint from the
+SPRT's (desktop 1,800 games from opening 30000, laptop 1,200 from 40000):
+
+```text
+N 3000  W 2087 / D 766 / L 147
+Penta 3 / 31 / 195 / 565 / 706
++267.37 +/- 11.86 Elo
+Timeouts: Prev 0 / Dev 0; slowest reply Prev 90.48 ms / Dev 91.14 ms
+```
+
+The shards agree: +274.1 +/- 15.3 (desktop) and +257.6 +/- 18.8 (laptop).
+
 | Speed (`bench_ab`, same binaries) | Desktop, clang | Laptop, g++ 11.4 |
 | --- | ---: | ---: |
 | `nodes 400 9`: Dev nodes/s vs Prev | 61.5% | 58.1% |

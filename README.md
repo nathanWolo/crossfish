@@ -501,6 +501,10 @@ Timeouts: Prev=0 Dev=0
 Prev NPS: 31,197,568  Dev NPS: 15,953,280
 ```
 
+A 3,000-game fixed-length match of the same binaries (no early stop, openings
+disjoint from the SPRT's) puts the gain at **+267.4 +/- 11.9 Elo** (W 2087,
+D 766, L 147, 0 timeouts).
+
 It runs at about half to 62% of the old evaluator's nodes per second (51% in
 the SPRT header's 1 s start-position NPS, 58-62% in `bench_ab nodes 400 9`,
 0.55 of the old paste file's nodes/ms built CodinGame's way) and completes
@@ -512,7 +516,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
-| 2026-09-27 | NNUE evaluation: the B64_d5M_57ep pattern generator replaces HCE + MiniNet + macro | N=420, 296-106-18, +276.63 ± 30.44, LLR +3.00 PASS (two pooled shards) | §56 |
+| 2026-09-27 | NNUE evaluation: the B64_d5M_57ep pattern generator replaces HCE + MiniNet + macro | N=420, 296-106-18, +276.63 ± 30.44, LLR +3.00 PASS (two pooled shards); fixed-length N=3000: +267.37 ± 11.86 | §56 |
 | 2026-09-24 | uttt.ai opening book | paired book value vs the round-six engine +72.0 (full-coverage book +26.3), same 500 openings | §54 |
 | 2026-09-24 | Inline the remaining CodinGame hot-path calls | +4.6% to +8.7% nodes/ms with CodinGame's flags, tree identical | §52 |
 | 2026-09-24 | Mate-window pruning fix (bug fix) | N=13212, +0.26 ± 4.17, LLR +3.05 (H0=-5, H1=0) PASS | §51 |
