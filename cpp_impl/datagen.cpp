@@ -43,7 +43,7 @@ struct DgRec {
     uint8_t pad[3];
     uint32_t game;         // game id, unique within a file
     int32_t hce;           // static HCE, side to move
-    int32_t static_eval;   // HCE + MiniNet + macro, side to move
+    int32_t static_eval;   // full static eval (Dev's evaluate()), side to move
     int32_t search;        // fixed-depth search score, side to move
     int32_t game_score;    // in-game root score at the move (0 if none)
     float uttt_q;          // uttt.ai MCTS root value, side to move
@@ -136,6 +136,21 @@ static Move soft_random_move(GlobalBoard &b, CrossfishDev &scorer, std::mt19937_
     return legal[pick[rng() % (uint64_t)k]];
 }
 
+// Depth mode (MS given as "dN"): every engine move is a fixed-depth-N search
+// whose root score becomes the record's search label (Stockfish-style
+// generation, no separate labeling pass); other positions are searched to the
+// same depth by the scorer. 0 = timed moves, labels come from `datagen label`.
+static int g_play_depth = 0;
+
+static int clamp_score(int s) {
+    return std::max(-CrossfishDev::SEARCH_SCORE_CLAMP, std::min(CrossfishDev::SEARCH_SCORE_CLAMP, s));
+}
+
+static void label_statics(DgRec &rec, GlobalBoard &b, CrossfishDev &bot) {
+    rec.hce = bot.evaluate_hce(b);
+    rec.static_eval = bot.evaluate(b);
+}
+
 static std::atomic<long long> g_written{0};
 static std::atomic<long long> g_games{0};
 static std::atomic<uint32_t> g_next_game{0};
@@ -171,6 +186,11 @@ static void play_worker(const char *out_path, long long target, int ms, uint64_t
         for (int i = 0; i < n_random && b.checkWinner() == -1; i++) {
             DgRec rec;
             fill_position(rec, b, enc);
+            if (g_play_depth) {
+                label_statics(rec, b, *scorer);
+                int score = 0;
+                if (scorer->search_fixed_depth(b, g_play_depth, score)) { rec.search = score; rec.flags = 2; }
+            }
             recs.push_back(rec);
             last_random_rec = (int)recs.size() - 1;
             int n = b.fillLegalMoves(legal);
@@ -179,9 +199,18 @@ static void play_worker(const char *out_path, long long target, int ms, uint64_t
         while (b.checkWinner() == -1) {
             DgRec rec;
             fill_position(rec, b, enc);
+            if (g_play_depth) label_statics(rec, b, *bot);
             Move m;
             if (b.n_moves < SOFT_MAX_PLY && unif(rng) < SOFT_PROB) {
+                if (g_play_depth) {
+                    int score = 0;
+                    if (scorer->search_fixed_depth(b, g_play_depth, score)) { rec.search = score; rec.flags = 2; }
+                }
                 m = soft_random_move(b, *scorer, rng);
+            } else if (g_play_depth) {
+                m = bot->getMove(b);  // g_fixed_search_depth: one full-window search
+                rec.search = rec.game_score = clamp_score(bot->root_score);
+                rec.flags = 2;
             } else {
                 m = bot->getMove(b, std::chrono::milliseconds(ms));
                 rec.game_score = bot->completed_root_score;
@@ -194,7 +223,7 @@ static void play_worker(const char *out_path, long long target, int ms, uint64_t
             DgRec &rec = recs[i];
             int stm = rec.ply & 1;
             rec.result = winner == 2 ? 0 : (winner == stm ? 1 : -1);
-            rec.flags = i > last_random_rec ? 1 : 0;
+            rec.flags = (uint8_t)((rec.flags & 2) | (i > last_random_rec ? 1 : 0));
             rec.source = source;
         }
         {
@@ -230,12 +259,18 @@ static void progress_loop(long long start, long long target, const char *what,
 
 static int cmd_play(int argc, char **argv) {
     if (argc < 7) {
-        std::fprintf(stderr, "usage: datagen play OUT N_POSITIONS MS THREADS SEED [OPENINGS.txt]\n");
+        std::fprintf(stderr, "usage: datagen play OUT N_POSITIONS MS|dDEPTH THREADS SEED [OPENINGS.txt]\n");
         return 2;
     }
     const char *out = argv[2];
     long long target = std::atoll(argv[3]);
-    int ms = std::atoi(argv[4]);
+    int ms = 0;
+    if (argv[4][0] == 'd') {  // "d8": fixed-depth moves that label themselves
+        g_play_depth = std::atoi(argv[4] + 1);
+        g_fixed_search_depth = g_play_depth;
+    } else {
+        ms = std::atoi(argv[4]);
+    }
     int threads = std::atoi(argv[5]);
     uint64_t seed = std::strtoull(argv[6], nullptr, 10);
     std::vector<std::string> openings;
