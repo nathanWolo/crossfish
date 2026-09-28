@@ -3090,3 +3090,154 @@ there). The MiniNet candidate tools of section 55 (`eval_candidate.py`
 `emit` / `verify`) no longer change or describe the search's eval, and the
 fast-NNUE candidate builds patch the pre-NNUE engine (`c278cde`; the
 `fast_nnue` README says how to get it).
+
+## 57. Round twelve: the NNUE labels its own data (27-28 September 2026)
+
+Section 56's net learned from labels that the old evaluator's search wrote:
+eval2's depth-14 labels and the d8 self-play of the pre-NNUE engine. Round
+twelve closed the loop: the shipped NNUE engine relabelled eval2 and played
+its own games, and a B-64 trained on those data, **r12_M2**, is the new net.
+Same architecture, same recipe, same runtime; only `nnue_b64_net.hpp`'s
+payload and its five integer scales change. It passed the official 90 ms SPRT against B64_d5M_57ep at **+70.6 +/- 19.7** (N=504), and **+52.5 +/- 7.0** over 3,000 games of the two CodinGame paste files against each other. On
+CodinGame the paste file reached **rank 1** of the Ultimate Tic-Tac-Toe
+ladder (score 34.27 after placement, ahead of Daporan's 33.88).
+
+### Data
+
+- **eval2, relabelled.** All 4,824,319 eval2 positions, labelled by a
+  depth-14 search of the shipped engine (`datagen label`, desktop 3.90M rows
+  and laptop 0.92M before it dropped off the network). Every other byte of
+  every record is unchanged, V2 is the same 482,136 rows, and the labels
+  predict game results better: V2 log loss 0.4377 against 0.4593 for the old
+  labels. About half of the new-vs-old disagreement is the search's own
+  run-to-run noise (`datagen label` keeps each thread's table across
+  positions). In the 20 largest disagreements a depth-18 search sided with
+  the new label 14 times and the old 5 times.
+- **sp13, NNUE self-play.** 13,442,027 rows from 266,302 games at a fixed
+  depth of 13 (`datagen play ... d13`), desktop only: depth 13 is the deepest
+  that still cleared 10M rows once the laptop was gone. Same openings file
+  and randomisation as d8. A depth-12 / 13 / 14 comparison on 6,000 positions
+  found no side-to-move bias from the odd depth (-3.9 +/- 8.1).
+- **SPH**, 3% of the sp13 games (402,405 rows), is a second holdout no run
+  trains on.
+
+### Training
+
+Five mixes, each B-64 with section 56's 57-epoch recipe (32,490 steps). The
+trainer, `gen_r12.py`, imports gen_nnue.py's model, loss, augmentation and
+optimizer unchanged; it and the round's data tools are in
+`datasets/nnue2/r12/tools/` (not in the repository). Loss is against
+B64_d5M_57ep on the same rows:
+
+| Net | Data | V2 new labels | SPH | V2 old labels |
+| --- | --- | ---: | ---: | ---: |
+| M0 (control) | B64_d5M_57ep's own data and recipe | +1.7% | +1.7% | +1.8% |
+| M1 | relabelled eval2 + 5M old d8 rows | -5.7% | -4.1% | +1.2% |
+| **M2** | **relabelled eval2 + 5M sp13 rows** | **-9.6%** | **-8.5%** | +3.4% |
+| M3 | relabelled eval2 + all 13.04M sp13 rows (31 epochs) | -8.1% | -8.9% | +4.5% |
+| M4 | eval2 twice + all sp13 (25 epochs) | -8.9% | -8.4% | +3.9% |
+
+- **The control is the lesson.** M0 changed nothing but the rounding of
+  the float32 targets (one bit), and finished 1.7% worse on every holdout: the
+  recipe is chaotic, and B64_d5M_57ep was probably a good draw. Seed-2
+  replicates of M2 and M3 moved by 0.1-0.7%.
+- **The old-label cost** sits almost entirely in the opening (plies 0-19),
+  where the two engines' labels disagree systematically.
+- **Twice the steps** (64,980) did not help: the training loss kept falling,
+  the held-out loss did not (M2 -9.44% vs -9.57%, M3 -7.40% vs -8.10%).
+
+### Play
+
+20 ms round robin `r12_20ms` (fast_pair two-net pairings on the pre-NNUE
+search, 36 pairs x 2,000 games, desktop; fit chi2 19.1 on 28 dof), Elo against
+B64_d5M_57ep:
+
+| Net | Elo | | Net | Elo |
+| --- | ---: | --- | --- | ---: |
+| **r12_M2** | **+65.4** | | r12_M4 | +61.0 |
+| r12_M3_s2 | +62.8 | | r12_M1 | +39.9 |
+| r12_M2_s2 | +62.5 | | r12_M0 | -6.0 |
+| r12_M3 | +61.8 | | B64_lr1e2 | -32.0 |
+
+All +/-4.8. A follow-up round robin (`r12x_20ms`, 20,000 games) put r12_M2
+at 64,980 steps level with r12_M2 (+1.6 +/- 9.1 head to head) and the
+doubled M3 11-16 Elo below M3.
+
+3,000-game fixed-length matches at 90 ms against B64_d5M_57ep (the same
+pairings): **r12_M2 +57.7 +/- 7.6** (W 925 / D 1644 / L 431, 0 timeouts),
+r12_M3_s2 +51.7 +/- 7.9.
+
+The round-robin candidates are unquantized exports in the pre-NNUE search,
+not exactly what ships, so the shipped code itself was then measured:
+
+- **Official 90 ms SPRT**, `test_bots` on the ship branch: Dev = r12_M2, Prev =
+  B64_d5M_57ep. Dev and Prev share `nnue_b64.hpp`'s namespace and payload
+  globals, so Prev ran on scratch copies with renamed symbols (namespace
+  `b64prev`, `B64P_*`, its own load-once). Before the SPRT, `engine_selfcheck`
+  confirmed each side: Prev's search matched main's engine, and Dev's the ship
+  branch's, IDENTICAL at depths 5, 7 and 9. The run used the desktop, 7
+  threads, openings from 20000:
+
+```text
+90 ms: N 504  W 173 / D 259 / L 72
+Penta 2 / 37 / 95 / 94 / 24
+Elo diff: +70.58 +/- 19.66
+LLR: +3.026 (H0=0, H1=+5) - PASS
+Timeouts: Prev 0 / Dev 0; slowest reply Prev 97.36 ms / Dev 97.15 ms
+Prev NPS 14,626,304  Dev NPS 14,418,304
+```
+
+- **The two CodinGame paste files**, r12_M2's against PR #30's: 3,000 games
+  (1,500 opening pairs, random 4-8 ply openings, each opening with both
+  colours), 90 ms per move, CodinGame's protocol and 100 ms forfeit, roundrobin
+  match mode, clang -O3 builds, desktop, 6 workers:
+
+```text
+N 3000  W 1203 / D 1044 / L 753
+Penta 18 / 155 / 768 / 477 / 82
++52.5 +/- 7.0 Elo
+Forfeits (replies over 100 ms): r12_M2 8, PR #30 15
+```
+
+  Without the 19 opening pairs that had a forfeit, the result is +51.5 +/- 6.9.
+  Round twelve's review had measured +57.1 +/- 11.6 over 1,000 games of the
+  same files.
+
+### The CodinGame file and the review
+
+- **The file.** `cg_input.cpp` is PR #30's with one line changed: the
+  payload and the scales 9, 12, 13, 13, 11. It is **94,922 characters**, 25
+  more than before, with 5,078 left.
+  - It was built with the repository's pipeline:
+    `nnue_emit_b64_header.py datasets/nnue2/fast/r12_M2_perm.bin --label r12_M2`
+    (export CRC-32 `60f1f9ea`, payload sha256 `4ba93b1a...`), then
+    `make -C cpp_impl cg-input`.
+  - Port check: IDENTICAL at depths 5, 7 and 9.
+  - The dequantized generator is 1.08 mean / 45 max eval units from the
+    float net.
+- **Review.** An adversarial review re-derived every number above from the
+  raw files:
+  - data integrity, and no leakage between training data and holdouts;
+  - 200 labels recomputed;
+  - holdout losses from the checkpoints;
+  - the match pooling;
+  - 200 CodinGame-protocol games against PR #30's file, with 0 faults.
+  
+  It found no defect that changes a result. Two of its notes:
+  - about 9% of V2's positions also occur in M2's self-play rows, so the V2
+    gains are slightly flattering;
+  - `datasets/nnue2/cg/build_cg.sh`, the experiments' CodinGame builder,
+    patches the pre-NNUE engine and must not be used for this engine.
+- **On CodinGame.** Submitted on 2026-09-27, the file finished placement at
+  rank 1 (34.27). Over its first 334 ladder games it went 203 / 19 / 112:
+  - 160 / 5 / 2 as first player;
+  - 43 / 14 / 110 as second. Every top bot shares that asymmetry: among the
+    top six, the first player scores 83%.
+
+**Freeze.** Dev and Prev share `nnue_b64_net.hpp`, so both now carry r12_M2;
+nothing else changed. An early-stopped SPRT overstates the effect, which is why
+the paste files also played 3,000 fixed-length games: they put the gain at
+about +52, in line with round twelve's +57.7. `unit_tests.cpp` and `tools/test_nnue_emit_b64_header.py`
+pin the new payload, scales and table hashes, and the new fixed-position
+evals. `tools/cg_gate/eval_change.json` (section 56's declaration against the
+pre-NNUE paste file) is removed as its base no longer applies.

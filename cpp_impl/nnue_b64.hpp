@@ -1,6 +1,6 @@
 #pragma once
-// The engine's evaluation: the B-64 pattern-generator NNUE (net B64_d5M_57ep). crossfish_dev.hpp and the
-// CodinGame bot (codingame_nnue.cpp) include this same file.
+// The engine's evaluation: the B-64 pattern-generator NNUE (net r12_M2 since 2026-09-28, section 57; before
+// that B64_d5M_57ep). crossfish_dev.hpp and the CodinGame bot (codingame_nnue.cpp) include this same file.
 //
 // The net, per perspective P (rows W = 65 wide: A = 64 accumulator lanes, then 1 PSQT lane):
 //   live miniboard m      T[m][p]      p = sum over its squares i of cell_i 3^i (0 empty, 1 P's, 2 the other's)
