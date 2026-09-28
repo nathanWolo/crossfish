@@ -109,6 +109,9 @@ template <class T> struct cf_heap_array {
 // correction history's prior, and the HCE survives only as its tiar maps (the
 // global-win checks). Dead HCE / MiniNet code removed. The same wiring as
 // crossfish_dev.hpp (port-check identical at depths 5, 7, 9).
+// Net r12_M2 since 2026-09-28 (section 57): round twelve's data loop (labels
+// from the NNUE engine itself, NNUE self-play). Same architecture and code;
+// only the payload and its five integer scales changed.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     cf_array<int, 2> markers = {0, 0};

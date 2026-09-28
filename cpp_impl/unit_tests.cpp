@@ -1064,8 +1064,8 @@ static void test_lut_capture_block_tiar(TestCtx &ctx) {
 
 // ---------------------------------------------------------------- NNUE (nnue_b64.hpp)
 
-// The table hash of the verified CodinGame build's table_hash.cpp (datasets/nnue2/cg/d5M57): FNV-1a with
-// offset basis 1469598103934665603. tools/nnue_emit_b64_header.py --check prints the same hashes.
+// The table hash of the verified CodinGame builds (FNV-1a with offset basis 1469598103934665603);
+// tools/nnue_emit_b64_header.py --check prints the same hashes.
 static uint64_t nnue_table_hash(const void *p, size_t n) {
     uint64_t h = 1469598103934665603ull;
     const unsigned char *c = (const unsigned char *)p;
@@ -1076,37 +1076,37 @@ static uint64_t nnue_table_hash(const void *p, size_t n) {
     return h;
 }
 
-// load() must bake exactly the tables of the build that was verified with CodinGame's compiler
-// (datasets/nnue2/cg/d5M57/build/table_hash_local.txt): same payload, same float bake, same quantization.
+// load() must bake exactly the tables of the verified CodinGame build of the committed net (r12_M2,
+// datasets/nnue2/cg/r12): same payload, same float bake, same quantization.
 static void test_nnue_tables_match_verified_build(TestCtx &ctx) {
     b64::load();
     CHECK_EQ(B64_QA, 9);
-    CHECK_EQ(B64_QPS, 13);
+    CHECK_EQ(B64_QPS, 12);
     CHECK_EQ(B64_QB, 13);
     CHECK_EQ(B64_Q2, 13);
-    CHECK_EQ(B64_QO, 10);
+    CHECK_EQ(B64_QO, 11);
     const struct {
         const char *name;
         const void *p;
         size_t n;
         uint64_t want;
     } tables[] = {
-        {"T", b64::T, sizeof(b64::T), 0xc3718aafd7197724ull},
-        {"TP", b64::TP, sizeof(b64::TP), 0x5edc1a4e4378e972ull},
-        {"F", b64::F, sizeof(b64::F), 0x72808cbb45146238ull},
-        {"FP", b64::FP, sizeof(b64::FP), 0xd33a1a161da4ee6eull},
-        {"DEC", b64::DEC, sizeof(b64::DEC), 0x1acf9b2262e2b091ull},
-        {"DECP", b64::DECP, sizeof(b64::DECP), 0x115526174de81ab9ull},
-        {"CON", b64::CON, sizeof(b64::CON), 0xc7514736914495a2ull},
-        {"CONP", b64::CONP, sizeof(b64::CONP), 0xc93bc1f65320f933ull},
-        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x9fdc6a38eeaf72d2ull},
+        {"T", b64::T, sizeof(b64::T), 0xfaccfc87cfd0b6d0ull},
+        {"TP", b64::TP, sizeof(b64::TP), 0x9e3ec366d8c3fb4aull},
+        {"F", b64::F, sizeof(b64::F), 0xf456392f8ba17975ull},
+        {"FP", b64::FP, sizeof(b64::FP), 0xd331d7412ca0185aull},
+        {"DEC", b64::DEC, sizeof(b64::DEC), 0xf696cbe1be77ca93ull},
+        {"DECP", b64::DECP, sizeof(b64::DECP), 0xae23933a779e37adull},
+        {"CON", b64::CON, sizeof(b64::CON), 0x3157b6212f30ac80ull},
+        {"CONP", b64::CONP, sizeof(b64::CONP), 0x99bd53d0b46749e3ull},
+        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x02e8408a9380a607ull},
         {"BIASP", &b64::BIASP, sizeof(b64::BIASP), 0x9a691300c548b8fbull},
-        {"W1p", b64::W1p, sizeof(b64::W1p), 0x5c7b831d1580a26full},
-        {"B1", b64::B1, sizeof(b64::B1), 0xcd75ffd4e90f0aa1ull},
-        {"W2p", b64::W2p, sizeof(b64::W2p), 0xd48a475988a2051full},
-        {"B2", b64::B2, sizeof(b64::B2), 0x8aa4ec8ba25e3c7aull},
-        {"WO", b64::WO, sizeof(b64::WO), 0x8d2f093665c63e73ull},
-        {"BO", &b64::BO, sizeof(b64::BO), 0xd07bf2a1719acedeull},
+        {"W1p", b64::W1p, sizeof(b64::W1p), 0x7cf86c63bbd44d5eull},
+        {"B1", b64::B1, sizeof(b64::B1), 0xeddd686a2a1ccfe3ull},
+        {"W2p", b64::W2p, sizeof(b64::W2p), 0x70f17bbda9b46047ull},
+        {"B2", b64::B2, sizeof(b64::B2), 0x4db449aabff4541eull},
+        {"WO", b64::WO, sizeof(b64::WO), 0x7662257aebc69d1full},
+        {"BO", &b64::BO, sizeof(b64::BO), 0xcafde29f2adc4a1full},
     };
     for (const auto &t : tables) {
         const uint64_t got = nnue_table_hash(t.p, t.n);
@@ -1229,11 +1229,12 @@ static void nnue_position(int i, GlobalBoard &b) {
     }
 }
 
-// Evals of the verified CodinGame build's own runtime (datasets/nnue2/cg/d5M57/src) on those positions:
-// a change to the net, the bake, the quantization or the kernels shows up here.
+// The committed net's (r12_M2) evals on those positions, checked against the float net in PyTorch (mean
+// |d| 4.9, max 28; the 20,000-position parity is 5.8 / 166): a change to the net, the bake, the quantization
+// or the kernels shows up here.
 static void test_nnue_fixed_positions(TestCtx &ctx) {
-    static const int want[16] = {800,  -781,  -351,  -276,  888,  599,  1361, 1435,
-                                 2779, -2663, 10547, 16267, 8286, 9896, 6299, 17476};
+    static const int want[16] = {1141, -1169, -340,  -79,   645,  810,  905,  1357,
+                                 2746, -2466, 15694, 12937, 8106, 9027, 5272, 15737};
     CrossfishDev dev;
     int drawn = 0, free_moves = 0, decided = 0;
     for (int i = 0; i < 16; i++) {

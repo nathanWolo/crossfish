@@ -19,7 +19,8 @@
 // prefilter is gone. The HCE, MiniNet and macro code stays for the tools that
 // still read it (datagen's HCE labels, test_bots' HCE tuning and dumps, the
 // macro correction history's prior). codingame_nnue.cpp carries the same
-// wiring (make -C cpp_impl port-check).
+// wiring (make -C cpp_impl port-check). Since 2026-09-28 the payload is net
+// r12_M2 (section 57), same architecture.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };

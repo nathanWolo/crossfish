@@ -20,6 +20,10 @@
 // timeouts. The HCE, MiniNet and macro code stays for the tools that still
 // read it (datagen's HCE labels, test_bots' HCE tuning and dumps, the macro
 // correction history's prior).
+// Net r12_M2 since 2026-09-28 (section 57; nnue_b64_net.hpp, shared with
+// Dev): official 90 ms SPRT vs B64_d5M_57ep: N=504, 173-259-72, penta
+// 2/37/95/94/24, +70.58 +/- 19.66 Elo, LLR +3.026 (H0=0, H1=+5) PASS, zero
+// timeouts.
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
