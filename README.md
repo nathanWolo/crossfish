@@ -480,17 +480,36 @@ procedure are in `documentation/play_book.md`.
 ## Latest strength result
 
 The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
-search with the mate-window pruning fix, the B64_d5M_57ep pattern-generator
-NNUE as its whole evaluation, the CodinGame-compiler inlining work and the
-uttt.ai opening book. It is **94,897 characters**, 5,103 under the cap (the
-minifier's count; `wc -c` reports UTF-8 bytes). Built with CodinGame's flags
+search with the mate-window pruning fix, the pattern-generator NNUE as its
+whole evaluation (net r12_M2 since 2026-09-28), the CodinGame-compiler
+inlining work and the uttt.ai opening book. It is **94,922 characters**, 5,078
+under the cap (the minifier's count; `wc -c` reports UTF-8 bytes). Submitted
+on 2026-09-27, it finished placement at **rank 1** of CodinGame's Ultimate
+Tic-Tac-Toe ladder. Built with CodinGame's flags
 on the laptop, replies take 90.2-90.5 ms against the 100 ms referee, and the
 first turn about 175-220 ms of its 1,000 ms alone, and up to about 380-470 ms
 when two bots start together on one pinned laptop E-core in referee games (it
 bakes the NNUE's tables in about 50 ms).
 
-On 2026-09-27 the NNUE passed the official 90 ms SPRT against the mate-window
-freeze, two shards (desktop and laptop) pooled:
+On 2026-09-28 the net r12_M2 (round twelve: data the NNUE engine labelled
+itself, and its own self-play) passed the official 90 ms SPRT against
+B64_d5M_57ep, the net it replaces:
+
+```text
+90 ms: N 504 W 173 D 259 L 72
+Penta: 2 / 37 / 95 / 94 / 24
+Elo diff: +70.58 +/- 19.66
+LLR: +3.026 (H0=0, H1=+5) — PASS
+Timeouts: Prev=0 Dev=0
+Prev NPS: 14,626,304  Dev NPS: 14,418,304
+```
+
+The two CodinGame paste files against each other, 3,000 fixed-length games
+through CodinGame's protocol at 90 ms, put the gain at **+52.5 +/- 7.0 Elo**
+(W 1203, D 1044, L 753). See section 57 of the improvement log.
+
+On 2026-09-27 the NNUE itself passed the official 90 ms SPRT against the
+mate-window freeze, two shards (desktop and laptop) pooled:
 
 ```text
 90 ms: N 420 W 296 D 106 L 18
@@ -516,6 +535,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-09-28 | NNUE net r12_M2: round twelve's self-labelled data and self-play, same architecture | N=504, 173-259-72, +70.58 ± 19.66, LLR +3.03 PASS; paste files, fixed-length N=3000: +52.5 ± 7.0 | §57 |
 | 2026-09-27 | NNUE evaluation: the B64_d5M_57ep pattern generator replaces HCE + MiniNet + macro | N=420, 296-106-18, +276.63 ± 30.44, LLR +3.00 PASS (two pooled shards); fixed-length N=3000: +267.37 ± 11.86 | §56 |
 | 2026-09-24 | uttt.ai opening book | paired book value vs the round-six engine +72.0 (full-coverage book +26.3), same 500 openings | §54 |
 | 2026-09-24 | Inline the remaining CodinGame hot-path calls | +4.6% to +8.7% nodes/ms with CodinGame's flags, tree identical | §52 |
@@ -550,7 +570,7 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `cpp_impl/play_book.hpp` / `play_book_data.hpp` — gameplay opening book runtime and payload; `play_book_*.cpp` are its packer, checker, generator and match tools
 - `cpp_impl/mini_eval.hpp` — retired D8/H4 MiniNet, kept for unit tests
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
-- `tools/cg_perf_gate.py`, `tools/cg_gate/Dockerfile` — the CodinGame performance gate CI runs on every pull request; `tools/cg_gate/eval_change.json` declares an intentional eval change for it (delete after merge)
+- `tools/cg_perf_gate.py`, `tools/cg_gate/Dockerfile` — the CodinGame performance gate CI runs on every pull request; `tools/cg_gate/eval_change.json`, when present, declares an intentional eval-architecture change for it (delete it after merge)
 - `tools/cg_speed_check.py`, `tools/speed_ab.py` — nodes-per-move through the real protocol, and repeated paired Dev-vs-Prev timing with a confidence interval
 - `tools/nnue_emit_b64_header.py` — the NNUE payload emitter and checker (`--check`)
 - `tools/experiments/nnue2/`, `tools/experiments/fast_nnue/` — the NNUE's trainers, and its candidate builds, exactness checks, two-net matches and Linux worker (log §56; each has a README)

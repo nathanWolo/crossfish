@@ -88,8 +88,8 @@ immediately before token minification.
 
 ## 3. Neural evaluation included in the submission
 
-The evaluation is the pattern-generator NNUE B64_d5M_57ep (35,243
-parameters). The paste file carries two networks:
+The evaluation is the pattern-generator NNUE r12_M2 (35,243 parameters;
+improvement log section 57; B64_d5M_57ep until 2026-09-28). The paste file carries two networks:
 
 - the NNUE's generator (section 3.1), from which the bot bakes its 25.6 MB of
   integer tables at start-up;
@@ -140,11 +140,12 @@ IEEE single arithmetic in numpy and in C++.
   and `bias` round to nearest. The encoder is GPTQ-rounded but not refit: on
   this net its refit moved rare patterns' embeddings (max error 116 against 11
   at 16 bits everywhere).
-- **Size.** 54,114 bytes = **30,923 CJK14 characters** (payload sha256
-  `f3092c99...`, pinned by `tools/test_nnue_emit_b64_header.py`).
-- **Error.** The integer engine is 4.73 mean / 164 max eval units from the
-  float net on 20,000 positions whatever the payload; with this payload the
-  bot is at 4.72 / 163 (the dequantized generator alone: 0.91 / 61). A
+- **Size.** 54,159 bytes = **30,948 CJK14 characters** (payload sha256
+  `4ba93b1a...`, pinned by `tools/test_nnue_emit_b64_header.py`).
+- **Error.** For r12_M2 on 20,000 positions, the bot's integer eval is 5.80
+  mean / 166 max eval units from the float net (the unquantized export in the
+  same integer engine: 5.63 / 211; the dequantized generator alone, in float:
+  1.08 / 45). B64_d5M_57ep's were 4.72 / 163 and 0.91 / 61. A
   29,472-character configuration (enc 14, proj 11, fwd 12, dec 14, con 12,
   dense 14, psqt 14) would free 1,450 characters for about 0.1 more mean
   error, if the headroom is ever needed.
@@ -320,7 +321,7 @@ The committed tests pin the payloads to:
 
 | Payload | Bytes | Characters | Pinned hash |
 | --- | ---: | ---: | --- |
-| NNUE generator | 54,114 | 30,923 | sha256 `f3092c99d4ac9d37...` (`tools/test_nnue_emit_b64_header.py`), plus the 16 baked tables' hashes (`unit_tests.cpp`) |
+| NNUE generator | 54,159 | 30,948 | sha256 `4ba93b1a422c480c...` (`tools/test_nnue_emit_b64_header.py`), plus the 16 baked tables' hashes (`unit_tests.cpp`) |
 | Macro residual | 3,076 | 1,758 | FNV-1a 64 `626e29f3a8d65679` |
 | D16 local evaluator (retired) | 42,855 | 24,489 | FNV-1a 64 `e35e987c17a453cf` |
 
@@ -526,10 +527,10 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 108020 (bundled 196506)
--> cpp_impl/cg_input.cpp 94897
-saved 101609
-cap 5103 left
+cpp_impl/codingame_nnue.cpp 108232 (bundled 196780)
+-> cpp_impl/cg_input.cpp 94922
+saved 101858
+cap 5078 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
@@ -538,16 +539,16 @@ translation unit, not with the readable top-level source.
 Sizes are UTF-16 code units, which is what CodinGame counts. Everything
 outside the three payload literals is ASCII, and every payload character is
 one UTF-16 unit, so the unit count equals Python's `len`. It does not equal
-`wc -c`: each payload character is three UTF-8 bytes, and the file is 187,171
+`wc -c`: each payload character is three UTF-8 bytes, and the file is 187,246
 bytes. The CLI exits with failure when output is 100,000 units or larger.
 
 | Part of `cg_input.cpp` | UTF-16 units |
 | --- | ---: |
 | code (minified engine, NNUE runtime, book reader) | 48,760 |
-| NNUE generator payload | 30,923 |
+| NNUE generator payload | 30,948 |
 | gameplay opening book payload | 13,456 |
 | macro net payload | 1,758 |
-| **total** | **94,897** (5,103 left) |
+| **total** | **94,922** (5,078 left) |
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
@@ -560,7 +561,8 @@ opening book (13,456 payload characters against 4,656) to 90,095, with
 9,905 left. The NNUE (improvement log section 56) replaced the MiniNet's
 24,489 payload characters with the generator's 30,923 and took the HCE and
 MiniNet code out of the bot (50,392 code characters down to 48,760): **94,897,
-with 5,103 left**. Headroom is again worth watching: a smaller NNUE payload
+with 5,103 left**. The r12_M2 payload (section 57) is 25 characters longer:
+**94,922, with 5,078 left**. Headroom is again worth watching: a smaller NNUE payload
 configuration would free about 1,450 (section 3.1), and the two templates the
 bot never instantiates (`evaluate_macro_fast` in the shared `macro_eval.hpp`
 and `b64::evaluate_board`) cost 688.
@@ -591,8 +593,9 @@ python3 tools/nnue_emit_b64_header.py --check
 ```
 
 The shipped header came from
-`python tools/nnue_emit_b64_header.py datasets/nnue2/fast/B64_d5M_57ep_perm.bin --label B64_d5M_57ep`
-with every other option at its default; the emitter's GPTQ calibration reads
+`python tools/nnue_emit_b64_header.py datasets/nnue2/fast/r12_M2_perm.bin --label r12_M2`
+with every other option at its default (the same command on `B64_d5M_57ep_perm.bin` rebuilds the previous
+header byte for byte); the emitter's GPTQ calibration reads
 `datasets/nnue2/d8_a.cfdg`, which is not in the repository.
 
 The macro net has its own emitter (and so does the retired MiniNet,

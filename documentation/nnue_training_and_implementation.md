@@ -1,9 +1,11 @@
 # NNUE training and runtime implementation
 
 Since 2026-09-27 (improvement log section 56) Crossfish's whole evaluation is
-one small NNUE, **B64_d5M_57ep**: a pattern-generator net with 35,243
-parameters, integer and incremental at run time, shared by the local engines
-(`crossfish_dev.hpp`, `crossfish_prev.hpp`) and the CodinGame bot. It replaced
+one small NNUE: a pattern-generator net with 35,243 parameters, integer and
+incremental at run time, shared by the local engines (`crossfish_dev.hpp`,
+`crossfish_prev.hpp`) and the CodinGame bot. The shipped net is **r12_M2**
+(since 2026-09-28, section 57), the same architecture trained on data that the
+NNUE engine labelled itself; the first shipped net was **B64_d5M_57ep**. It replaced
 the hybrid that shipped from round seven: a handcrafted evaluation (HCE) plus
 a D16/H8 MiniNet residual plus a macro residual.
 
@@ -91,6 +93,21 @@ record format and loaders ([eval_data.md](eval_data.md) section 1).
 | V2 (holdout) | 10% of the eval2 games | 482,136 |
 | D8H (holdout) | 1% of the d8 games, never streamed | 1.71M |
 
+**Round twelve (r12_M2, improvement log section 57)** replaced the labels
+with the NNUE's own:
+
+| Set | What | Rows |
+| --- | --- | ---: |
+| eval2, relabelled | the same eval2 positions, labelled by a depth-14 search of the shipped NNUE engine (`datagen label`) | 4.82M |
+| sp13 | NNUE self-play at a fixed depth of 13 (`datagen play ... d13`), same openings and randomisation as d8 | 13.44M |
+| **r12_M2's training set** | relabelled eval2's training games + the first 5M non-SPH sp13 rows | 9.34M |
+| SPH (holdout) | 3% of the sp13 games, never trained on | 402,405 |
+
+The new labels predict game results better than the old ones (V2 log loss
+0.4377 against 0.4593). Replacing the old engine's depth-8 rows with NNUE
+self-play mattered as much as the relabelling: new labels alone gave about
+-5% V2 loss, the self-play rows about another -4%, and +25 Elo more at 20 ms.
+
 Mates are clamped to +/-20,000 in both label sources. The d8 labels come from
 the process that played the moves, so the old free-move loader bug (improvement
 log section 55) cannot reach them. Label with a `datagen` built from an unpatched Dev:
@@ -126,6 +143,31 @@ What the recipe search found (improvement log section 56):
   loses 19 Elo.
 - **Held-out loss did not rank play reliably** here either; every decision
   was made on 20 ms round robins and confirmed at 90 ms.
+
+**r12_M2** used the same model, loss, augmentation, optimizer and length
+(32,490 steps at batch 16,384, lr 1e-2), on round twelve's training set
+(section 3). Its trainer, `gen_r12.py`, imports all of that from
+`gen_nnue.py` unchanged. It adds memory-mapped data mixes and a fixed step
+budget, and it scores V2 with both label sets and SPH every epoch. It lives
+with the round's data tools in `datasets/nnue2/r12/tools/` and is not yet in
+the repository:
+
+```bash
+gen_r12.py train --run r12_M2,64,16x32,1e-2 --e2 new --sp 5000000
+```
+
+- **Loss.** V2 (new labels) -9.6% and SPH -8.5% against B64_d5M_57ep on the
+  same rows.
+- **Chaotic.** A control (M0) that retrained B64_d5M_57ep's exact data and
+  recipe with the targets rounded one bit differently finished 1.7% worse on
+  every holdout. So single-run gaps of 1-2% are weak evidence. Seed-2
+  replicates of the round's candidates landed within 0.1-0.7%.
+- **Twice the steps did not help.** The training loss kept falling past
+  32,490 steps, but the held-out loss did not. At 20 ms, r12_M2 at 64,980
+  steps tied r12_M2 (+1.6 +/- 9.1 head to head), and the same doubling cost
+  the all-self-play mix about 11-16 Elo.
+- **All 13M self-play rows (M3) were no better than 5M (M2).** They were
+  better on SPH, worse on V2, and 2-4 Elo lower at 20 ms.
 
 ## 5. Export and quantization
 
@@ -270,7 +312,14 @@ sparse `nnue.hpp` path, not this net.)
 
 ## 9. Strength and speed
 
-Official 90 ms SPRT against the hybrid (the mate-window freeze), two pooled
+**r12_M2** (improvement log section 57) against B64_d5M_57ep:
+- the official 90 ms SPRT: **N=504, 173-259-72, +70.6 +/- 19.7 Elo**, LLR +3.03 (H0=0, H1=+5), 0 timeouts;
+- 3,000 fixed-length games of the two CodinGame paste files: +52.5 +/- 7.0;
+- round twelve's 3,000-game match on the pre-NNUE search: +57.7 +/- 7.6.
+
+Same architecture, so the same speed (Prev 14.63M, Dev 14.42M nodes/s in the SPRT header).
+
+**B64_d5M_57ep**, the first NNUE: official 90 ms SPRT against the hybrid (the mate-window freeze), two pooled
 shards: **N=420, 296-106-18, +276.6 +/- 30.4 Elo**, LLR +3.00 (H0=0, H1=+5),
 0 timeouts. Against the hybrid it runs at 58-62% of the nodes per second
 (`bench_ab nodes 400 9`), needs 87% of the nodes to reach depth 9, completes
