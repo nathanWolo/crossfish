@@ -16,6 +16,138 @@
 // hce_mb_flags, and stop updating the MiniNet super_acc sum. Since the NNUE
 // replaced HCE + MiniNet nothing on the search path reads them, and make no
 // longer changes the scores or codes. speed_ab +3.07% [+1.67, +4.51] (n=40).
+// Bundled with a Dev-local forward pass (dev_nnue::eval_v5, below) and a
+// 2^15-entry 8-byte eval cache (DevStack). Bundle vs Prev: speed_ab +4.54%
+// [+2.66, +6.49] (n=40), walk 10 40 90 +3.5 / +9.5 / +5.6% nodes.
+// Dev-only NNUE forward pass (experiment). Bit-identical to b64::eval_avx
+// (checked on 200,000 captured search evaluations): the 64 activation pairs
+// all land in one mask word, so one ctz loop, split over two accumulator
+// chains; layer 2 broadcasts its input pairs from the packed register rather
+// than through a stack round trip. Kernel bench: -13% per evaluation.
+namespace dev_nnue {
+using namespace b64;
+static int eval_v5(const int16_t *us, const int16_t *them, const int16_t *cu, const int16_t *ct,
+                   const int16_t *fu, const int16_t *ft, int32_t psd) {
+    const int16_t *const rr[6] = {us, them, cu, ct, fu, ft};
+    alignas(32) int16_t act[2 * A]; uint64_t mask = 0;
+    const __m256i zero = _mm256_setzero_si256(), qa = _mm256_set1_epi16((int16_t)(1 << QA));
+    for (int v = 0; v < 2; v++) for (int j = 0; j < 4; j++) {
+        __m256i y = _mm256_add_epi16(_mm256_add_epi16(_mm256_load_si256((const __m256i *)(rr[v] + 16 * j)),
+                                     _mm256_load_si256((const __m256i *)(rr[2 + v] + 16 * j))),
+                                     _mm256_load_si256((const __m256i *)(rr[4 + v] + 16 * j)));
+        y = _mm256_min_epi16(_mm256_max_epi16(y, zero), qa);
+        _mm256_store_si256((__m256i *)(act + v * A + 16 * j), y);
+        mask |= (uint64_t)(uint32_t)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpgt_epi32(y, zero))) << (v * 32 + j * 8);
+    }
+    __m256i s0 = _mm256_load_si256((const __m256i *)B1), s1 = _mm256_load_si256((const __m256i *)(B1 + 8));
+    const int32_t *act32 = (const int32_t *)act;
+    __m256i u0 = _mm256_setzero_si256(), u1 = _mm256_setzero_si256();
+    while (mask) {
+        const int p = __builtin_ctzll(mask); mask &= mask - 1;
+        const __m256i a = _mm256_set1_epi32(act32[p]); const __m256i *wp = (const __m256i *)W1p[p];
+        s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(a, wp[0])); s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(a, wp[1]));
+        if (!mask) break;
+        const int q = __builtin_ctzll(mask); mask &= mask - 1;
+        const __m256i c = _mm256_set1_epi32(act32[q]); const __m256i *wq = (const __m256i *)W1p[q];
+        u0 = _mm256_add_epi32(u0, _mm256_madd_epi16(c, wq[0])); u1 = _mm256_add_epi32(u1, _mm256_madd_epi16(c, wq[1]));
+    }
+    s0 = _mm256_add_epi32(s0, u0); s1 = _mm256_add_epi32(s1, u1);
+    const __m128i sh1 = _mm_cvtsi32_si128(H1_SHIFT), sh2 = _mm_cvtsi32_si128(H2_SHIFT);
+    const __m256i ha = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(s0, zero), _mm256_set1_epi32(H1MAX)), _mm256_set1_epi32(H1_ROUND)), sh1);
+    const __m256i hb = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(s1, zero), _mm256_set1_epi32(H1MAX)), _mm256_set1_epi32(H1_ROUND)), sh1);
+    const __m256i hp = _mm256_permute4x64_epi64(_mm256_packus_epi32(ha, hb), 0xD8);
+    __m256i t[L2 / 8];
+    for (int r = 0; r < L2 / 8; r++) t[r] = _mm256_load_si256((const __m256i *)(B2 + 8 * r));
+    for (int e = 0; e < L1 / 2; e++) {
+        const __m256i a = _mm256_permutevar8x32_epi32(hp, _mm256_set1_epi32(e));
+        const __m256i *wp = (const __m256i *)W2p[e];
+        for (int r = 0; r < L2 / 8; r++) t[r] = _mm256_add_epi32(t[r], _mm256_madd_epi16(a, _mm256_load_si256(wp + r)));
+    }
+    __m256i o = _mm256_setzero_si256();
+    for (int r = 0; r < L2 / 8; r++) {
+        const __m256i a = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(t[r], zero), _mm256_set1_epi32(H2MAX)), _mm256_set1_epi32(H2_ROUND)), sh2);
+        o = _mm256_add_epi32(o, _mm256_mullo_epi32(a, _mm256_load_si256((const __m256i *)(WO + 8 * r))));
+    }
+    __m128i o4 = _mm_add_epi32(_mm256_castsi256_si128(o), _mm256_extracti128_si256(o, 1));
+    o4 = _mm_add_epi32(o4, _mm_shuffle_epi32(o4, 0x4E));
+    o4 = _mm_add_epi32(o4, _mm_shuffle_epi32(o4, 0xB1));
+    return finish((int64_t)_mm_cvtsi128_si32(o4) + BO, psd);
+}
+template <class Board>
+__attribute__((always_inline)) inline int eval_with(const Board &b, int stm, int c, const int16_t *us,
+                                                    const int16_t *them, int32_t psd) {
+    const int16_t *fu = ZERO, *ft = ZERO;
+    psd += (int32_t)CONP[c] - CONP[10 + c];
+    if (c < 9) {
+        const int t0 = TERN[b.mini_boards[c].markers[0]], t1 = TERN[b.mini_boards[c].markers[1]];
+        const int ps = stm ? t1 + 2 * t0 : t0 + 2 * t1;
+        const int pt = stm ? t0 + 2 * t1 : t1 + 2 * t0;
+        fu = F[ps];
+        ft = F[pt];
+        psd += FP[ps] - FP[pt];
+    }
+    return eval_v5(us, them, CON[c], CON[10 + c], fu, ft, psd);
+}
+struct DevStack : b64::Stack {
+    // Eval cache with 8-byte entries: the same 256 KiB holds 2^15 entries
+    // instead of 2^14. The low 15 key bits index it and the high 32 are the
+    // tag, so a false hit needs two positions agreeing on 47 key bits.
+    static constexpr int C8_BITS = 15;
+    static constexpr uint64_t C8_MASK = (1u << C8_BITS) - 1;
+    struct C8 {
+        uint32_t tag;
+        int32_t eval;
+    };
+    C8 c8[1 << C8_BITS];
+    DevStack() { std::memset(c8, 0, sizeof(c8)); }
+    template <typename Board>
+    __attribute__((always_inline)) void on_make(const Board &b, int mb, int sq, int stm, int decided, int before_stm,
+                                                uint64_t parent_key) {
+        const int before_other = b.mini_boards[mb].markers[stm ^ 1];
+        b64::Dirty &d = dirty[b.n_moves + 1];
+        d.mb = (uint8_t)mb;
+        d.sq = (uint8_t)sq;
+        d.stm = (uint8_t)stm;
+        d.decided = (int8_t)decided;
+        d.before[stm] = (uint16_t)before_stm;
+        d.before[stm ^ 1] = (uint16_t)before_other;
+        d.pkey = parent_key;
+        d.ckey = b.tt_hash;
+        _mm_prefetch((const char *)&c8[b.tt_hash & C8_MASK], _MM_HINT_T0);
+        const int ts = TERN[before_stm], to = TERN[before_other];
+        if (decided < 0) {
+            const int ts2 = ts + POW3_SQ[sq];
+            prefetch_row(T[mb][ts2 + 2 * to]);
+            prefetch_row(T[mb][to + 2 * ts2]);
+        }
+        const int c = b.active_board;
+        if (c < 9) {
+            const int t0 = TERN[b.mini_boards[c].markers[0]], t1 = TERN[b.mini_boards[c].markers[1]];
+            prefetch_row(F[t0 + 2 * t1]);
+            prefetch_row(F[t1 + 2 * t0]);
+        }
+    }
+    template <typename Board>
+    __attribute__((always_inline)) int evaluate(const Board &b, int constraint) {
+        const int cur = b.n_moves;
+        if (pos_key[cur] != b.tt_hash) sync(b);
+        const int stm = cur & 1;
+        const Entry &e = acc[cur];
+        return eval_with(b, stm, constraint, e.v[stm], e.v[stm ^ 1], e.ps[stm] - e.ps[stm ^ 1]);
+    }
+    template <typename Board>
+    __attribute__((always_inline)) int evaluate_keyed(const Board &b, int constraint, uint64_t key) {
+        C8 &ce = c8[key & C8_MASK];
+        const uint32_t tag = (uint32_t)(key >> 32);
+        if (key && ce.tag == tag) return ce.eval;
+        const int e = evaluate(b, constraint);
+        ce.tag = tag;
+        ce.eval = e;
+        return e;
+    }
+};
+}  // namespace dev_nnue
+
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -1232,7 +1364,7 @@ class CrossfishDev {
             NnueLoadOnce() { crossfish_nnue_load_once(); }
         } nnue_load_once;
         // The NNUE's lazy accumulator stack and eval cache (nnue_b64.hpp).
-        b64::Stack fnnue_stack;
+        dev_nnue::DevStack fnnue_stack;
 
         void make_move_fast(FastBoard &board, const Move &move) {
             const int stm = board.n_moves & 1;
