@@ -10,17 +10,16 @@
 #include <mutex>
 #include <vector>
 
-// Experiment base, frozen 2026-09-27: identical to crossfish_prev.hpp apart
+// Experiment base, frozen 2026-09-29: identical to crossfish_prev.hpp apart
 // from this comment and the class name. Edit only this file while testing.
-// The round-eleven search with the mate-window pruning fix (section 51) and
-// the NNUE evaluation (section 56): the B-64 pattern-generator NNUE
-// B64_d5M_57ep (nnue_b64.hpp) is the stand-pat and the static eval, in place
-// of HCE + D16 MiniNet + macro residual; the depth-1 reverse-futility MiniNet
-// prefilter is gone. The HCE, MiniNet and macro code stays for the tools that
-// still read it (datagen's HCE labels, test_bots' HCE tuning and dumps, the
-// macro correction history's prior). codingame_nnue.cpp carries the same
-// wiring (make -C cpp_impl port-check). Since 2026-09-28 the payload is net
-// r12_M2 (section 57), same architecture.
+// Frozen speed round thirteen on 2026-09-29 (section 58), on the r12_M2 NNUE
+// freeze (sections 56-57): make/unmake drop the dead HCE and MiniNet upkeep,
+// nnue_b64.hpp's forward pass and 8-byte 2^15 eval cache (all three
+// tree-identical), and RFP / futility margins of 25 / 20 pawns before move 28
+// (50 / 80 after). Official 90 ms SPRT vs the r12_M2 freeze: N=3684,
+// 768-2243-673, penta 41/377/907/480/37, +8.96 +/- 6.31 Elo, LLR +3.09
+// (H0=0, H1=+5) PASS; timeouts Prev 35 / Dev 33.
+
 #ifndef CROSSFISH_TTFLAG
 #define CROSSFISH_TTFLAG
 enum TTFlag { TT_EXACT = 0, TT_UPPER = 1, TT_LOWER = 2 };
@@ -375,19 +374,13 @@ class CrossfishDev {
                 (board.macro_key[0] & clear) | (CLS[0][state] << shift);
             board.macro_key[1] =
                 (board.macro_key[1] & clear) | (CLS[1][state] << shift);
-            // Only ever called on an undecided slot, whose class-0 term is
-            // exactly zero, so adding the new class is the whole update.
-            add_super(board, 0, mb, (int)CLS[0][state]);
-            add_super(board, 1, mb, (int)CLS[1][state]);
+            // super_acc fed only the MiniNet eval, which the NNUE replaced.
         }
 
         template <typename Board>
         static void set_macro_key_mb(Board &, int, int) {}
 
         static void clear_macro_key_mb(FastBoard &board, int mb) {
-            const uint32_t shift = (uint32_t)(2 * mb);
-            sub_super(board, 0, mb, (int)((board.macro_key[0] >> shift) & 3));
-            sub_super(board, 1, mb, (int)((board.macro_key[1] >> shift) & 3));
             uint32_t clear = ~(3u << (uint32_t)(2 * mb));
             board.macro_key[0] &= clear;
             board.macro_key[1] &= clear;
@@ -701,6 +694,15 @@ class CrossfishDev {
         static constexpr int RFP_PAWNS = 50;
 #endif
         static constexpr int FP_PAWNS = 80;
+        // Before move 28 the NNUE's static eval almost never misjudges a
+        // node by a margin's worth (instrumented depth-9 searches with
+        // pruning off: RFP fails <1.2% of the time at 20 pawns, a futility-
+        // pruned quiet move raises alpha <0.2% at 20), so early nodes prune
+        // on much tighter margins; later the error does not shrink with the
+        // margin, and the shipped margins stay.
+        static constexpr int EARLY_MARGIN_MOVES = 28;
+        static constexpr int RFP_EARLY_PAWNS = 25;
+        static constexpr int FP_EARLY_PAWNS = 20;
         static constexpr int QDELTA_PAWNS = 350;
         static constexpr int FREE_MOVE_PAWNS = 30;
 #ifdef CROSSFISH_OPP_LATENT_CAPTURE_BONUS_VALUE
@@ -1252,15 +1254,12 @@ class CrossfishDev {
             const int mb_bit = 1 << mb;
             const int before = board.mini_boards[mb].markers[stm];
             MoveUndo &u = move_undo[board.n_moves];
+            // With the NNUE eval, make changes neither the HCE scores nor the
+            // MiniNet codes and nothing on the search path reads them, so
+            // only what make changes and search reads is recorded.
             u.tt_hash = board.tt_hash;
-            u.hce_local = hce_local_score;
-            u.hce_global = hce_global_score;
             u.tiar_maps[0] = hce_tiar_maps[0];
             u.tiar_maps[1] = hce_tiar_maps[1];
-            u.mb_score = hce_mb_scores[mb];
-            u.mb_flags = hce_mb_flags[mb];
-            u.code[0] = board.mini_code[0][mb];
-            u.code[1] = board.mini_code[1][mb];
             u.active = board.active_board;
             u.terminal = board.terminal;
             if (board.n_moves > 0) {
@@ -1308,7 +1307,6 @@ class CrossfishDev {
                 const int nn_flags = (board.out_of_play & nn_bit) ? 0
                     : fast_tiar_flags[(board.mini_boards[mb].markers[0] << 9)
                                       | board.mini_boards[mb].markers[1]];
-                hce_mb_flags[mb] = (uint8_t)nn_flags;
                 hce_tiar_maps[0] = (hce_tiar_maps[0] & ~nn_bit) | ((nn_flags & 1) << mb);
                 hce_tiar_maps[1] = (hce_tiar_maps[1] & ~nn_bit) | (((nn_flags >> 1) & 1) << mb);
             }
@@ -1329,16 +1327,10 @@ class CrossfishDev {
             board.mini_boards[mb].markers[board.n_moves & 1] &=
                 ~(1 << move.square);
             board.tt_hash = u.tt_hash;
-            board.mini_code[0][mb] = u.code[0];
-            board.mini_code[1][mb] = u.code[1];
             board.active_board = u.active;
             board.terminal = u.terminal;
-            hce_local_score = u.hce_local;
-            hce_global_score = u.hce_global;
             hce_tiar_maps[0] = u.tiar_maps[0];
             hce_tiar_maps[1] = u.tiar_maps[1];
-            hce_mb_scores[mb] = u.mb_score;
-            hce_mb_flags[mb] = u.mb_flags;
         }
 
         template <typename Board>
@@ -1799,13 +1791,17 @@ class CrossfishDev {
                 // Either gives false fail-lows in the aspiration windows that
                 // follow a mate score.
                 if (beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
-                    int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
+                    int reverse_futility_margin =
+                        (board.n_moves < EARLY_MARGIN_MOVES ? RFP_EARLY_PAWNS : RFP_PAWNS)
+                        * eval_weights[PAWN_IDX];
                     if (static_eval - reverse_futility_margin * depth >= beta) {
                         return beta;
                     }
                 }
 
-                int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
+                int futility_margin =
+                    (board.n_moves < EARLY_MARGIN_MOVES ? FP_EARLY_PAWNS : FP_PAWNS)
+                    * eval_weights[PAWN_IDX];
                 can_futility_prune = alpha > -CORR_MATE_BOUND && alpha < CORR_MATE_BOUND
                     && (static_eval + futility_margin * depth <= alpha);
             }

@@ -479,6 +479,24 @@ procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
+On 2026-09-29 speed round thirteen passed the official 90 ms SPRT against the
+r12_M2 freeze: three tree-identical speedups (make/unmake stop maintaining the
+dead HCE and MiniNet state, a faster NNUE forward pass, an 8-byte 2^15 eval
+cache; +4.5% on `speed_ab`) plus tighter reverse-futility and futility margins
+before move 28, where instrumented searches show the NNUE's static eval almost
+never misjudges a node by a margin's worth:
+
+```text
+90 ms: N 3684 W 768 D 2243 L 673
+Penta: 41 / 377 / 907 / 480 / 37
+Elo diff: +8.96 +/- 6.31
+LLR: +3.09 (H0=0, H1=+5) — PASS
+Timeouts: Prev=35 Dev=33
+```
+
+See section 58 of the improvement log. The paste file below is now 95,285
+characters (4,715 left).
+
 The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
 search with the mate-window pruning fix, the pattern-generator NNUE as its
 whole evaluation (net r12_M2 since 2026-09-28), the CodinGame-compiler
@@ -535,6 +553,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-09-29 | Speed round thirteen (dead HCE upkeep, forward pass, 8-byte eval cache) + early-game RFP/futility margins | N=3684, 768-2243-673, +8.96 ± 6.31, LLR +3.09 PASS | §58 |
 | 2026-09-28 | NNUE net r12_M2: round twelve's self-labelled data and self-play, same architecture | N=504, 173-259-72, +70.58 ± 19.66, LLR +3.03 PASS; paste files, fixed-length N=3000: +52.5 ± 7.0 | §57 |
 | 2026-09-27 | NNUE evaluation: the B64_d5M_57ep pattern generator replaces HCE + MiniNet + macro | N=420, 296-106-18, +276.63 ± 30.44, LLR +3.00 PASS (two pooled shards); fixed-length N=3000: +267.37 ± 11.86 | §56 |
 | 2026-09-24 | uttt.ai opening book | paired book value vs the round-six engine +72.0 (full-coverage book +26.3), same 500 openings | §54 |

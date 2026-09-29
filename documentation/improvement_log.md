@@ -3241,3 +3241,115 @@ about +52, in line with round twelve's +57.7. `unit_tests.cpp` and `tools/test_n
 pin the new payload, scales and table hashes, and the new fixed-position
 evals. `tools/cg_gate/eval_change.json` (section 56's declaration against the
 pre-NNUE paste file) is removed as its base no longer applies.
+
+## 58. Speed round thirteen, and margins the NNUE made too loose (29 September 2026)
+
+Speed hill-climb on the r12_M2 freeze (section 57), on a 4-core cloud VM:
+SPRTs at 3 threads with the fourth core idle, screens against the speed bundle
+alone. Speed candidates had to compute the bit-identical tree (`bench_ab equiv`
+IDENTICAL at depths 7, 8 and 11) and were timed with `tools/speed_ab.py`
+(paired, pinned, 95% CI). Search candidates were screened for 2,000 games at
+90 ms, then stacked for the official SPRT.
+
+### Accepted: three tree-identical speedups (+4.5%)
+
+- **Drop the dead HCE and MiniNet upkeep.** Since the NNUE replaced HCE +
+  MiniNet, nothing on the search path reads the HCE scores, MiniNet codes,
+  `hce_mb_flags` or the MiniNet super-accumulator, yet make still updated them
+  and unmake restored them. The undo record now holds only the hash, the threat
+  maps, the active board, the terminal state and the decided state.
+  `speed_ab` +3.07% [+1.67, +4.51]. (The CodinGame file never had this upkeep.)
+- **Forward pass** (`nnue_b64.hpp` `eval_avx`). All 64 activation pairs land
+  in one mask word (A = 64), so layer 1 is one ctz loop over the nonzero pairs
+  (about 28 of 64), split over two accumulator chains. Layer 2 broadcasts its
+  input pairs straight from the packed register with `permutevar8x32` instead
+  of a store and reload. Bit-identical on 200,000 captured search evaluations;
+  an interleaved kernel bench put it at -13% per evaluation; +1.78% on top of
+  the first.
+- **8-byte eval cache.** 32-bit tag plus eval instead of a 64-bit key, so the
+  same 256 KiB holds 2^15 entries instead of 2^14 (a false hit needs 47 key
+  bits to agree). +1.03% on `sat`, about +2% on `walk`.
+
+The three together: `speed_ab` +4.54% [+2.66, +6.49] (n=40), `walk 10 40 90`
++3.5 / +9.5 / +5.6% nodes. Built with CodinGame's flags, the kernel and
+cache alone (same tree, same checksum) run a depth-13 `cg_selfcheck` in 0.387 s
+against 0.434 s.
+
+An official SPRT of the speed bundle alone was cut off at N=732 by a container
+restart (-6.2 +/- 14.1, LLR -0.84: undecided). A 4% speed gain is worth about
+the H1 bar, too close to pass cheaply, so the round looked for Elo as well.
+
+### Rejected speed candidates
+
+- **Four-way eval cache** (2^13 buckets of four 8-byte entries): +0.87%
+  [-1.11, +2.93].
+- **Static eval stored in the TT entry** (32-bit check key, the freed bytes
+  hold the raw eval; search and `search_leaf` reuse it on a hit): +16M
+  simulated instructions and `speed_ab` -1.43% [-2.73, -0.11]. The eval cache
+  already catches almost every repeat, so there are no evaluations left to save.
+- **Lazy static eval:** every static eval the search computes is read (RFP,
+  futility, or the correction-history update), so there is none to skip.
+
+### The margins: measuring what they cost
+
+RFP (50 pawns x depth), futility (80) and the qsearch delta (350) date from
+the HCE era; nobody retuned them when the NNUE (+276) replaced it. An
+instrumented copy disabled RFP and futility and searched 30 self-play games
+(random first 6 plies, then the engine's own depth-9 moves with 1-in-8 random),
+logging every non-PV node (6.5M) and every quiet move that futility would
+consider (13.4M).
+
+Pooled, the error barely moves with the margin: at depth 1 an RFP margin of 20
+pawns fires on 57% of nodes with 2.2% wrong (the full search fails low), 50
+pawns on 41% with 1.7% wrong. Split by game phase, the error falls steeply
+with the margin once the phase is fixed; the pooled curve is flat only
+because wider margins shift the mix toward late nodes:
+
+| Nodes | RFP 20: fire / wrong | RFP 50 | futility 20: pruned / raise alpha | futility 80 |
+| --- | --- | --- | --- | --- |
+| forced, moves 16-28, depth 1 | 61% / 1.2% | 43% / 0.2% | 63% / 0.18% | 25% / 0.02% |
+| forced, moves 40+, depth 1 | 59% / 6.7% | 55% / 5.2% | 77% / 1.94% | 66% / 1.32% |
+| forced, moves 40+, depth 3 | 48% / 10.8% | 38% / 8.2% | 67% / 1.90% | 39% / 1.30% |
+
+Before move 28 the static eval almost never misjudges a node by a margin's
+worth; from move 40 on it misjudges 3-10% of pruned nodes at any margin.
+Free-move nodes need wider RFP margins than forced ones (at a 25-50 pawn gap,
+27% wrong against 3%).
+
+| Candidate (screen vs the speed bundle, 90 ms) | Result |
+| --- | --- |
+| RFP 25 everywhere | N=2000, +2.4 +/- 8.7 |
+| Futility 30 everywhere | stopped at N=144, -19 +/- 27 (the phase data argues against it) |
+| **RFP 25 / futility 20 before move 28, 50 / 80 after** | N=2000, +4.5 +/- 8.6 |
+
+### Late-game HCE (queued idea, offline only)
+
+Switching from the NNUE to the from-scratch HCE (cheap with few live squares)
+once a node has at most K empty squares on undecided miniboards. At 90 ms the
+current search already proves the result of every position with at most 30
+such squares (136 of 136, depth 46). It proves 59% at 30-40 and 13% at 40-50,
+and K = 20, 30 or 40 does not raise either figure despite about 30% more
+nodes. On 141 positions (30-45 squares) that a 3-second search solves,
+neither the bundle nor K = 30 played a single move that loses the proven
+result. Not game-tested; any gain would have to come from the unsolved
+positions.
+
+### Result
+
+Official 90 ms SPRT, Dev = the speed bundle + early margins, Prev = the r12_M2
+freeze, 3 threads on the cloud VM:
+
+```text
+N 3684  W 768 / D 2243 / L 673
+Penta 41 / 377 / 907 / 480 / 37
++8.96 +/- 6.31 Elo
+LLR +3.09 (H0=0, H1=+5) — PASS
+Timeouts: Prev 35 / Dev 33 (host noise: max replies 146 / 218 ms on both sides)
+```
+
+**Freeze.** The forward pass and the 8-byte cache moved from a Dev-local copy
+into `nnue_b64.hpp` (Dev against the SPRT-passed commit: IDENTICAL at depths
+7, 8 and 11), so Dev, Prev and the CodinGame file share them. Prev is Dev
+renamed. `codingame_nnue.cpp` carries the early margins; `make port-check`
+IDENTICAL at depths 5, 7 and 9; `make cg-speed` checksums match at -O3 and
+with CodinGame's flags; `cg_input.cpp` is 95,285 characters (4,715 left).
