@@ -12,6 +12,10 @@
 
 // Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
 // from this comment and the class name. Edit only this file while testing.
+// Candidate under test (not yet SPRT-gated): reverse-futility margins only
+// tighten (rfp_pawns): unless the opponent holds a live global two-in-a-row,
+// 20 / 35 pawns at >=60 / 45-59 empty squares on undecided miniboards, never
+// above the move-number rule. Futility is unchanged.
 // Frozen 2026-09-30 (section 59): futility margins only tighten
 // (fp_pawns): unless the side to move holds a live global two-in-a-row,
 // 15 / 20 / 50 pawns at >=60 / 45-59 / 30-44 empty squares on undecided
@@ -1625,6 +1629,23 @@ class CrossfishDev {
             }
             return false;
         }
+        // Reverse-futility margin per node, the same survey (section 59): with
+        // no live global two-in-a-row of the opponent, 0.2-1% of prunes are
+        // wrong at these margins while the board is open. Only tightens.
+        static __attribute__((always_inline)) int rfp_pawns(const FastBoard &board) {
+            const int base = board.n_moves < EARLY_MARGIN_MOVES ? RFP_EARLY_PAWNS : RFP_PAWNS;
+            const int us = board.n_moves & 1;
+            const int blockers = board.mini_board_states[us] | board.mini_board_states[2];
+            if (global_threat(board.mini_board_states[us ^ 1], blockers)) return base;
+            int empties = 0;
+            for (int live = (~board.out_of_play) & 511; live; live &= live - 1) {
+                const int mb = __builtin_ctz(live);
+                empties += __builtin_popcount(
+                    ~(board.mini_boards[mb].markers[0] | board.mini_boards[mb].markers[1]) & 511);
+            }
+            const int open = empties >= 60 ? 20 : empties >= 45 ? 35 : base;
+            return open < base ? open : base;
+        }
         static __attribute__((always_inline)) int fp_pawns(const FastBoard &board) {
             const int base = board.n_moves < EARLY_MARGIN_MOVES ? FP_EARLY_PAWNS : FP_PAWNS;
             const int us = board.n_moves & 1;
@@ -1829,9 +1850,7 @@ class CrossfishDev {
                 // Either gives false fail-lows in the aspiration windows that
                 // follow a mate score.
                 if (beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
-                    int reverse_futility_margin =
-                        (board.n_moves < EARLY_MARGIN_MOVES ? RFP_EARLY_PAWNS : RFP_PAWNS)
-                        * eval_weights[PAWN_IDX];
+                    int reverse_futility_margin = rfp_pawns(board) * eval_weights[PAWN_IDX];
                     if (static_eval - reverse_futility_margin * depth >= beta) {
                         return beta;
                     }
