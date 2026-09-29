@@ -957,6 +957,11 @@ class CrossfishDev {
         static constexpr int ASP_PAWNS = 40;
         static constexpr int RFP_PAWNS = 50;
         static constexpr int FP_PAWNS = 80;
+        // Tighter margins before move 28, where the static eval rarely
+        // misjudges a node by a margin's worth (section 58).
+        static constexpr int EARLY_MARGIN_MOVES = 28;
+        static constexpr int RFP_EARLY_PAWNS = 25;
+        static constexpr int FP_EARLY_PAWNS = 20;
         static constexpr int QDELTA_PAWNS = 350;
         // Random-play MiniNet residuals reached ~4500; slack for search positions.
         static constexpr int MINI_MAX = 8000;
@@ -1682,13 +1687,17 @@ class CrossfishDev {
                 // Either gives false fail-lows in the aspiration windows that
                 // follow a mate score.
                 if (beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
-                    int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
+                    int reverse_futility_margin =
+                        (board.n_moves < EARLY_MARGIN_MOVES ? RFP_EARLY_PAWNS : RFP_PAWNS)
+                        * eval_weights[PAWN_IDX];
                     if (static_eval - reverse_futility_margin * depth >= beta) {
                         return beta;
                     }
                 }
 
-                int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
+                int futility_margin =
+                    (board.n_moves < EARLY_MARGIN_MOVES ? FP_EARLY_PAWNS : FP_PAWNS)
+                    * eval_weights[PAWN_IDX];
                 can_futility_prune = alpha > -CORR_MATE_BOUND && alpha < CORR_MATE_BOUND
                     && (static_eval + futility_margin * depth <= alpha);
             }

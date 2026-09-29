@@ -40,7 +40,7 @@
 
 namespace b64 {
 
-constexpr int A = 64, W = 65, E = 32, L1 = 16, L2 = 32, NPAT = 19683, MAXPLY = 96, CACHE_BITS = 14;
+constexpr int A = 64, W = 65, E = 32, L1 = 16, L2 = 32, NPAT = 19683, MAXPLY = 96, CACHE_BITS = 15;
 constexpr int QA = B64_QA, QPS = B64_QPS, QB = B64_QB, Q2 = B64_Q2, QO = B64_QO;
 constexpr int H1BITS = QA + QB < 14 ? QA + QB : 14, H1_SHIFT = QA + QB - H1BITS;
 constexpr int H2BITS = H1BITS + Q2 < 15 ? H1BITS + Q2 : 15, H2_SHIFT = H1BITS + Q2 - H2BITS;
@@ -276,63 +276,50 @@ __attribute__((always_inline)) inline int finish(int64_t out, int32_t psd) {
 
 // AVX2 head: us/them stored accumulators, cu/ct constraint rows, fu/ft forced-board rows (ZERO on a
 // free move), psd the PSQT difference (stm - other).
+// The 64 activation pairs all land in one mask word, so layer 1 is one ctz
+// loop over the nonzero pairs, split over two accumulator chains; layer 2
+// broadcasts its input pairs from the packed register rather than through a
+// stack round trip (speed round 13: -13% per evaluation, bit-identical).
 static int eval_avx(const int16_t *us, const int16_t *them, const int16_t *cu, const int16_t *ct,
                     const int16_t *fu, const int16_t *ft, int32_t psd) {
-    alignas(32) int16_t act[2 * A];
-    uint64_t mask[2] = {0, 0};
-    const __m256i zero = _mm256_setzero_si256();
-    const __m256i qa = _mm256_set1_epi16((int16_t)(1 << QA));
-    for (int v = 0; v < 2; v++) {
-        const int16_t *acc = v ? them : us, *c = v ? ct : cu, *f = v ? ft : fu;
-        int16_t *out = act + v * A;
-        for (int j = 0; j < A / 16; j++) {
-            __m256i x = _mm256_add_epi16(_mm256_add_epi16(_mm256_load_si256((const __m256i *)(acc + 16 * j)),
-                                                          _mm256_load_si256((const __m256i *)(c + 16 * j))),
-                                         _mm256_load_si256((const __m256i *)(f + 16 * j)));
-            x = _mm256_min_epi16(_mm256_max_epi16(x, zero), qa);
-            _mm256_store_si256((__m256i *)(out + 16 * j), x);
-            const int pb = v * (A / 2) + j * 8;  // first activation pair of this vector
-            mask[pb >> 6] |= (uint64_t)(uint32_t)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpgt_epi32(x, zero)))
-                             << (pb & 63);
-        }
+    const int16_t *const rr[6] = {us, them, cu, ct, fu, ft};
+    alignas(32) int16_t act[2 * A]; uint64_t mask = 0;
+    const __m256i zero = _mm256_setzero_si256(), qa = _mm256_set1_epi16((int16_t)(1 << QA));
+    for (int v = 0; v < 2; v++) for (int j = 0; j < 4; j++) {
+        __m256i y = _mm256_add_epi16(_mm256_add_epi16(_mm256_load_si256((const __m256i *)(rr[v] + 16 * j)),
+                                     _mm256_load_si256((const __m256i *)(rr[2 + v] + 16 * j))),
+                                     _mm256_load_si256((const __m256i *)(rr[4 + v] + 16 * j)));
+        y = _mm256_min_epi16(_mm256_max_epi16(y, zero), qa);
+        _mm256_store_si256((__m256i *)(act + v * A + 16 * j), y);
+        mask |= (uint64_t)(uint32_t)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpgt_epi32(y, zero))) << (v * 32 + j * 8);
     }
-    __m256i s[L1 / 8];
-    for (int r = 0; r < L1 / 8; r++) s[r] = _mm256_load_si256((const __m256i *)(B1 + 8 * r));
+    __m256i s0 = _mm256_load_si256((const __m256i *)B1), s1 = _mm256_load_si256((const __m256i *)(B1 + 8));
     const int32_t *act32 = (const int32_t *)act;
-    for (int w = 0; w < 2; w++) {
-        uint64_t m = mask[w];
-        while (m) {
-            const int p = w * 64 + __builtin_ctzll(m);
-            m &= m - 1;
-            const __m256i a = _mm256_set1_epi32(act32[p]);
-            const __m256i *wp = (const __m256i *)W1p[p];
-            for (int r = 0; r < L1 / 8; r++) s[r] = _mm256_add_epi32(s[r], _mm256_madd_epi16(a, _mm256_load_si256(wp + r)));
-        }
+    __m256i u0 = _mm256_setzero_si256(), u1 = _mm256_setzero_si256();
+    while (mask) {
+        const int p = __builtin_ctzll(mask); mask &= mask - 1;
+        const __m256i a = _mm256_set1_epi32(act32[p]); const __m256i *wp = (const __m256i *)W1p[p];
+        s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(a, wp[0])); s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(a, wp[1]));
+        if (!mask) break;
+        const int q = __builtin_ctzll(mask); mask &= mask - 1;
+        const __m256i c = _mm256_set1_epi32(act32[q]); const __m256i *wq = (const __m256i *)W1p[q];
+        u0 = _mm256_add_epi32(u0, _mm256_madd_epi16(c, wq[0])); u1 = _mm256_add_epi32(u1, _mm256_madd_epi16(c, wq[1]));
     }
+    s0 = _mm256_add_epi32(s0, u0); s1 = _mm256_add_epi32(s1, u1);
     const __m128i sh1 = _mm_cvtsi32_si128(H1_SHIFT), sh2 = _mm_cvtsi32_si128(H2_SHIFT);
-    alignas(32) int32_t hp[L1 / 2];  // h1 as int16 pairs (2e, 2e+1)
-    for (int r = 0; r < L1 / 16; r++) {
-        const __m256i a = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(s[2 * r], zero),
-                                                                             _mm256_set1_epi32(H1MAX)),
-                                                            _mm256_set1_epi32(H1_ROUND)), sh1);
-        const __m256i b = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(s[2 * r + 1], zero),
-                                                                             _mm256_set1_epi32(H1MAX)),
-                                                            _mm256_set1_epi32(H1_ROUND)), sh1);
-        // packus interleaves the 128-bit halves; permute 0xD8 restores h[16r .. 16r+15] order
-        _mm256_store_si256((__m256i *)(hp + 8 * r), _mm256_permute4x64_epi64(_mm256_packus_epi32(a, b), 0xD8));
-    }
+    const __m256i ha = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(s0, zero), _mm256_set1_epi32(H1MAX)), _mm256_set1_epi32(H1_ROUND)), sh1);
+    const __m256i hb = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(s1, zero), _mm256_set1_epi32(H1MAX)), _mm256_set1_epi32(H1_ROUND)), sh1);
+    const __m256i hp = _mm256_permute4x64_epi64(_mm256_packus_epi32(ha, hb), 0xD8);
     __m256i t[L2 / 8];
     for (int r = 0; r < L2 / 8; r++) t[r] = _mm256_load_si256((const __m256i *)(B2 + 8 * r));
     for (int e = 0; e < L1 / 2; e++) {
-        const __m256i a = _mm256_set1_epi32(hp[e]);
+        const __m256i a = _mm256_permutevar8x32_epi32(hp, _mm256_set1_epi32(e));
         const __m256i *wp = (const __m256i *)W2p[e];
         for (int r = 0; r < L2 / 8; r++) t[r] = _mm256_add_epi32(t[r], _mm256_madd_epi16(a, _mm256_load_si256(wp + r)));
     }
     __m256i o = _mm256_setzero_si256();
     for (int r = 0; r < L2 / 8; r++) {
-        const __m256i a = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(t[r], zero),
-                                                                             _mm256_set1_epi32(H2MAX)),
-                                                            _mm256_set1_epi32(H2_ROUND)), sh2);
+        const __m256i a = _mm256_sra_epi32(_mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(t[r], zero), _mm256_set1_epi32(H2MAX)), _mm256_set1_epi32(H2_ROUND)), sh2);
         o = _mm256_add_epi32(o, _mm256_mullo_epi32(a, _mm256_load_si256((const __m256i *)(WO + 8 * r))));
     }
     __m128i o4 = _mm_add_epi32(_mm256_castsi256_si128(o), _mm256_extracti128_si256(o, 1));
@@ -416,9 +403,11 @@ struct Stack {
         int16_t v[2][A];
         int32_t ps[2];
     };
+    // 8-byte entries: the low CACHE_BITS key bits index the cache and the high
+    // 32 are the tag, so a false hit needs two positions agreeing on 47 bits.
     struct CacheEntry {
-        uint64_t key;
-        int32_t eval, pad;
+        uint32_t tag;
+        int32_t eval;
     };
     static constexpr uint64_t CMASK = (1u << CACHE_BITS) - 1;
     Entry acc[MAXPLY];
@@ -543,9 +532,10 @@ struct Stack {
     template <typename Board>
     __attribute__((always_inline)) int evaluate_keyed(const Board &b, int constraint, uint64_t key) {
         CacheEntry &ce = cache[key & CMASK];
-        if (key && ce.key == key) return ce.eval;
+        const uint32_t tag = (uint32_t)(key >> 32);
+        if (key && ce.tag == tag) return ce.eval;
         const int e = evaluate(b, constraint);
-        ce.key = key;
+        ce.tag = tag;
         ce.eval = e;
         return e;
     }
