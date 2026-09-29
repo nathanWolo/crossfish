@@ -12,10 +12,10 @@
 
 // Experiment base, frozen 2026-09-29: identical to crossfish_prev.hpp apart
 // from this comment and the class name. Edit only this file while testing.
-// Candidate under test (not yet SPRT-gated): reverse-futility margin by
-// node class (rfp_pawns): 100 pawns when the opponent holds a live global
-// two-in-a-row, else 20 / 35 / 60 / 100 by empty squares on undecided
-// miniboards (>=60 / 45-59 / 30-44 / <30). Futility is unchanged.
+// Candidate under test (not yet SPRT-gated): futility margins only tighten
+// (fp_pawns): without a live global two-in-a-row of the side to move, 15 / 20
+// / 50 pawns at >=60 / 45-59 / 30-44 empty squares on undecided miniboards,
+// never above the current move-number rule. RFP is unchanged.
 // Frozen speed round thirteen on 2026-09-29 (section 58), on the r12_M2 NNUE
 // freeze (sections 56-57): make/unmake drop the dead HCE and MiniNet upkeep,
 // nnue_b64.hpp's forward pass and 8-byte 2^15 eval cache (all three
@@ -706,7 +706,6 @@ class CrossfishDev {
         // margin, and the shipped margins stay.
         static constexpr int EARLY_MARGIN_MOVES = 28;
         static constexpr int RFP_EARLY_PAWNS = 25;
-        static constexpr int RFP_THREAT_PAWNS = 100;
         static constexpr int FP_EARLY_PAWNS = 20;
         static constexpr int QDELTA_PAWNS = 350;
         static constexpr int FREE_MOVE_PAWNS = 30;
@@ -1607,25 +1606,26 @@ class CrossfishDev {
             return true;
         }
 
-        // Reverse-futility margin per node. Instrumented depth-9 searches with
-        // pruning off (12.8M nodes) show the static eval's misjudgements
-        // follow two things: how much of the board is still open (empty
-        // squares on undecided miniboards) and whether the opponent holds a
-        // global two-in-a-row whose third miniboard is still live. Each
-        // class gets the margin at which roughly 0.5% of prunes are wrong.
-        static __attribute__((always_inline)) int rfp_pawns(const FastBoard &board) {
+        // Futility margin per node. Instrumented depth-9 searches with
+        // pruning off (26.3M quiet moves): without a live global two-in-a-row
+        // of the side to move (with one, a quiet move can set up the board
+        // that wins the game), a pruned quiet move raises alpha in about
+        // 0.1-0.3% of cases at these margins while the board is still open.
+        // The margin only ever tightens: widening it elsewhere (section 58's
+        // R4 for RFP) cost more nodes than the prunes it saved.
+        static __attribute__((always_inline)) int fp_pawns(const FastBoard &board) {
+            const int base = board.n_moves < EARLY_MARGIN_MOVES ? FP_EARLY_PAWNS : FP_PAWNS;
             const int us = board.n_moves & 1;
-            const int blockers = board.mini_board_states[us] | board.mini_board_states[2];
-            if (fast_threat_count[(board.mini_board_states[us ^ 1] << 9) | blockers]) {
-                return RFP_THREAT_PAWNS;
-            }
+            const int blockers = board.mini_board_states[us ^ 1] | board.mini_board_states[2];
+            if (fast_threat_count[(board.mini_board_states[us] << 9) | blockers]) return base;
             int empties = 0;
             for (int live = (~board.out_of_play) & 511; live; live &= live - 1) {
                 const int mb = __builtin_ctz(live);
                 empties += __builtin_popcount(
                     ~(board.mini_boards[mb].markers[0] | board.mini_boards[mb].markers[1]) & 511);
             }
-            return empties >= 60 ? 20 : empties >= 45 ? 35 : empties >= 30 ? 60 : 100;
+            const int open = empties >= 60 ? 15 : empties >= 45 ? 20 : empties >= 30 ? 50 : base;
+            return open < base ? open : base;
         }
 
         int qsearch(FastBoard &board, int alpha, int beta, int ply) {
@@ -1818,15 +1818,14 @@ class CrossfishDev {
                 // follow a mate score.
                 if (beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
                     int reverse_futility_margin =
-                        rfp_pawns(board) * eval_weights[PAWN_IDX];
+                        (board.n_moves < EARLY_MARGIN_MOVES ? RFP_EARLY_PAWNS : RFP_PAWNS)
+                        * eval_weights[PAWN_IDX];
                     if (static_eval - reverse_futility_margin * depth >= beta) {
                         return beta;
                     }
                 }
 
-                int futility_margin =
-                    (board.n_moves < EARLY_MARGIN_MOVES ? FP_EARLY_PAWNS : FP_PAWNS)
-                    * eval_weights[PAWN_IDX];
+                int futility_margin = fp_pawns(board) * eval_weights[PAWN_IDX];
                 can_futility_prune = alpha > -CORR_MATE_BOUND && alpha < CORR_MATE_BOUND
                     && (static_eval + futility_margin * depth <= alpha);
             }
