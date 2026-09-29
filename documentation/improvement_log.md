@@ -3353,3 +3353,105 @@ into `nnue_b64.hpp` (Dev against the SPRT-passed commit: IDENTICAL at depths
 renamed. `codingame_nnue.cpp` carries the early margins; `make port-check`
 IDENTICAL at depths 5, 7 and 9; `make cg-speed` checksums match at -O3 and
 with CodinGame's flags; `cg_input.cpp` is 95,285 characters (4,715 left).
+
+## 59. Futility margins from what the node looks like (29-30 September 2026)
+
+Section 58 set the pruning margins by move number. This round asked which
+node features actually predict a wrong prune, and set margins from the answer.
+It ran on the same 4-core cloud VM (3 SPRT threads, one core idle), with Prev
+the round-thirteen freeze.
+
+### The survey
+
+An instrumented Dev disabled RFP and futility and searched 60 self-play games
+(random first 6 plies, then its own depth-9 moves with 1-in-8 random). It
+logged every non-PV node (12.8M) and every quiet move futility would consider
+(26.3M), each with its features:
+
+- move number;
+- empty squares on undecided miniboards ("open squares");
+- live miniboards;
+- free move;
+- each side's global threats: two held miniboards of a line whose third is
+  still live.
+
+For RFP (fired at 30 pawns, depth <= 4, 2.4% wrong overall), two features
+separate the wrong prunes far better than the move number:
+
+| Feature | Wrong prunes |
+| --- | --- |
+| Open squares 70+ / 50-59 / 30-39 / 10-19 | 0.04% / 0.60% / 2.55% / 9.3% |
+| Opponent global threats 0 / 1 / 2 / 3 | 1.3% / 8.3% / 14.9% / 18.7% |
+| Own global threats 0 / 1+ | 2.2% / 3.6-4.3% |
+
+Within a (threat, open squares) cell the error falls cleanly with the margin.
+In section 58 it looked flat only because pooling mixed the cells. For RFP
+with no opponent threat:
+
+| Open squares | 15 | 25 | 40 | 60 | 100 |
+| --- | --- | --- | --- | --- | --- |
+| 60+ | 0.58% | 0.21% | 0.06% | 0.01% | 0.00% |
+| 45-59 | 1.98% | 1.01% | 0.41% | 0.14% | 0.02% |
+| 30-44 | 3.11% | 2.18% | 1.36% | 0.75% | 0.30% |
+| <30 | 5.07% | 4.34% | 3.52% | 2.73% | 1.77% |
+
+With an opponent threat the rates run about 4x higher, up to 11-12% with fewer
+than 30 open squares.
+
+For futility the risk factor is the side to move's own threat: a quiet move
+can set up the miniboard that wins the game. With an own threat, 2.2-3.1% of
+quiet moves pruned at a 10-pawn margin raise alpha, and still 0.3-2.2% at 80.
+Without one:
+
+| Open squares | 10 | 20 | 40 | 80 |
+| --- | --- | --- | --- | --- |
+| 60+ | 0.12% | 0.03% | 0.00% | 0.00% |
+| 45-59 | 0.29% | 0.13% | 0.04% | 0.00% |
+| 30-44 | 0.58% | 0.42% | 0.23% | 0.08% |
+| <30 | 0.88% | 0.76% | 0.57% | 0.36% |
+
+### Candidates
+
+- **R4: RFP margin by class**, set so that about 0.5% of prunes are wrong. The
+  margin is 100 with an opponent threat; otherwise 20 / 35 / 60 / 100 at 60+ /
+  45-59 / 30-44 / <30 open squares. This tightens early and widens late and
+  around threats. Stopped at N=918: -6.8 +/- 12.0, LLR -1.25. Widening costs
+  nodes on a third of the tree, the late game is already solved at 90 ms
+  (section 58), and the search tolerates the occasional wrong prune. Equal
+  error rates are not the Elo optimum.
+- R5, the futility analogue of R4 (it also widened), was cancelled unrun for
+  the same reason.
+- **R6: futility margins only tighten.** The side-to-move-threat case keeps
+  the section-58 rule (20 before move 28, 80 after). Otherwise the margin is
+  15 / 20 / 50 at 60+ / 45-59 / 30-44 open squares, and never above that rule.
+  The effect is mostly on nodes from move 28 on, where futility still used 80.
+
+### Result
+
+R6's 2,000-game screen (openings from 40000) read +9.9 +/- 8.3 with LLR +2.09.
+The same binary continued the sequential test from those counts
+(`SPRT_RESUME_*`, openings from 41000) until it crossed the bound:
+
+```text
+N 3062  W 610 / D 1930 / L 522
+Penta 21 / 317 / 790 / 359 / 44
++9.99 +/- 6.79 Elo
+LLR +3.13 (H0=0, H1=+5) — PASS
+Timeouts: Prev 17 / Dev 15 (screen 13 / 9, continuation 4 / 6)
+```
+
+**Freeze.** The shipped check uses an eight-line test (two held, third not
+blocked) instead of HCE's 256 KiB `fast_threat_count` table, which the
+CodinGame file does not carry. Against the SPRT binary's Dev it is IDENTICAL
+at depths 7, 8 and 11, since a line with all three held means the game is
+already over. Prev is Dev renamed. `codingame_nnue.cpp` carries `fp_pawns`:
+
+- `make port-check` IDENTICAL at depths 5, 7 and 9;
+- `make cg-speed` checksums match at -O3 and with CodinGame's flags;
+- `cg_input.cpp` is 95,874 characters (4,126 left).
+
+### Next
+
+The same survey says RFP could also tighten without widening: 35 pawns
+instead of 50 with 45-59 open squares and no opponent threat (0.4-1.0% wrong).
+Qsearch's delta margin (350) and LMR have not been surveyed yet.

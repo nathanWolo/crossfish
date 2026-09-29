@@ -10,12 +10,14 @@
 #include <mutex>
 #include <vector>
 
-// Experiment base, frozen 2026-09-29: identical to crossfish_prev.hpp apart
+// Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
 // from this comment and the class name. Edit only this file while testing.
-// Candidate under test (not yet SPRT-gated): futility margins only tighten
-// (fp_pawns): without a live global two-in-a-row of the side to move, 15 / 20
-// / 50 pawns at >=60 / 45-59 / 30-44 empty squares on undecided miniboards,
-// never above the current move-number rule. RFP is unchanged.
+// Frozen 2026-09-30 (section 59): futility margins only tighten
+// (fp_pawns): unless the side to move holds a live global two-in-a-row,
+// 15 / 20 / 50 pawns at >=60 / 45-59 / 30-44 empty squares on undecided
+// miniboards, never above the move-number rule. Official 90 ms SPRT vs the
+// round-thirteen freeze: N=3062, 610-1930-522, penta 21/317/790/359/44,
+// +9.99 +/- 6.79 Elo, LLR +3.13 (H0=0, H1=+5) PASS; timeouts Prev 17 / Dev 15.
 // Frozen speed round thirteen on 2026-09-29 (section 58), on the r12_M2 NNUE
 // freeze (sections 56-57): make/unmake drop the dead HCE and MiniNet upkeep,
 // nnue_b64.hpp's forward pass and 8-byte 2^15 eval cache (all three
@@ -1611,13 +1613,23 @@ class CrossfishDev {
         // of the side to move (with one, a quiet move can set up the board
         // that wins the game), a pruned quiet move raises alpha in about
         // 0.1-0.3% of cases at these margins while the board is still open.
-        // The margin only ever tightens: widening it elsewhere (section 58's
+        // The margin only ever tightens: widening it elsewhere (section 59's
         // R4 for RFP) cost more nodes than the prunes it saved.
+        // True when `mine` holds two miniboards of a global line whose third is
+        // not in `blockers` (the opponent's or drawn miniboards).
+        static __attribute__((always_inline)) bool global_threat(int mine, int blockers) {
+            static constexpr int LINES[8] = {0007, 0070, 0700, 0111, 0222, 0444, 0421, 0124};
+            for (int i = 0; i < 8; i++) {
+                const int l = LINES[i];
+                if (__builtin_popcount(mine & l) == 2 && (l & ~mine & blockers) == 0) return true;
+            }
+            return false;
+        }
         static __attribute__((always_inline)) int fp_pawns(const FastBoard &board) {
             const int base = board.n_moves < EARLY_MARGIN_MOVES ? FP_EARLY_PAWNS : FP_PAWNS;
             const int us = board.n_moves & 1;
             const int blockers = board.mini_board_states[us ^ 1] | board.mini_board_states[2];
-            if (fast_threat_count[(board.mini_board_states[us] << 9) | blockers]) return base;
+            if (global_threat(board.mini_board_states[us], blockers)) return base;
             int empties = 0;
             for (int live = (~board.out_of_play) & 511; live; live &= live - 1) {
                 const int mb = __builtin_ctz(live);

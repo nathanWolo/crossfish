@@ -479,6 +479,23 @@ procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
+On 2026-09-30 futility pruning got per-node margins: unless the side to move
+holds a live global two-in-a-row, the margin tightens to 15 / 20 / 50 pawns
+while 60+ / 45-59 / 30-44 empty squares remain on undecided miniboards (never
+above the old move-number rule). Official 90 ms SPRT against the
+round-thirteen freeze:
+
+```text
+90 ms: N 3062 W 610 D 1930 L 522
+Penta: 21 / 317 / 790 / 359 / 44
+Elo diff: +9.99 +/- 6.79
+LLR: +3.13 (H0=0, H1=+5) — PASS
+Timeouts: Prev=17 Dev=15
+```
+
+See section 59 of the improvement log. The paste file is now 95,874
+characters (4,126 left).
+
 On 2026-09-29 speed round thirteen passed the official 90 ms SPRT against the
 r12_M2 freeze: three tree-identical speedups (make/unmake stop maintaining the
 dead HCE and MiniNet state, a faster NNUE forward pass, an 8-byte 2^15 eval
@@ -494,8 +511,7 @@ LLR: +3.09 (H0=0, H1=+5) — PASS
 Timeouts: Prev=35 Dev=33
 ```
 
-See section 58 of the improvement log. The paste file below is now 95,285
-characters (4,715 left).
+See section 58 of the improvement log.
 
 The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
 search with the mate-window pruning fix, the pattern-generator NNUE as its
@@ -553,6 +569,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-09-30 | Futility margins tighten by open squares (no own global threat) | N=3062, 610-1930-522, +9.99 ± 6.79, LLR +3.13 PASS | §59 |
 | 2026-09-29 | Speed round thirteen (dead HCE upkeep, forward pass, 8-byte eval cache) + early-game RFP/futility margins | N=3684, 768-2243-673, +8.96 ± 6.31, LLR +3.09 PASS | §58 |
 | 2026-09-28 | NNUE net r12_M2: round twelve's self-labelled data and self-play, same architecture | N=504, 173-259-72, +70.58 ± 19.66, LLR +3.03 PASS; paste files, fixed-length N=3000: +52.5 ± 7.0 | §57 |
 | 2026-09-27 | NNUE evaluation: the B64_d5M_57ep pattern generator replaces HCE + MiniNet + macro | N=420, 296-106-18, +276.63 ± 30.44, LLR +3.00 PASS (two pooled shards); fixed-length N=3000: +267.37 ± 11.86 | §56 |
