@@ -19,6 +19,9 @@
 // Bundled with a Dev-local forward pass (dev_nnue::eval_v5, below) and a
 // 2^15-entry 8-byte eval cache (DevStack). Bundle vs Prev: speed_ab +4.54%
 // [+2.66, +6.49] (n=40), walk 10 40 90 +3.5 / +9.5 / +5.6% nodes.
+// Search axis stacked on it: RFP and futility use tighter margins before
+// move 28 (25 and 20 pawns instead of 50 and 80); screen against the speed
+// bundle alone, 2,000 games at 90 ms: +4.5 +/- 8.6.
 // Dev-only NNUE forward pass (experiment). Bit-identical to b64::eval_avx
 // (checked on 200,000 captured search evaluations): the 64 activation pairs
 // all land in one mask word, so one ctz loop, split over two accumulator
@@ -822,6 +825,15 @@ class CrossfishDev {
         static constexpr int RFP_PAWNS = 50;
 #endif
         static constexpr int FP_PAWNS = 80;
+        // Before move 28 the NNUE's static eval almost never misjudges a
+        // node by a margin's worth (instrumented depth-9 searches with
+        // pruning off: RFP fails <1.2% of the time at 20 pawns, a futility-
+        // pruned quiet move raises alpha <0.2% at 20), so early nodes prune
+        // on much tighter margins; later the error does not shrink with the
+        // margin, and the shipped margins stay.
+        static constexpr int EARLY_MARGIN_MOVES = 28;
+        static constexpr int RFP_EARLY_PAWNS = 25;
+        static constexpr int FP_EARLY_PAWNS = 20;
         static constexpr int QDELTA_PAWNS = 350;
         static constexpr int FREE_MOVE_PAWNS = 30;
 #ifdef CROSSFISH_OPP_LATENT_CAPTURE_BONUS_VALUE
@@ -1910,13 +1922,17 @@ class CrossfishDev {
                 // Either gives false fail-lows in the aspiration windows that
                 // follow a mate score.
                 if (beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
-                    int reverse_futility_margin = RFP_PAWNS * eval_weights[PAWN_IDX];
+                    int reverse_futility_margin =
+                        (board.n_moves < EARLY_MARGIN_MOVES ? RFP_EARLY_PAWNS : RFP_PAWNS)
+                        * eval_weights[PAWN_IDX];
                     if (static_eval - reverse_futility_margin * depth >= beta) {
                         return beta;
                     }
                 }
 
-                int futility_margin = FP_PAWNS * eval_weights[PAWN_IDX];
+                int futility_margin =
+                    (board.n_moves < EARLY_MARGIN_MOVES ? FP_EARLY_PAWNS : FP_PAWNS)
+                    * eval_weights[PAWN_IDX];
                 can_futility_prune = alpha > -CORR_MATE_BOUND && alpha < CORR_MATE_BOUND
                     && (static_eval + futility_margin * depth <= alpha);
             }
