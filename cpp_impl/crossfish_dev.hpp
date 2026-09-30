@@ -10,10 +10,15 @@
 #include <mutex>
 #include <vector>
 
-// Candidate (search-iir): internal iterative reduction at non-PV nodes. A
-// null-window node with no TT entry at depth >= 4 (IIR_MIN_DEPTH) is searched
-// one ply shallower; PV nodes keep IID exactly as before. Otherwise identical
-// to crossfish_prev.hpp apart from the class name. Edit only this file.
+// Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
+// from this comment and the class name. Edit only this file while testing.
+// Frozen 2026-09-30 (section 60): internal iterative reduction at non-PV
+// nodes. A null-window node with no TT entry at depth >= 4 (IIR_MIN_DEPTH)
+// is searched one ply shallower; PV nodes keep IID. Pooled SPRT at
+// CodinGame-scaled budgets (desktop 49 ms x7, ThinkPad 63 ms x7 on E-cores,
+// Dell 67 ms x3) vs the section 59 freeze: N=9582, 1926-5875-1781, penta
+// 115/1010/2401/1145/120, +5.26 +/- 3.95 Elo, LLR +3.39 (H0=0, H1=+5) PASS;
+// timeouts Prev 0 / Dev 0.
 // Frozen 2026-09-30 (section 59): futility margins only tighten
 // (fp_pawns): unless the side to move holds a live global two-in-a-row,
 // 15 / 20 / 50 pawns at >=60 / 45-59 / 30-44 empty squares on undecided
