@@ -10,8 +10,9 @@
 #include <mutex>
 #include <vector>
 
-// Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
-// from this comment and the class name. Edit only this file while testing.
+// Candidate (2026-09-30): continuation history, cont_hist[stm][previous
+// move][move], same bonus/malus/gravity/halving as history, weight ~1/20.
+// Rebased onto the section 61 freeze (IIR + no futility while lost).
 // Frozen 2026-09-30 (section 61): no futility pruning while the node's best
 // value so far is a forced loss (Stockfish's !is_loss(bestValue)), so a
 // node claims to be mated only after searching its quiet moves. Removes
@@ -504,6 +505,27 @@ class CrossfishDev {
                 (int16_t)(history_table[stm][mb][sq] / 20);
         }
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
+        // Continuation history: [stm][previous move's cell mb * 9 + sq, or
+        // CONT_NONE with no previous move][mb][sq], in history_table's units
+        // and with its bonus / malus / gravity rule, so it stays within
+        // +/-10000 and int16 holds it exactly. Lanes 9..15 stay zero, so the
+        // vector move scorer loads one miniboard's nine squares at once and
+        // scales them by CONT_MUL / 65536 (about 1/20, history's weight).
+        static constexpr int CONT_NONE = 81;
+        static constexpr int CONT_MUL = 3277;
+        alignas(32) int16_t cont_hist[2][CONT_NONE + 1][9][16]{};
+        static int cont_score(int v) { return (v * CONT_MUL) >> 16; }
+        static void cont_bonus(int16_t &e, int bonus) {
+            int h = e;
+            h += bonus - h * bonus / 10000;
+            e = (int16_t)h;
+        }
+        static void cont_malus(int16_t &e, int malus) {
+            int h = e;
+            h -= malus + h * malus / 10000;
+            if (h < -10000) h = -10000;
+            e = (int16_t)h;
+        }
         FastMove counter_move[9][9];
         bool counters_ready = false;
         // Correction history: [stm][constrained miniboard, 9 = free choice][decided-miniboard mask].
@@ -1546,6 +1568,16 @@ class CrossfishDev {
                     }
                 }
             }
+            // Same aging as history_table: halve at every search.
+            for (auto &by_player : cont_hist) {
+                for (auto &by_previous : by_player) {
+                    for (auto &by_miniboard : by_previous) {
+                        for (int16_t &h : by_miniboard) {
+                            h = (int16_t)(h / 2);
+                        }
+                    }
+                }
+            }
             if (!counters_ready) {
                 for (int i = 0; i < 9; i++) {
                     for (int j = 0; j < 9; j++) {
@@ -1607,6 +1639,7 @@ class CrossfishDev {
             killer_bits = {};
             history_table = {};
             memset(history_div, 0, sizeof(history_div));
+            memset(cont_hist, 0, sizeof(cont_hist));
             for (int mb = 0; mb < 9; mb++) {
                 for (int sq = 0; sq < 9; sq++) {
                     counter_move[mb][sq] = NO_FAST_MOVE;
@@ -2081,6 +2114,15 @@ class CrossfishDev {
                     h += bonus - h * bonus / 10000;
                     int stm = board.n_moves & 1;
                     sync_history_div(stm, mb, sq);
+                    // Continuation history takes the same bonus and malus in
+                    // the row of the move this node answers.
+                    int16_t (*cont_row)[16] = nullptr;
+                    if (board.n_moves > 0) {
+                        Move prev = board.move_history.top();
+                        cont_row =
+                            cont_hist[stm][prev.mini_board * 9 + prev.square];
+                        cont_bonus(cont_row[mb][sq], bonus);
+                    }
                     for (int j = 0; j < i; j++) {
                         FastMove prior = move_from_key(move_keys[j]);
                         if (is_fast_capture(board, prior)) continue;
@@ -2089,6 +2131,9 @@ class CrossfishDev {
                         hj -= malus + hj * malus / 10000;
                         if (hj < -10000) hj = -10000;
                         sync_history_div(stm, prior >> 4, prior & 15);
+                        if (cont_row) {
+                            cont_malus(cont_row[prior >> 4][prior & 15], malus);
+                        }
                     }
                     if (board.n_moves > 0) {
                         Move prev = board.move_history.top();
@@ -2452,10 +2497,13 @@ class CrossfishDev {
             int out_of_play = out_of_play_mask(board);
             int stm = (board.n_moves & 1);
             FastMove cm = NO_FAST_MOVE;
+            int prev_cell = CONT_NONE;
             if (board.n_moves > 0) {
                 Move prev = board.move_history.top();
                 cm = counter_move[prev.mini_board][prev.square];
+                prev_cell = prev.mini_board * 9 + prev.square;
             }
+            const int16_t (*cont_row)[16] = cont_hist[stm][prev_cell];
 #if defined(CROSSFISH_SIMPLE_QS_ORDER) \
     && !defined(CROSSFISH_FULL_QS_ORDER)
             if (qs) {
@@ -2476,7 +2524,8 @@ class CrossfishDev {
                         + 25 * killer_moves[ply][sq]
                         + 40 * (cm == move)
                         - 250 * ((out_of_play >> sq) & 1)
-                        + history_table[stm][mb][sq] / 20,
+                        + history_table[stm][mb][sq] / 20
+                        + cont_score(cont_row[mb][sq]),
                         move);
                 }
                 return;
@@ -2500,6 +2549,7 @@ class CrossfishDev {
             // Node-constant part: killers and the dead-destination penalty.
             const __m256i node_base = _mm256_sub_epi16(
                 lanes(killer_bits[ply], 25), lanes(out_of_play, 250));
+            const __m256i cont_mul = _mm256_set1_epi16((int16_t)CONT_MUL);
             alignas(32) int16_t sq_score[16];
             int last_mb = -1;
             for (int i = 0; i < n; i++) {
@@ -2524,6 +2574,11 @@ class CrossfishDev {
                         v, lanes(capture_mask, global_win_bonus + 100 * !qs));
                     v = _mm256_add_epi16(v, lanes(block_mask, 75));
                     v = _mm256_add_epi16(v, lanes(tiar_mask, 50));
+                    v = _mm256_add_epi16(
+                        v, _mm256_mulhi_epi16(
+                               _mm256_load_si256(
+                                   (const __m256i *)cont_row[mb]),
+                               cont_mul));
                     _mm256_store_si256((__m256i *)sq_score, v);
                 }
                 keys[i] = pack_move_key(sq_score[sq] + 40 * (cm == move), move);
@@ -2589,10 +2644,12 @@ class CrossfishDev {
             int out_of_play = out_of_play_mask(board);
             int stm = (board.n_moves & 1);
             Move cm{99, 99};
+            int prev_cell = CONT_NONE;
             if (board.n_moves > 0) {
                 Move prev = board.move_history.top();
                 FastMove counter = counter_move[prev.mini_board][prev.square];
                 if (counter != NO_FAST_MOVE) cm = unpack_fast_move(counter);
+                prev_cell = prev.mini_board * 9 + prev.square;
             }
             int last_mb = -1;
             int last_idx = 0;
@@ -2620,7 +2677,8 @@ class CrossfishDev {
                     + 75 * ((block_mask >> sq) & 1)
                     + 50 * ((tiar_mask >> sq) & 1)
                     - 250 * ((out_of_play >> sq) & 1)
-                    + history_table[stm][mb][sq] / 20;
+                    + history_table[stm][mb][sq] / 20
+                    + cont_score(cont_hist[stm][prev_cell][mb][sq]);
                 scores[i] = move_score;
             }
         }
