@@ -854,6 +854,33 @@ static void test_mini_fast_matches_scalar(TestCtx &ctx) {
     CHECK(max_diff <= 2);
 }
 
+// The macro net evaluated directly from its embeddings: the reference for the
+// exact lookup table the bot uses (macro_eval.hpp keeps only the table path).
+template <typename Board>
+static int evaluate_macro_fast(const Board &board) {
+    if (!MACRO_READY && !macro_load_packed()) return 0;
+    const int stm = board.n_moves & 1;
+    const int constraint = d16_mini_board_constraint(board);
+    __m256 h0 = _mm256_add_ps(
+        _mm256_load_ps(MACRO_BASE),
+        _mm256_load_ps(MACRO_CONSTR[constraint]));
+    __m256 h1 = _mm256_add_ps(
+        _mm256_load_ps(MACRO_BASE + 8),
+        _mm256_load_ps(MACRO_CONSTR[constraint] + 8));
+    for (int mb = 0; mb < 9; mb++) {
+        const int bit = 1 << mb;
+        int cls = 0;
+        if (board.mini_board_states[stm] & bit) cls = 1;
+        else if (board.mini_board_states[stm ^ 1] & bit) cls = 2;
+        else if (board.mini_board_states[2] & bit) cls = 3;
+        h0 = _mm256_add_ps(
+            h0, _mm256_load_ps(MACRO_EMB[mb][cls]));
+        h1 = _mm256_add_ps(
+            h1, _mm256_load_ps(MACRO_EMB[mb][cls] + 8));
+    }
+    return macro_finish_hidden(h0, h1);
+}
+
 static void test_d16_fast_matches_scalar(TestCtx &ctx) {
     d16_mini_load_packed();
     macro_load_packed();
