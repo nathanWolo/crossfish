@@ -391,6 +391,26 @@ This section is the other half of the history. Retrying these without a new hypo
   share early noise; three unrelated candidates read -11 to -13 near N=600.
   Use `SPRT_GAME_OFFSET` for independent early readings.
 
+**Middlegame search round (30 September 2026, pooled SPRTs at CodinGame-scaled budgets, section 60)**
+
+- Macro-threat extension: a capture that gives the mover a new live global
+  two-in-a-row is searched one ply deeper (depth >= 2, never stacked, once per
+  path, ply < 2 x root depth). Not selective: about half of middlegame captures
+  at depth >= 2 qualify, -0.3 completed ply at 90 ms. Vs the section 60 freeze:
+  N=25606, +2.47 +/- 2.44, LLR -0.10 at a 25,000-game cap. Inconclusive; a
+  real gain of about +2 at most.
+- False-draw re-search: an LMR-reduced move whose null-window search returns
+  exactly 0 at alpha 0 is re-searched at full depth. It removes the false
+  exact draws of replay 906589060 but costs 5.7x nodes in drawn positions.
+  N=2918, -8.81 +/- 7.55, LLR -3.79 FAIL. The mechanism: after a real draw
+  sets alpha to 0, a reduced search of the winning move stops short of the win
+  and returns exactly 0, which no longer triggers the re-search; the false 0
+  then spreads through TT bounds.
+- Futility floor (the node's stored and returned value raised to the futility
+  value it pruned against): fixes the false mate bounds of section 61 too, but
+  also discards the correct ones and costs +4-6% nodes at fixed depth. Stopped
+  at N=6722, +1.14 +/- 4.73, LLR -1.17, in favour of section 61's guard.
+
 **Speed round ten (section 48; all tree-identical, none kept)**
 
 - Ternary-indexed 77 KiB miniboard table replacing the sparse 512/256 KiB
@@ -3514,6 +3534,62 @@ Shards: desktop N 4494 +7.50 +/- 5.93, ThinkPad N 3612 +1.83 +/- 6.28,
   the ThinkPad: 30 positions at depth 13, 2,757,452 nodes, checksum
   4620691443947525582, no speed lost);
 - `cg_input.cpp` is 95,927 characters (4,073 left).
+
+## 61. No futility pruning while every searched move loses (30 September 2026)
+
+A bug fix found while investigating the false exact draw in CodinGame replay
+906589060 (section 11, this round). A node that futility-prunes quiet moves
+keeps a fail-soft best value from the moves it searched. If all of those lose
+by force, it stores and returns a "mated" upper bound although a pruned quiet
+move may hold or win, and the false bound propagates through the TT.
+
+### The audit
+
+Five ladder games replayed through one persistent engine (our moves, depth 22),
+every mate-range TT store at 45+ stones checked against an exact WDL solver:
+
+| Engine | Mate claims checked | False | At futility-pruning nodes |
+| --- | --- | --- | --- |
+| Section 60 freeze | 1,709,772 | 48,401 (2.83%) | 25,614 of 133,169 (19.2%) |
+| Futility floor (not kept) | 1,435,571 | 0 | 0 |
+| **This change** | 1,498,862 | **0** | 0 of 1,795 |
+
+The false claims away from pruning nodes (1.45% of those) were propagated ones;
+they vanish with the source. False exact 0 stores fall from 3.20% to 2.18%.
+
+### The change
+
+At the futility skip in `search()`:
+`if (can_futility_prune && i > 0 && !capture && best_val >= -CORR_MATE_BOUND)`.
+While every move searched so far loses by force, the quiet moves futility would
+skip are searched instead (Stockfish's `!is_loss(bestValue)` guard), so a node
+claims to be mated only after searching them. Otherwise pruning is unchanged.
+Nodes at fixed depth: +2.5% at depth 8, +1.8% at depth 11; the 49 ms timed walk
+completes the same depth (+0.03 ply). Deep persistent searches pay more (+17.6%
+nodes to depth 22, mostly from opening and middlegame roots).
+
+### Result
+
+The usual 0 / +5 SPRT (openings from 15000) did not show a gain: N=5848,
+-1.37 +/- 4.99, LLR -2.98, H0 accepted. As a verified bug fix it was then gated
+for non-regression (H0=-5, H1=0, as section 51's mate-window fix) on fresh
+openings (from 32000), pooled at CodinGame-scaled budgets (desktop 49 ms x7,
+ThinkPad 63 ms x7, Dell 62 ms x3):
+
+```text
+N 3436  W 697 / D 2093 / L 646
+Penta 51 / 361 / 830 / 438 / 38
++5.16 +/- 6.73 Elo
+LLR +3.21 (H0=-5, H1=0, bound 2.94) — PASS
+Timeouts: Prev 0 / Dev 0
+```
+
+**Freeze.** Prev is Dev renamed. `codingame_nnue.cpp` carries the guard:
+
+- `make port-check` IDENTICAL at depths 5, 7 and 9;
+- `make cg-speed` checksums match at -O3 and with CodinGame's flags (g++ 11:
+  30 positions at depth 13, 3,134,381 nodes, checksum 6637135766784572329);
+- `cg_input.cpp` is 95,936 characters (4,064 left).
 
 ## 62. Continuation history (30 September 2026)
 
