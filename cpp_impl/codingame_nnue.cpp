@@ -963,6 +963,7 @@ class CrossfishDev {
         static constexpr int RFP_EARLY_PAWNS = 25;
         static constexpr int FP_EARLY_PAWNS = 20;
         static constexpr int QDELTA_PAWNS = 350;
+        static constexpr int IIR_MIN_DEPTH = 4;
         // Random-play MiniNet residuals reached ~4500; slack for search positions.
         static constexpr int MINI_MAX = 8000;
         CrossfishDev() {
@@ -1742,6 +1743,11 @@ class CrossfishDev {
                 }
                 tt_hit = (entry.zobrist_hash == board.tt_hash) && (board.tt_hash != 0);
                 tt_move = tt_hit ? tt_to_fast_move(entry.best_move) : NO_FAST_MOVE;
+            }
+            // Internal iterative reduction (section 60): a null-window node with
+            // no table entry is searched one ply shallower; PV nodes keep IID.
+            if (!pv_node && !tt_hit && depth >= IIR_MIN_DEPTH) {
+                depth--;
             }
 
             bool singular =

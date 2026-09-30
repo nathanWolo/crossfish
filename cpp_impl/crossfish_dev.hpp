@@ -12,6 +12,13 @@
 
 // Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
 // from this comment and the class name. Edit only this file while testing.
+// Frozen 2026-09-30 (section 60): internal iterative reduction at non-PV
+// nodes. A null-window node with no TT entry at depth >= 4 (IIR_MIN_DEPTH)
+// is searched one ply shallower; PV nodes keep IID. Pooled SPRT at
+// CodinGame-scaled budgets (desktop 49 ms x7, ThinkPad 63 ms x7 on E-cores,
+// Dell 67 ms x3) vs the section 59 freeze: N=9582, 1926-5875-1781, penta
+// 115/1010/2401/1145/120, +5.26 +/- 3.95 Elo, LLR +3.39 (H0=0, H1=+5) PASS;
+// timeouts Prev 0 / Dev 0.
 // Frozen 2026-09-30 (section 59): futility margins only tighten
 // (fp_pawns): unless the side to move holds a live global two-in-a-row,
 // 15 / 20 / 50 pawns at >=60 / 45-59 / 30-44 empty squares on undecided
@@ -711,6 +718,13 @@ class CrossfishDev {
         static constexpr int FP_EARLY_PAWNS = 20;
         static constexpr int QDELTA_PAWNS = 350;
         static constexpr int FREE_MOVE_PAWNS = 30;
+        // Internal iterative reduction: non-PV nodes without a table entry
+        // at this depth or more are searched one ply shallower.
+#ifdef CROSSFISH_IIR_MIN_DEPTH_VALUE
+        static constexpr int IIR_MIN_DEPTH = CROSSFISH_IIR_MIN_DEPTH_VALUE;
+#else
+        static constexpr int IIR_MIN_DEPTH = 4;
+#endif
 #ifdef CROSSFISH_OPP_LATENT_CAPTURE_BONUS_VALUE
         static constexpr int OPP_LATENT_CAPTURE_BONUS =
             CROSSFISH_OPP_LATENT_CAPTURE_BONUS_VALUE;
@@ -1868,6 +1882,19 @@ class CrossfishDev {
                 tt_move = tt_hit
                     ? tt_to_fast_move(entry.best_move)
                     : NO_FAST_MOVE;
+            }
+            // Internal iterative reduction at non-PV nodes. IID above runs
+            // only at PV nodes and is unchanged. A null-window node with no
+            // table entry (every entry carries a legal best move, 64-bit
+            // key) has no hash move to order by, so it is searched one ply
+            // shallower. Placed after RFP and futility so their decisions
+            // still use the full depth; the move loop, the table store and
+            // the history/correction updates all see the depth actually
+            // searched. When the parent re-searches this move because the
+            // reduced result beat its alpha, the node finds its own entry
+            // and gets the full depth back.
+            if (!pv_node && !tt_hit && depth >= IIR_MIN_DEPTH) {
+                depth--;
             }
 
 #ifndef CROSSFISH_DISABLE_PSEUDO_SINGULAR

@@ -368,7 +368,8 @@ This section is the other half of the history. Retrying these without a new hypo
 - "Improving" (RFP margin half a margin smaller when the corrected static
   eval rose since ply-2): N=1812, -2.49 +/- 11.88.
 - Internal iterative reduction replacing IID (no TT hit, depth >= 4: search
-  one ply shallower): N=1206, -5.47 +/- 13.57.
+  one ply shallower): N=1206, -5.47 +/- 13.57. (At non-PV nodes only, keeping
+  IID at PV nodes, it passed on the NNUE engine: section 60.)
 - Late-move pruning (non-PV, depth <= 3, quiet moves after 3 + 2*depth^2):
   N=1230, -5.08 +/- 13.68. Only 6.5% of nodes have more than 9 moves.
 - Qsearch plays a forced single move instead of standing pat: N=1212,
@@ -3449,3 +3450,66 @@ already over. Prev is Dev renamed. `codingame_nnue.cpp` carries `fp_pawns`:
 - `make port-check` IDENTICAL at depths 5, 7 and 9;
 - `make cg-speed` checksums match at -O3 and with CodinGame's flags;
 - `cg_input.cpp` is 95,874 characters (4,126 left).
+
+## 60. Internal iterative reduction at non-PV nodes (30 September 2026)
+
+The first experiment of a middlegame search round on the section 59 freeze.
+Round ten killed IIR early when it *replaced* IID everywhere (section 11,
+-5.47 +/- 13.57 at N=1206, on the HCE engine). This version keeps IID exactly
+where it runs (PV nodes without a TT hit, depth > 2) and only adds the
+reduction elsewhere.
+
+### The change
+
+`IIR_MIN_DEPTH = 4`. In `search()`, after RFP, futility and the IID block:
+`if (!pv_node && !tt_hit && depth >= IIR_MIN_DEPTH) depth--;`. RFP and futility
+still decide on the full depth; the move loop, the TT store, the history bonus
+and the correction weight see the depth actually searched, so a later probe at
+the full depth does not cut off on the shallower result. When the parent
+re-searches the move at full depth because the reduced result beat its alpha,
+the node finds its own entry and is not reduced again.
+
+Instrumentation (scratch copy, not shipped):
+
+- It fires at 2.8% of non-PV interior nodes on the fresh-TT depth-8 bench, 5.2%
+  with a warm TT, and 19.7% in timed 90 ms games (a TT miss is common at the
+  shallow non-PV nodes: 60% at depth 4, 12% at depth 16).
+- Reduced nodes fail high 67-80% of the time and never return exact scores.
+  Re-searched at full depth, 3.3% of the reduced fail-highs fail low, and 10.2%
+  of the reduced fail-lows fail high; the second kind is mostly re-searched by
+  the parent anyway.
+- Nodes at fixed depth: 96.0% on the depth-8 bench, 88.1% and 77.7% at depths
+  10 and 12 with a warm TT. The timed walk completes +0.85 ply deeper on
+  average (16.71 -> 17.56). Threshold 5 fires about half as often and gains
+  +0.73 ply; 4 matches round ten's constant.
+
+### Result
+
+The SPRT ran at time budgets scaled so that each search gets about the nodes
+of a 90 ms CodinGame move. A probe replayed 755 positions from our CodinGame
+games and compared the engine's node counts with the `N` the bot printed on
+CodinGame, with as many copies running as the machine's SPRT threads. A flat
+90 ms gives 1.69x CodinGame's nodes on the desktop, 1.36x on the ThinkPad and
+1.30x on the Dell. The budgets are 49 ms on the desktop (7 threads), 63 ms on
+the ThinkPad (7 threads pinned to its E-cores) and 67 ms on the Dell (3
+threads), 1.03-1.09x CodinGame's nodes when checked. Each machine played its
+own opening range, and the pentanomial counts were pooled with
+`tools/sprt_merge.py`:
+
+```text
+N 9582  W 1926 / D 5875 / L 1781
+Penta 115 / 1010 / 2401 / 1145 / 120
++5.26 +/- 3.95 Elo
+LLR +3.39 (H0=0, H1=+5, bound 2.94) — PASS
+Timeouts: Prev 0 / Dev 0
+Shards: desktop N 4494 +7.50 +/- 5.93, ThinkPad N 3612 +1.83 +/- 6.28,
+        Dell N 1476 +6.83 +/- 9.81
+```
+
+**Freeze.** Prev is Dev renamed. `codingame_nnue.cpp` carries the reduction:
+
+- `make port-check` IDENTICAL at depths 5, 7 and 9;
+- `make cg-speed` checksums match at -O3 and with CodinGame's flags (g++ 11 on
+  the ThinkPad: 30 positions at depth 13, 2,757,452 nodes, checksum
+  4620691443947525582, no speed lost);
+- `cg_input.cpp` is 95,927 characters (4,073 left).
