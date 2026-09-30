@@ -10,9 +10,16 @@
 #include <mutex>
 #include <vector>
 
-// Candidate (2026-09-30): continuation history, cont_hist[stm][previous
-// move][move], same bonus/malus/gravity/halving as history, weight ~1/20.
-// Rebased onto the section 61 freeze (IIR + no futility while lost).
+// Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
+// from this comment and the class name. Edit only this file while testing.
+// Frozen 2026-09-30 (section 62): continuation history in move ordering,
+// cont_hist[stm][previous move][move] with history's bonus / malus /
+// gravity / halving, weight ~1/20. Pooled SPRTs at CodinGame-scaled budgets
+// (desktop 49 ms x7, ThinkPad 63 ms x7, Dell 62 ms x3) vs the section 61
+// freeze: screen + continuation N=4012, +9.18 +/- 6.16, LLR +3.37 PASS;
+// confirmation on fresh openings N=10622, 2126-6516-1980, penta
+// 137/1100/2708/1212/154, +4.78 +/- 3.78 Elo, LLR +3.06 (H0=0, H1=+5)
+// PASS; timeouts 0 / 0.
 // Frozen 2026-09-30 (section 61): no futility pruning while the node's best
 // value so far is a forced loss (Stockfish's !is_loss(bestValue)), so a
 // node claims to be mated only after searching its quiet moves. Removes
