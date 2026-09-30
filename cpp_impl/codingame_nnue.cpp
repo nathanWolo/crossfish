@@ -1833,7 +1833,10 @@ class CrossfishDev {
                 FastMove fast_move = move_from_key(move_keys[i]);
                 Move move = unpack_fast_move(fast_move);
                 bool capture = is_fast_capture(board, fast_move);
-                if (can_futility_prune && i > 0 && !capture) {
+                // No futility pruning while every searched move loses by force
+                // (section 61): a pruned quiet move may be the one that holds.
+                if (can_futility_prune && i > 0 && !capture
+                    && best_val >= -CORR_MATE_BOUND) {
                     continue;
                 }
                 int extension = 0;

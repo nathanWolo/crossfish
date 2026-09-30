@@ -10,11 +10,17 @@
 #include <mutex>
 #include <vector>
 
-// Candidate (2026-09-30, on the section 60 freeze): no futility pruning while
-// the node's best value so far is a forced loss (Stockfish's
-// !is_loss(bestValue)). While every searched move loses by force, the quiet
-// moves futility would skip are searched, so a node claims to be mated only
-// after searching them; the futility test, margins and depth are unchanged.
+// Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
+// from this comment and the class name. Edit only this file while testing.
+// Frozen 2026-09-30 (section 61): no futility pruning while the node's best
+// value so far is a forced loss (Stockfish's !is_loss(bestValue)), so a
+// node claims to be mated only after searching its quiet moves. Removes
+// every false mate-range TT store in solver-checked replays (Prev 2.83%).
+// Bug fix, gated as non-regression: pooled SPRT at CodinGame-scaled budgets
+// (desktop 49 ms x7, ThinkPad 63 ms x7, Dell 62 ms x3) vs the section 60
+// freeze, H0=-5 / H1=0: N=3436, 697-2093-646, penta 51/361/830/438/38,
+// +5.16 +/- 6.73 Elo, LLR +3.21 PASS; timeouts 0 / 0. (The 0 / +5 SPRT on
+// other openings: N=5848, -1.37 +/- 4.99, H0 accepted.)
 // Frozen 2026-09-30 (section 60): internal iterative reduction at non-PV
 // nodes. A null-window node with no TT entry at depth >= 4 (IIR_MIN_DEPTH)
 // is searched one ply shallower; PV nodes keep IID. Pooled SPRT at
