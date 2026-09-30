@@ -12,9 +12,6 @@
 
 // Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
 // from this comment and the class name. Edit only this file while testing.
-// Candidate under test (not yet SPRT-gated): a late move that hands the
-// opponent a free move is reduced one ply more (its reduced search misses a
-// full-depth alpha raise half as often: 0.9% against 1.8%).
 // Frozen 2026-09-30 (section 59): futility margins only tighten
 // (fp_pawns): unless the side to move holds a live global two-in-a-row,
 // 15 / 20 / 50 pawns at >=60 / 45-59 / 30-44 empty squares on undecided
@@ -2005,11 +2002,6 @@ class CrossfishDev {
                         (move_keys[i] > MOVE_KEY_ZERO || (i >= 2 && !capture));
                     if (do_lmr) {
                         reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
-                        // A move that hands the opponent a free move is
-                        // usually bad: an instrumented survey found its
-                        // reduced search misses a full-depth alpha raise half
-                        // as often as other late moves (0.9% against 1.8%).
-                        if (board.active_board == 9) reduction++;
                         if (pv_node && reduction > 0) reduction--;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
