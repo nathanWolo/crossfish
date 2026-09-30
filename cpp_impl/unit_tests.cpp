@@ -898,7 +898,8 @@ static uint64_t play_book_child_hash(GlobalBoard b, Move m) {
 }
 
 static void test_play_book(TestCtx &ctx) {
-    CHECK((pb_init<GlobalBoard, Move>()));
+    crossfish_nnue_load_once();
+    CHECK((pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); })));
     CHECK_EQ((int)PB_TABLE.size(), PLAY_BOOK_ENTRIES);
     // Pinned like the network payload hashes: regenerating the book changes it.
     std::vector<std::pair<uint64_t, uint8_t>> rows(PB_TABLE.begin(), PB_TABLE.end());

@@ -2345,7 +2345,7 @@ cf_array<int, 2> move_to_grid_coord(Move move) {
 static int run_match() {
     CrossfishDev engine;
     GlobalBoard board;
-    pb_init<GlobalBoard, Move>();
+    pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); });
     std::string cmd;
     std::cout << std::unitbuf;
     while (std::cin >> cmd) {
@@ -2399,7 +2399,7 @@ int main(int argc, char** argv)
             static bool book_tried = false;
             if (!book_tried) {
                 book_tried = true;
-                pb_init<GlobalBoard, Move>();
+                pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); });
             }
         }
         if (opponent_row != -1) {

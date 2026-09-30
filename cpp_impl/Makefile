@@ -36,7 +36,7 @@ CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX
 # pragmas and always_inline attributes make the submission fast there.
 CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
 
-.PHONY: all test bench cg-gate cg-min-check port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol datagen clean
+.PHONY: all test bench cg-gate cg-min-check port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-text play-book-check play-book-match play-book-protocol datagen clean
 
 all: test
 
@@ -97,10 +97,10 @@ datagen: $(BIN)/datagen
 $(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_gen.cpp
 
-$(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp global_board.hpp | $(BIN)
+$(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_pack.cpp
 
-$(BIN)/play_book_check: play_book_check.cpp play_book.hpp play_book_data.hpp play_book_text.hpp mini_eval_d16.hpp | $(BIN)
+$(BIN)/play_book_check: play_book_check.cpp play_book.hpp play_book_data.hpp play_book_text.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_check.cpp
 
 $(BIN)/play_book_match: play_book_match.cpp play_book.hpp play_book_data.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
@@ -133,8 +133,8 @@ cg-min-check: $(BIN)/cg_selfcheck
 	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/cg_selfcheck.cpp -o cpp_impl/bin/cg_selfcheck_min.cpp --inline-local
 	$(CXX) $(CXXFLAGS) -o $(BIN)/cg_selfcheck_min $(BIN)/cg_selfcheck_min.cpp
 	@for d in 5 7 9; do \
-	  a=$$($(BIN)/cg_selfcheck_min 120 $$d | grep -v seconds); \
-	  b=$$($(BIN)/cg_selfcheck 120 $$d | grep -v seconds); \
+	  a=$$($(BIN)/cg_selfcheck_min 120 $$d | grep -v seconds | sed 's/ book_ms=.*//'); \
+	  b=$$($(BIN)/cg_selfcheck 120 $$d | grep -v seconds | sed 's/ book_ms=.*//'); \
 	  if [ "$$a" = "$$b" ]; then echo "cg-min-check depth $$d: IDENTICAL"; \
 	  else echo "cg-min-check depth $$d: DIFFERENT"; echo "$$a"; echo "$$b"; exit 1; fi; \
 	done
@@ -162,6 +162,13 @@ test: test-cpp test-python compile-cg compile-legend book-inspect
 # into play_book_data.hpp and checks the result against it.
 play-book-gen: $(BIN)/play_book_gen
 	$(BIN)/play_book_gen $(PLAY_BOOK_TXT) $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND) $(PLAY_BOOK_SEARCH_MS)
+
+$(BIN)/play_book_text_dump: play_book_text_dump.cpp play_book.hpp play_book_data.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ play_book_text_dump.cpp
+
+# The shipped payload back as a text book, for re-packing after a coder change.
+play-book-text: $(BIN)/play_book_text_dump
+	$(BIN)/play_book_text_dump > $(PLAY_BOOK_TXT)
 
 play-book: $(BIN)/play_book_pack
 	$(BIN)/play_book_pack $(PLAY_BOOK_TXT) $(SRC_DIR)/play_book_data.hpp

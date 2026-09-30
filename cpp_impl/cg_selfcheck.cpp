@@ -131,9 +131,12 @@ int main(int argc, char **argv) {
     // the same machine: it is the CodinGame-flags vs -O3 speed gate.
     std::printf("cg_selfcheck seconds=%.3f nps=%.0f\n", search_seconds,
                 search_seconds > 0 ? total_nodes / search_seconds : 0.0);
-    bool book_ok = pb_init<GlobalBoard, Move>();
-    std::printf("cg_selfcheck book=%s entries=%zu table_checksum=%llu\n",
+    auto book_t0 = std::chrono::steady_clock::now();
+    bool book_ok = pb_init<GlobalBoard, Move>(
+        [](const PbView &v, int c) { return b64::evaluate_board(v, c); });
+    double book_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - book_t0).count();
+    std::printf("cg_selfcheck book=%s entries=%zu table_checksum=%llu book_ms=%.1f\n",
                 book_ok ? "ok" : "FAILED", PB_TABLE.size(),
-                (unsigned long long)play_book_table_checksum());
+                (unsigned long long)play_book_table_checksum(), book_ms);
     return 0;
 }

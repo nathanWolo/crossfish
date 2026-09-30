@@ -6,18 +6,25 @@
 // reply; when we move second the book starts at our reply to it. At each of our
 // positions the book stores our move and whether the book goes on after it; at
 // each opponent position it stores which replies it covers. Positions need no
-// keys: PbWalker visits the book in one fixed order and the payload holds only
-// mixed-radix digits (our move's index among the legal moves, then a 0/1
-// "continues" digit; one 0/1 "covered" digit per non-terminal opponent reply).
-// The packer (play_book_pack.cpp) and the runtime drive the same walk, so they
-// cannot disagree about the order. See documentation/play_book.md.
+// keys: PbWalker visits the book in one fixed order and the payload is one
+// adaptive binary arithmetic-coded stream of its decisions: our move's rank
+// among the legal moves ordered by the NNUE's static evaluation, then a 0/1
+// "continues" bit; one 0/1 "covered" bit per non-terminal opponent reply, in
+// the same evaluation order. Every bit has a context (the ply, the rank), so
+// the stream costs about half the bits of the plain digits. The packer
+// (play_book_pack.cpp) and the runtime drive the same walk with the same
+// evaluator, so they cannot disagree about the order or the probabilities.
+// See documentation/play_book.md.
 //
 // Positions equivalent under the 8 board symmetries share one entry. The
 // runtime table maps a symmetry-canonical 64-bit hash to the book move in that
 // canonical orientation.
 //
-// Requires d16_mini_cjk_decode (mini_eval_d16.hpp) and the board type's
-// fillLegalMoves / makeMove / unmakeMove / checkWinner.
+// Requires d16_mini_cjk_decode (mini_eval_d16.hpp), the board type's
+// fillLegalMoves / makeMove / unmakeMove / checkWinner, and an evaluator
+// `int eval(const PbView &, int constraint)` for the side to move (the bot
+// passes the NNUE's b64::evaluate_board); its values must be identical in the
+// packer and the bot.
 
 #include <cstdint>
 #include <unordered_map>
@@ -124,12 +131,93 @@ static int pb_map_move(int t, int packed, bool inverse) {
     return ((r / 3) * 3 + col / 3) * 9 + (r % 3) * 3 + col % 3;
 }
 
+// The coder orders moves by the evaluation of the position after each one. A
+// child is built as this light view rather than through the board's own
+// makeMove (whose move-history stack is slow when CodinGame compiles without
+// -O); the packer and the runtime build it identically, which is all the
+// ordering needs. The evaluator sees the fields nnue_b64's evaluate_board reads.
+struct PbView {
+    struct { int markers[2]; } mini_boards[9];
+    int mini_board_states[3];
+    int n_moves;
+};
+
+static bool pb_three(int m) {
+    static const int lines[8] = {0007, 0070, 0700, 0111, 0222, 0444, 0421, 0124};
+    for (int l : lines) if ((m & l) == l) return true;
+    return false;
+}
+
+// order[r] = index in `legal` of the r-th best move: a move that wins the game
+// first, then by eval(child, constraint) for the side to move in the child (so
+// lower is better for the mover); ties keep the generation order.
+template <typename Board, typename MoveT, typename Eval>
+static void pb_order(const Board &b, const MoveT *legal, int n, Eval &eval, int *order) {
+    PbView base;
+    for (int mb = 0; mb < 9; mb++) {
+        base.mini_boards[mb].markers[0] = b.mini_boards[mb].markers[0];
+        base.mini_boards[mb].markers[1] = b.mini_boards[mb].markers[1];
+    }
+    for (int k = 0; k < 3; k++) base.mini_board_states[k] = b.mini_board_states[k];
+    base.n_moves = b.n_moves + 1;
+    const int stm = b.n_moves & 1;
+    int score[81];
+    for (int i = 0; i < n; i++) {
+        PbView v = base;
+        const int mb = legal[i].mini_board, sq = legal[i].square, bit = 1 << mb;
+        v.mini_boards[mb].markers[stm] |= 1 << sq;
+        order[i] = i;
+        if (pb_three(v.mini_boards[mb].markers[stm])) {
+            v.mini_board_states[stm] |= bit;
+            if (pb_three(v.mini_board_states[stm])) { score[i] = -1000000; continue; }
+        } else if ((v.mini_boards[mb].markers[0] | v.mini_boards[mb].markers[1]) == 511) {
+            v.mini_board_states[2] |= bit;
+        }
+        const int oop = v.mini_board_states[0] | v.mini_board_states[1] | v.mini_board_states[2];
+        score[i] = eval(v, (oop >> sq & 1) ? 9 : sq);
+    }
+    for (int i = 1; i < n; i++) {  // insertion sort: n <= 81, stable
+        int k = order[i], j = i;
+        while (j > 0 && score[order[j - 1]] > score[k]) { order[j] = order[j - 1]; j--; }
+        order[j] = k;
+    }
+}
+
+// Adaptive binary models: probabilities of a 0 bit in 1/4096, LZMA-style update.
+struct PbModels {
+    uint16_t cont[32];      // "the book continues", by ply
+    uint16_t cover[32][8];  // "this reply is covered", by ply and the reply's rank
+    uint16_t rank[16][8];   // "our move ranks below k", by legal-move count bucket and k
+    PbModels() {
+        for (auto &p : cont) p = 2048;
+        for (auto &r : cover) for (auto &p : r) p = 2048;
+        for (auto &r : rank) for (auto &p : r) p = 2048;
+    }
+    static int ply_ctx(int ply) { return ply < 31 ? ply : 31; }
+    static int n_ctx(int n) { return n <= 9 ? n : 10 + ((n - 10) / 12 < 5 ? (n - 10) / 12 : 5); }
+};
+
+static inline void pb_adapt(uint16_t &p, int bit) {
+    if (bit) p -= p >> 5; else p += (4096 - p) >> 5;
+}
+
+// Our move's rank as truncated unary: bit k says "rank > k". `code` encodes or
+// decodes one bit and returns its value, so the packer and the runtime share
+// this binarization.
+template <typename Code>
+static int pb_code_rank(Code &&code, PbModels &m, int n, int rank) {
+    int nb = PbModels::n_ctx(n), k = 0;
+    while (k < n - 1 && code(m.rank[nb][k < 7 ? k : 7], rank > k)) k++;
+    return k;
+}
+
 // Walks every book position in the fixed order shared by packer and runtime.
 // The hooks supply the decisions (the runtime reads them from the payload, the
-// packer from the text book):
-//   choose(b, legal, n)  index of our book move among the legal moves
-//   more(b)              after our move (opponent to move in b): does the book go on?
-//   covers(b, reply)     is this non-terminal opponent reply in the book?
+// packer from the text book) and the evaluator:
+//   eval(view, constraint)       static evaluation of a PbView for its side to move
+//   choose(b, legal, order, n)   rank of our book move in `order`
+//   more(b)                      after our move (opponent to move in b): does the book go on?
+//   covers(b, rank)              is this non-terminal opponent reply (of that rank) in the book?
 template <typename Board, typename MoveT, typename Hooks>
 struct PbWalker {
     Hooks &hooks;
@@ -141,8 +229,10 @@ struct PbWalker {
         uint64_t h = pb_canonical(b, t);
         if (PB_TABLE.count(h)) return;
         MoveT legal[81];
+        int order[81];
         int n = b.fillLegalMoves(legal);
-        MoveT m = legal[hooks.choose(b, legal, n)];
+        pb_order(b, legal, n, hooks.eval, order);
+        MoveT m = legal[order[hooks.choose(b, legal, order, n)]];
         PB_TABLE[h] = (uint8_t)pb_map_move(t, m.mini_board * 9 + m.square, false);
         entries++;
         b.makeMove(m);
@@ -154,10 +244,12 @@ struct PbWalker {
         int t;
         if (!seen_opponent.insert(pb_canonical(b, t)).second) return;
         MoveT legal[81];
+        int order[81];
         int n = b.fillLegalMoves(legal);
-        for (int i = 0; i < n; i++) {
-            b.makeMove(legal[i]);
-            if (b.checkWinner() == -1 && hooks.covers(b, legal[i])) ours(b);
+        pb_order(b, legal, n, hooks.eval, order);
+        for (int r = 0; r < n; r++) {
+            b.makeMove(legal[order[r]]);
+            if (b.checkWinner() == -1 && hooks.covers(b, r)) ours(b);
             b.unmakeMove();
         }
     }
@@ -176,44 +268,46 @@ struct PbWalker {
     }
 };
 
-// Mixed-radix reader: 56-bit chunks, 7 little-endian payload bytes each.
-struct PbReader {
+// Binary range decoder (the LZMA scheme: 32-bit range, 12-bit probabilities).
+struct PbDecoder {
     const unsigned char *bytes;
     int n_bytes;
     int pos = 0;
-    uint64_t value = 0;
-    uint64_t range = ~0ull;  // forces a chunk load on the first read
-    int next(int radix) {
-        if (range > (1ull << 56) / (uint64_t)radix) {
-            value = 0;
-            for (int i = 0; i < 7; i++) {
-                uint64_t byte = pos < n_bytes ? bytes[pos] : 0;
-                value |= byte << (8 * i);
-                pos++;
-            }
-            range = 1;
-        }
-        int digit = (int)(value % (uint64_t)radix);
-        value /= (uint64_t)radix;
-        range *= (uint64_t)radix;
-        return digit;
+    uint32_t range = 0xFFFFFFFFu, code = 0;
+    unsigned next_byte() { return pos < n_bytes ? bytes[pos++] : 0; }
+    void init() { for (int i = 0; i < 5; i++) code = code << 8 | next_byte(); }
+    int bit(uint16_t &p) {
+        uint32_t bound = (range >> 12) * p;
+        int b;
+        if (code < bound) { range = bound; b = 0; } else { range -= bound; code -= bound; b = 1; }
+        pb_adapt(p, b);
+        while (range < (1u << 24)) { range <<= 8; code = code << 8 | next_byte(); }
+        return b;
     }
 };
 
 #ifndef PLAY_BOOK_NO_DATA
 // Decodes the payload into PB_TABLE. Returns false if the payload is malformed.
-template <typename Board, typename MoveT>
-static bool pb_init() {
+// `eval` must be the evaluator the book was packed with.
+template <typename Board, typename MoveT, typename Eval>
+static bool pb_init(Eval eval) {
     if (PB_READY) return true;
     static unsigned char buf[PLAY_BOOK_BYTES + 16];
     int n = d16_mini_cjk_decode(PLAY_BOOK_CJK, buf, (int)sizeof(buf));
     if (n < PLAY_BOOK_BYTES) return false;
     struct Hooks {
-        PbReader reader;
-        int choose(Board &, MoveT *, int n_legal) { return reader.next(n_legal); }
-        bool more(Board &) { return reader.next(2) != 0; }
-        bool covers(Board &, const MoveT &) { return reader.next(2) != 0; }
-    } hooks{PbReader{buf, n}};
+        Eval &eval;
+        PbDecoder dec;
+        PbModels m;
+        int choose(Board &b, MoveT *, const int *, int n_legal) {
+            return pb_code_rank([&](uint16_t &p, int) { return dec.bit(p); }, m, n_legal, 0);
+        }
+        bool more(Board &b) { return dec.bit(m.cont[PbModels::ply_ctx(b.n_moves)]) != 0; }
+        bool covers(Board &b, int rank) {
+            return dec.bit(m.cover[PbModels::ply_ctx(b.n_moves)][rank < 7 ? rank : 7]) != 0;
+        }
+    } hooks{eval, PbDecoder{buf, n}, PbModels{}};
+    hooks.dec.init();
     PbWalker<Board, MoveT, Hooks> walker{hooks};
     walker.run();
     PB_READY = walker.entries == PLAY_BOOK_ENTRIES;
