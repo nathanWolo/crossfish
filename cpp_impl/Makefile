@@ -21,7 +21,7 @@ PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,pyt
 BIN := $(SRC_DIR)/bin
 # Opening book (documentation/play_book.md). The text book is a build artifact;
 # only the packed play_book_data.hpp is committed.
-PLAY_BOOK_TXT ?= $(BIN)/play_book.txt
+PLAY_BOOK_TXT ?= $(SRC_DIR)/play_book.txt
 PLAY_BOOK_FIRST ?= 5
 PLAY_BOOK_SECOND ?= 4
 PLAY_BOOK_SEARCH_MS ?= 2000

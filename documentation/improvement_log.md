@@ -3513,3 +3513,66 @@ Shards: desktop N 4494 +7.50 +/- 5.93, ThinkPad N 3612 +1.83 +/- 6.28,
   the ThinkPad: 30 positions at depth 13, 2,757,452 nodes, checksum
   4620691443947525582, no speed lost);
 - `cg_input.cpp` is 95,927 characters (4,073 left).
+
+---
+
+## 61. Submission size: 95,927 to 72,105 characters (30 September 2026)
+
+Not an Elo round: the same program, 23,822 characters smaller, to make room
+for a bigger net or more book. Where the paste file's characters went before:
+code 49,765, NNUE payload 30,948, opening book 13,456, macro net 1,758.
+
+- **The NNUE payload is incompressible losslessly.** The quantized weights use
+  12-13 significant bits each (median |q| 300-1,600 on a 14-bit grid, ~1,500
+  distinct values per 1,800), and per-row Rice, Laplacian, Gaussian and
+  adaptive bit-length-class models all land within 1% of the shipped Rice
+  code. Only fewer bits would shrink it (about 1,350 characters for 0.1 more
+  mean error, minification.md 3.1).
+- **`#define` pass in the minifier (-15,044).** Keywords and attributes
+  survive renaming and repeat thousands of times; a greedy pass turns the most
+  valuable runs of 1-8 tokens into one- or two-letter object-like macros,
+  bracket-balanced (the AVX intrinsics are function-like macros under
+  CodinGame's -O0, and an unbalanced expansion inside their argument lists
+  broke them), with every `#include` hoisted ahead of the defines and one
+  joint ranking of macros and renamed identifiers by use count. Half the
+  bundled file had been out of the pass's reach until the hoist, because
+  inlined headers repeat `#include` lines mid-file. `make cg-min-check`
+  minifies `cg_selfcheck.cpp` itself and pins the fixed-depth checksums.
+- **Opening book arithmetic-coded (13,456 -> 6,208 at 14 bits).** The digits
+  were at their full uniform information content (184,846 bits). Modelled:
+  our move as its rank under the NNUE's static evaluation of the children
+  (rank 0 63% of the time; 101,931 -> 54,073 bits; a depth-1 search would
+  give 48,236 for 8 s of decode, so no), "continues" by ply (34,066 ->
+  14,108), "covered" by ply and the reply's eval rank (48,849 -> 22,350; the
+  uttt.ai prior threshold the book was grown with tracks the NNUE's ranking
+  closely: rank 0 covered 99%, rank 7+ 7%). LZMA's binary range coder, 88
+  models. The decode evaluates 300k children: 50 ms at -O3, 90 ms with
+  CodinGame's flags once the children were built as a light view instead of
+  through `GlobalBoard::makeMove` (its `std::stack` move history costs 190
+  ms under -O0). The book table is unchanged (pinned checksum). The book
+  now depends on the net: `make play-book` after every net change, from the
+  text book now committed as `cpp_impl/play_book.txt`.
+- **U15 alphabet: 15 payload bits per character (-2,536).** No single block
+  of 2^15 plain characters exists, but U+3400..U+9FFF (Extension A, the
+  Yijing symbols, the unified ideographs) plus 5,120 private-use characters
+  is one, with no normalization decompositions anywhere; a Python test walks
+  it. The decoders change one line. (A top CodinGame bot goes to 15.875 bits
+  with every non-surrogate code point and a bignum decode; that is another
+  4% of the payloads if ever needed.)
+- **`evaluate_macro_fast` out of the shipped header (-212).**
+
+Everything is tree-identical: `port-check` and `cg-min-check` IDENTICAL at
+depths 5, 7 and 9, 31/31 unit tests, 95 Python tests, the same node rate
+through the CodinGame protocol with CodinGame's flags (680k vs 679k nodes per
+searched move). The first turn with CodinGame's flags takes about 325 ms of
+its 1,000 ms (was 250) for the book's evaluations.
+
+Not pursued: shipping a compiled binary inside a wrapper, as that top bot
+does (UPX-packed C, ~200 KB in 95k characters). Our dynamic g++-11 binary is
+260 KB and 151 KB after UPX, which would fit at 15.875 bits per character
+with room, and it would give the bot a real -O3 (and PGO) instead of the
+pragma-optimized -O0 build. But CodinGame's compile costs only 5% of nodes
+today (`cg-speed`: 9.14M against 9.59M nps), the binary must be built
+against the arena's libstdc++ and glibc, and it can only be tested by
+submitting; the source route above already leaves 27,895 characters free.
+
