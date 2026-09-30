@@ -3449,9 +3449,3 @@ already over. Prev is Dev renamed. `codingame_nnue.cpp` carries `fp_pawns`:
 - `make port-check` IDENTICAL at depths 5, 7 and 9;
 - `make cg-speed` checksums match at -O3 and with CodinGame's flags;
 - `cg_input.cpp` is 95,874 characters (4,126 left).
-
-### Next
-
-The same survey says RFP could also tighten without widening: 35 pawns
-instead of 50 with 45-59 open squares and no opponent threat (0.4-1.0% wrong).
-Qsearch's delta margin (350) and LMR have not been surveyed yet.
