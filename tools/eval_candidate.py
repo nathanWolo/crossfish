@@ -58,7 +58,7 @@ CPP = ROOT / "cpp_impl"
 sys.path.insert(0, str(HERE))
 import nnue_emit_mininet_cg as legacy  # noqa: E402
 import nnue_emit_mininet_header as mh  # noqa: E402
-from nnue_cjk14 import encode_cjk14, wrap_cjk14  # noqa: E402
+from nnue_cjk14 import encode_u15, wrap_cjk14  # noqa: E402
 
 TOOLCHAIN = ROOT / "toolchains" / "llvm-mingw-20260616-ucrt-x86_64" / "bin"
 CXXFLAGS = ["-O3", "-std=c++17", "-mavx2", "-mbmi", "-mbmi2", "-mlzcnt", "-mpopcnt", "-pthread",
@@ -84,7 +84,7 @@ def cmd_emit(args):
     packed_empty = mh.empty_output(d, h, rec, super_e, loc, constr, active, w1, b1, w2, b2)
     b2 = float(b2 + original_empty - packed_empty)
     blob = legacy.pack_blob(codes, cents, super_e, loc, constr, active, w1, b1, w2, b2)
-    mh.emit_header(CPP / "mini_eval.hpp", out / "mini_eval_d16.hpp", wrap_cjk14(encode_cjk14(blob)), d, h, None)
+    mh.emit_header(CPP / "mini_eval.hpp", out / "mini_eval_d16.hpp", wrap_cjk14(encode_u15(blob)), d, h, None)
     subprocess.run([sys.executable, str(HERE / "nnue_emit_macro_header.py"), str(ext(".macro.pt")),
                     "-o", str(out / "macro_eval.hpp"), "--scale", "1.0", "--clip", "2000"], check=True)
     meta = json.loads(ext(".json").read_text())

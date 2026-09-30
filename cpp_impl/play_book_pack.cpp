@@ -48,13 +48,13 @@ struct PbEncoder {
     void finish() { for (int i = 0; i < 5; i++) shift_low(); }
 };
 
-// Same bit layout as tools/nnue_cjk14.py: 14-bit groups, MSB first, from U+4E00.
-static std::string encode_cjk14(const std::vector<unsigned char> &data) {
+// Same bit layout as tools/nnue_cjk14.py encode_u15: 15-bit groups, MSB first, on the U15 alphabet.
+static std::string encode_u15(const std::vector<unsigned char> &data) {
     std::string out;
     uint32_t acc = 0;
     int bits = 0, column = 0;
     auto emit = [&](uint32_t v) {
-        uint32_t code = 0x4E00 + v;
+        uint32_t code = v < 27648u ? 0x3400 + v : 0xE000 + v - 27648u;
         out += (char)(0xE0 | (code >> 12));
         out += (char)(0x80 | ((code >> 6) & 63));
         out += (char)(0x80 | (code & 63));
@@ -63,13 +63,13 @@ static std::string encode_cjk14(const std::vector<unsigned char> &data) {
     for (unsigned char byte : data) {
         acc = (acc << 8) | byte;
         bits += 8;
-        while (bits >= 14) {
-            bits -= 14;
-            emit((acc >> bits) & 0x3FFF);
+        while (bits >= 15) {
+            bits -= 15;
+            emit((acc >> bits) & 0x7FFF);
         }
         acc &= (1u << bits) - 1;
     }
-    if (bits) emit((acc << (14 - bits)) & 0x3FFF);
+    if (bits) emit((acc << (15 - bits)) & 0x7FFF);
     if (column == 0 && !out.empty()) out.pop_back();
     return out;
 }
@@ -140,7 +140,7 @@ int main(int argc, char **argv) {
     hooks.enc.finish();
     std::vector<unsigned char> &bytes = hooks.enc.out;
     double info_bits = hooks.uniform_bits;
-    std::string text = encode_cjk14(bytes);
+    std::string text = encode_u15(bytes);
     size_t chars = 0;
     for (unsigned char ch : text) chars += (ch & 0xC0) != 0x80 && ch != '\n';
 

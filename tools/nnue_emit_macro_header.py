@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from nnue_cjk14 import encode_cjk14, wrap_cjk14
+from nnue_cjk14 import encode_u15, wrap_cjk14
 
 
 def main() -> None:
@@ -62,7 +62,7 @@ def main() -> None:
     )
     blob = b"".join(value.tobytes() for value in arrays)
     blob += struct.pack("<f", float(scaled_bias))
-    packed_text = wrap_cjk14(encode_cjk14(blob))
+    packed_text = wrap_cjk14(encode_u15(blob))
 
     text = f'''#pragma once
 // Compact super-board/constraint residual head. The checkpoint's embeddings

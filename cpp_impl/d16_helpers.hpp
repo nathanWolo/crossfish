@@ -30,8 +30,9 @@ static int d16_mini_cjk_decode(
         uint32_t code = ((p[0] & 15u) << 12) | ((p[1] & 63u) << 6)
                       | (p[2] & 63u);
         p += 2;
-        acc = (acc << 14) | (code - 0x4E00u);
-        bits += 14;
+        // U15 alphabet (tools/nnue_cjk14.py): U+3400..U+9FFF, then U+E000..U+F3FF.
+        acc = (acc << 15) | (code >= 0xE000u ? code - 0xE000u + 27648u : code - 0x3400u);
+        bits += 15;
         while (bits >= 8) {
             if (n >= out_max) return -1;
             bits -= 8;
