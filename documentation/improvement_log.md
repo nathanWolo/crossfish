@@ -349,7 +349,8 @@ This section is the other half of the history. Retrying these without a new hypo
 - History-modulated LMR, `r -= (h - 1500) / 3000` ply in hundredths:
   walk -0.67 ply; N=960, -10.86 +/- 15.34. Killed.
 - Continuation history `[stm][previous move][move]` in ordering, same
-  bonus/malus as history: NPS -4%; N=2106, +1.15 +/- 10.63. Killed.
+  bonus/malus as history: NPS -4%; N=2106, +1.15 +/- 10.63. Killed. (On the
+  NNUE engine with IIR it passed: section 62.)
 - SPSA over 16 constants (margins, LMR, ordering weights, free-move and
   latent-capture terms), 8,000 pairs at 25 ms: drift was small; N=1794,
   -0.58 +/- 11.13. The constants are at a local optimum.
@@ -3513,3 +3514,57 @@ Shards: desktop N 4494 +7.50 +/- 5.93, ThinkPad N 3612 +1.83 +/- 6.28,
   the ThinkPad: 30 positions at depth 13, 2,757,452 nodes, checksum
   4620691443947525582, no speed lost);
 - `cg_input.cpp` is 95,927 characters (4,073 left).
+
+## 62. Continuation history (30 September 2026)
+
+Round ten killed continuation history on the HCE engine (section 11: NPS -4%,
++1.15 +/- 10.63 at N=2106). It was retried in this round.
+
+### The change
+
+`cont_hist[stm][previous move's cell, or none][mb][sq]` (int16, 47 KB),
+updated where the butterfly history is: the cutoff move gets the same
+`depth * depth` bonus with gravity, and the earlier quiet moves get the same
+malus. Aging is the same (halved every search, zeroed for fixed-depth search).
+It adds `cont * 3277 >> 16` (about 1/20, history's weight) to the move score;
+the vector scorer loads one miniboard's nine squares per row. The countermove
+bonus is unchanged.
+
+### Measurements
+
+On the section 59 freeze the instrumentation predicted a loss. At fixed depth
+14 the tree grew 8% (more nodes on 32 of 40 games), and the first move cut off
+about 1 point less often. NPS fell 1.5-3%, and 90 ms walks completed 0.1 ply
+less. Rebased onto IIR (sections 60-61), the same table gives 90.5% of Prev's
+nodes on the depth-8 bench, with NPS about 4% lower. IIR reduces non-PV nodes
+that have no hash move, and those nodes are ordered by the history terms alone,
+which is the likely reason the sharper reply-conditioned ordering pays off
+there.
+
+### Result
+
+All tests were pooled at CodinGame-scaled budgets (desktop 49 ms x7, ThinkPad
+63 ms x7, Dell 62 ms x3) against the section 61 freeze. A 3,000-game screen
+read +7.93 +/- 6.66 (LLR +2.34) at N=3464. The sequential test continued on new
+openings (the screen's shard logs pooled with the new ones) and passed at
+N=4012: +9.18 +/- 6.16, LLR +3.37. Most of that decision came from the screen,
+and the ThinkPad shard read only +1.8, so an independent SPRT on fresh openings
+was run before freezing:
+
+```text
+N 10622  W 2126 / D 6516 / L 1980
+Penta 137 / 1100 / 2708 / 1212 / 154
++4.78 +/- 3.78 Elo
+LLR +3.06 (H0=0, H1=+5, bound 2.94) — PASS
+Timeouts: Prev 0 / Dev 0
+Shards: desktop +3.57 +/- 5.44, ThinkPad +6.85 +/- 6.35, Dell +3.58 +/- 9.31
+```
+
+**Freeze.** Prev is Dev renamed. `codingame_nnue.cpp` carries the table, its
+updates, aging and both scorers:
+
+- `make port-check` IDENTICAL at depths 5, 7 and 9;
+- `make cg-speed` checksums match at -O3 and with CodinGame's flags (g++ 11:
+  30 positions at depth 13, 3,520,782 nodes, checksum 6810861239900586370);
+- `cg_input.cpp` is 96,714 characters (3,286 left). The table costs about 780
+  characters of code.
