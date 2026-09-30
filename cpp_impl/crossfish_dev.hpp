@@ -10,8 +10,11 @@
 #include <mutex>
 #include <vector>
 
-// Experiment base, frozen 2026-09-30: identical to crossfish_prev.hpp apart
-// from this comment and the class name. Edit only this file while testing.
+// Candidate (2026-09-30, on the section 60 freeze): no futility pruning while
+// the node's best value so far is a forced loss (Stockfish's
+// !is_loss(bestValue)). While every searched move loses by force, the quiet
+// moves futility would skip are searched, so a node claims to be mated only
+// after searching them; the futility test, margins and depth are unchanged.
 // Frozen 2026-09-30 (section 60): internal iterative reduction at non-PV
 // nodes. A null-window node with no TT entry at depth >= 4 (IIR_MIN_DEPTH)
 // is searched one ply shallower; PV nodes keep IID. Pooled SPRT at
@@ -1988,7 +1991,17 @@ class CrossfishDev {
                 FastMove fast_move = move_from_key(move_keys[i]);
                 Move move = unpack_fast_move(fast_move);
                 bool capture = is_fast_capture(board, fast_move);
-                if (can_futility_prune && i > 0 && !capture) {
+                // Futility skips a quiet move only while the node's best
+                // value so far is not a forced loss (Stockfish's
+                // !is_loss(bestValue)). While every move searched so far
+                // loses by force, the remaining quiet moves are searched
+                // instead, so the node only stores and returns a "mated"
+                // bound after it has searched its moves: a pruned quiet move
+                // may be the one that holds or wins. best_val only rises, so
+                // once a searched move escapes the mate, pruning is exactly
+                // as before.
+                if (can_futility_prune && i > 0 && !capture
+                    && best_val >= -CORR_MATE_BOUND) {
                     continue;
                 }
                 int extension = 0;
