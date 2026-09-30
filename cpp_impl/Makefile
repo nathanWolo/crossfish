@@ -36,7 +36,7 @@ CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX
 # pragmas and always_inline attributes make the submission fast there.
 CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
 
-.PHONY: all test bench cg-gate port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol datagen clean
+.PHONY: all test bench cg-gate cg-min-check port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol datagen clean
 
 all: test
 
@@ -126,6 +126,19 @@ cg-flags: $(BIN)/cg_input_cgflags
 
 # Same tree at -O3 and with CodinGame's flags: the checksum lines must match,
 # and the seconds ratio is how much speed CodinGame's compiler still loses.
+# Minifier identity gate: minify cg_selfcheck.cpp itself (it bundles the CG
+# file, so every rename and macro applies to the whole program) and compare
+# its fixed-depth checksums with the readable build's.
+cg-min-check: $(BIN)/cg_selfcheck
+	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/cg_selfcheck.cpp -o cpp_impl/bin/cg_selfcheck_min.cpp --inline-local
+	$(CXX) $(CXXFLAGS) -o $(BIN)/cg_selfcheck_min $(BIN)/cg_selfcheck_min.cpp
+	@for d in 5 7 9; do \
+	  a=$$($(BIN)/cg_selfcheck_min 120 $$d | grep -v seconds); \
+	  b=$$($(BIN)/cg_selfcheck 120 $$d | grep -v seconds); \
+	  if [ "$$a" = "$$b" ]; then echo "cg-min-check depth $$d: IDENTICAL"; \
+	  else echo "cg-min-check depth $$d: DIFFERENT"; echo "$$a"; echo "$$b"; exit 1; fi; \
+	done
+
 cg-speed: $(BIN)/cg_selfcheck $(BIN)/cg_selfcheck_cgflags
 	$(BIN)/cg_selfcheck 30 13
 	$(BIN)/cg_selfcheck_cgflags 30 13
