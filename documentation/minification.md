@@ -88,8 +88,9 @@ immediately before token minification.
 
 ## 3. Neural evaluation included in the submission
 
-The evaluation is the pattern-generator NNUE r12_M2 (35,243 parameters;
-improvement log section 57; B64_d5M_57ep until 2026-09-28). The paste file carries two networks:
+The evaluation is the pattern-generator NNUE r13w_11 (35,243 parameters;
+improvement log section 64; r12_M2 from 2026-09-28 to 2026-10-01, section 57,
+and B64_d5M_57ep before that). The paste file carries two networks:
 
 - the NNUE's generator (section 3.1), from which the bot bakes its 25.6 MB of
   integer tables at start-up;
@@ -140,9 +141,14 @@ IEEE single arithmetic in numpy and in C++.
   and `bias` round to nearest. The encoder is GPTQ-rounded but not refit: on
   this net its refit moved rare patterns' embeddings (max error 116 against 11
   at 16 bits everywhere).
-- **Size.** 54,159 bytes = **28,885 U15 characters** (payload sha256
-  `4ba93b1a...`, pinned by `tools/test_nnue_emit_b64_header.py`).
-- **Error.** For r12_M2 on 20,000 positions, the bot's integer eval is 5.80
+- **Size.** 53,927 bytes = **28,762 U15 characters** (payload sha256
+  `712039a0...`, pinned by `tools/test_nnue_emit_b64_header.py`; r12_M2's was
+  54,159 bytes = 28,885).
+- **Error.** For r13w_11 the dequantized generator alone, in float, is 1.69
+  mean / 41.8 max eval units from the float net on the 20,000 parity
+  positions, and the bot's integer eval is 8.9 / 31 from the PyTorch net on
+  the 16 positions `unit_tests.cpp` pins (the 20,000-position integer parity
+  was not re-measured for it). For r12_M2 on 20,000 positions, the bot's integer eval is 5.80
   mean / 166 max eval units from the float net (the unquantized export in the
   same integer engine: 5.63 / 211; the dequantized generator alone, in float:
   1.08 / 45). B64_d5M_57ep's were 4.72 / 163 and 0.91 / 61. A
@@ -336,7 +342,7 @@ The committed tests pin the payloads to:
 
 | Payload | Bytes | Characters | Pinned hash |
 | --- | ---: | ---: | --- |
-| NNUE generator | 54,159 | 30,948 | sha256 `4ba93b1a422c480c...` (`tools/test_nnue_emit_b64_header.py`), plus the 16 baked tables' hashes (`unit_tests.cpp`) |
+| NNUE generator | 53,927 | 28,762 | sha256 `712039a021b912bc...` (`tools/test_nnue_emit_b64_header.py`), plus the 16 baked tables' hashes (`unit_tests.cpp`) |
 | Macro residual | 3,076 | 1,641 | FNV-1a 64 `626e29f3a8d65679` |
 | D16 local evaluator (retired) | 42,855 | 24,489 | FNV-1a 64 `e35e987c17a453cf` |
 
@@ -584,10 +590,10 @@ bytes. The CLI exits with failure when output is 100,000 units or larger.
 | Part of `cg_input.cpp` | UTF-16 units |
 | --- | ---: |
 | code (minified engine, NNUE runtime, book decoder) | 36,768 |
-| NNUE generator payload | 28,885 |
-| gameplay opening book payload | 5,794 |
+| NNUE generator payload | 28,762 |
+| gameplay opening book payload | 5,619 |
 | macro net payload | 1,641 |
-| **total** | **73,088** (26,912 left) |
+| **total** | **72,790** (27,210 left) |
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
@@ -635,9 +641,9 @@ python3 tools/nnue_emit_b64_header.py --check
 ```
 
 The shipped header came from
-`python tools/nnue_emit_b64_header.py datasets/nnue2/fast/r12_M2_perm.bin --label r12_M2`
-with every other option at its default (the same command on `B64_d5M_57ep_perm.bin` rebuilds the previous
-header byte for byte); the emitter's GPTQ calibration reads
+`python tools/nnue_emit_b64_header.py datasets/nnue2/fast/r13w_11_perm.bin --label r13w_11`
+with every other option at its default (the same command on `r12_M2_perm.bin` or `B64_d5M_57ep_perm.bin`
+rebuilds the previous headers byte for byte); the emitter's GPTQ calibration reads
 `datasets/nnue2/d8_a.cfdg`, which is not in the repository.
 
 The macro net has its own emitter (and so does the retired MiniNet,
