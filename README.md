@@ -504,7 +504,7 @@ See section 59 of the improvement log. The paste file was 95,874
 characters (4,126 left).
 
 On 2026-09-30 the paste file went from 95,927 to **72,105 characters** with
-the same program (improvement log section 61): a `#define` pass in the
+the same program (improvement log section 63): a `#define` pass in the
 minifier (-15,044), the opening book arithmetic-coded with the NNUE's move
 ordering as its model (13,456 -> 5,794 payload characters), and 15 payload
 bits per character instead of 14 (the U15 alphabet). `cg-min-check`,
