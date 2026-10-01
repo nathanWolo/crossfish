@@ -116,7 +116,7 @@ search, net r12_M2):
 
 | Set | What | Rows |
 | --- | --- | ---: |
-| sp13 (round thirteen) | depth-13 self-play of the current engine on three machines | 80.0M (77.4M train) |
+| sp13 (round thirteen) | depth-13 self-play of the current engine on three machines | 79.8M rows (77.4M train, 2.39M SPH13; 80.0M records) |
 | e2b | eval2 relabelled at depth 14 by the current engine | 4.34M train |
 | dumpb | the SPRT dumps' positions (30 files) labelled at depth 13 | 3.49M |
 | SPH13 (holdout) | 3% of the sp13 games per shard | 2,388,278 |
@@ -204,11 +204,11 @@ gen_r13.py train --name r13w_11 --init r12_M2 --lr 2e-3 --sched cosine --warmup 
   e2b, 8.4 over sp13), 28 minutes on the GPU; same loss, D4 augmentation and
   AdamW (a tensor-argument variant that does not leak under DirectML), seed 1.
 - **Result.** Objective +20.2 Elo estimated against r12_M2 (SPH13 +20.7,
-  LADH +20.8, V2 +20.5, DUMPH +17.6); held-out loss 3.8% below r12_M2's on
-  SPH13. In games +11.4 +/- 5.5 at 20 ms, +13.6 +/- 12.6 at CodinGame
+  LADH +20.8, V2 +20.5, DUMPH +17.6); held-out loss on SPH13 3.5% below the
+  float r12_M2 net's (3.8% below the shipped quantized one's). In games +11.4 +/- 5.5 at 20 ms, +13.6 +/- 12.6 at CodinGame
   compute, +11.8 +/- 11.0 as paste files (section 9).
 - **What the search found.** Random-init retraining of the round-twelve
-  recipe on the new data only matched r12_M2 (-2.3 offline, -8.6 in games);
+  recipe on the new data only matched r12_M2 (-2.3 offline, -13.8 +/- 5.5 in games);
   longer fine-tunes from r12_M2 kept improving (100M rows +11.5, 300M +14.5,
   1.2G +20.2); B-128 nets were +13 offline but tied r12_M2 in games (their
   tables cost 16-31% of the nodes); model soups of the warm starts were below

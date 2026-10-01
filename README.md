@@ -561,8 +561,9 @@ The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
 search with the mate-window pruning fix, the pattern-generator NNUE as its
 whole evaluation (net r13w_11 since 2026-10-01, r12_M2 before it), the CodinGame-compiler
 inlining work and the uttt.ai opening book. It is **72,790 characters**, 27,210
-under the cap (the minifier's count; `wc -c` reports UTF-8 bytes). Submitted
-on 2026-09-27, it finished placement at **rank 1** of CodinGame's Ultimate
+under the cap (the minifier's count; `wc -c` reports UTF-8 bytes); the r13w_11
+file has not been submitted yet. The 2026-09-27 submission (94,922 characters,
+net B64_d5M_57ep) finished placement at **rank 1** of CodinGame's Ultimate
 Tic-Tac-Toe ladder. Built with CodinGame's flags
 on the laptop, replies take 90.2-90.5 ms against the 100 ms referee, and the
 first turn about 175-220 ms of its 1,000 ms alone, and up to about 380-470 ms

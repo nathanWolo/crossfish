@@ -3734,7 +3734,7 @@ it beat main's over 1,000 games at 90 ms by **+11.8 +/- 11.0**.
 
 ### Data
 
-- **sp13: 80.0M rows of depth-13 self-play** by the current engine (the
+- **sp13: 80.0M records of depth-13 self-play** (79.8M rows: 77.4M train + 2.39M holdout) by the current engine (the
   section 62 freeze's search, net r12_M2; `datagen play ... d13`, round
   twelve's openings and randomisation) on three machines (desktop, ThinkPad,
   Dell). Holdout **SPH13**: 3% of the games per shard, 2,388,278 rows.
@@ -3780,9 +3780,11 @@ DUMPH 15%), calibrated on round twelve's nets (measured 20 ms Elo = 3.38 +
   73,242 steps of batch 16,384 (28 minutes on the GPU), lr 2e-3 cosine (1%
   warmup, floor 1e-5), K 1600, no result blend, mix e2b 46% / sp13 54%
   (about 128 passes over e2b and 8.4 over sp13), D4 augmentation, seed 1.
-  Held-out loss 3.8% below r12_M2's on SPH13.
+  Held-out loss on SPH13 3.8% below the shipped (quantized) r12_M2's static
+  eval and 3.5% below the float r12_M2 net.
 - **Random-init retraining does not beat r12_M2.** Round twelve's recipe on
-  the new data (trial 0) is -2.3 offline and -8.6 in games: the relabel alone
+  the new data (trial 0) is -2.3 offline and -13.8 +/- 5.5 in games (20 ms,
+  12,000-game fit): the relabel alone
   does not lift it, and three times the rows at equal steps are worth about
   one seed's difference. The data loop pays through the warm start.
 - **Capacity pays offline, not in play.** B-128 nets were +13 offline but
@@ -3845,6 +3847,11 @@ overstates the longer fine-tunes by about 1.5x, with the ranking intact.
 **Freeze.** Dev and Prev share `nnue_b64_net.hpp`, so both now carry r13w_11;
 nothing else in the engine changed. A same-shape net is not an eval-architecture
 change, so the CodinGame gate needs no declaration.
+
+**Longer fine-tunes.** While this section was written, trial 20 (2.4G rows,
+the same recipe) scored +22.9 offline and the 600M-row trial 10 +18.3; both
+were ungamed when r13w_11 was chosen. A longer fine-tune is the obvious next
+candidate.
 
 **Not yet done.** The sprt harness cannot run a CodinGame-scaled SPRT net
 against net, because Dev and Prev share the net header; the paste-file match
