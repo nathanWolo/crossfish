@@ -3,9 +3,9 @@
 Since 2026-09-27 (improvement log section 56) Crossfish's whole evaluation is
 one small NNUE: a pattern-generator net with 35,243 parameters, integer and
 incremental at run time, shared by the local engines (`crossfish_dev.hpp`,
-`crossfish_prev.hpp`) and the CodinGame bot. The shipped net is **r13w_11**
-(since 2026-10-01, section 64): r12_M2's weights fine-tuned on round
-thirteen's data. Before it, **r12_M2** (2026-09-28, section 57) was the same
+`crossfish_prev.hpp`) and the CodinGame bot. The shipped net is **r13w_20**
+(since 2026-10-01, section 64): r12_M2's weights fine-tuned for 2.4G rows on
+round thirteen's data. Before it, **r12_M2** (2026-09-28, section 57) was the same
 architecture trained on data that the NNUE engine labelled itself, and the
 first shipped net was **B64_d5M_57ep**. The NNUE replaced
 the hybrid that shipped from round seven: a handcrafted evaluation (HCE) plus
@@ -110,7 +110,7 @@ The new labels predict game results better than the old ones (V2 log loss
 self-play mattered as much as the relabelling: new labels alone gave about
 -5% V2 loss, the self-play rows about another -4%, and +25 Elo more at 20 ms.
 
-**Round thirteen (r13w_11, improvement log section 64)** generated far more
+**Round thirteen (r13w_20, improvement log section 64)** generated far more
 self-play and relabelled everything with the current engine (the section 62
 search, net r12_M2):
 
@@ -124,7 +124,8 @@ search, net r12_M2):
 | DUMPH (holdout) | 3% of the dump games per file | 106,495 |
 | LADH (holdout) | positions from 2,939 saved CodinGame games (ply 9+, deduplicated up to symmetry and colour, plus one-move children), depth 14 | 193,320 |
 
-r13w_11 trained on e2b (46% of the rows seen) and sp13 (54%); the dumps and
+r13w_20 (and r13w_11 before it) trained on e2b (46% of the rows seen) and
+sp13 (54%); the dumps and
 round twelve's self-play were in the search space but not in the winner's
 mix. No training row is a LADH position.
 
@@ -189,28 +190,33 @@ gen_r12.py train --run r12_M2,64,16x32,1e-2 --e2 new --sp 5000000
 - **All 13M self-play rows (M3) were no better than 5M (M2).** They were
   better on SPH, worse on V2, and 2-4 Elo lower at 20 ms.
 
-**r13w_11** is a warm start: r12_M2's weights (`--init r12_M2`, bit-exact)
+**r13w_20** is a warm start: r12_M2's weights (`--init r12_M2`, bit-exact)
 fine-tuned by `datasets/nnue2/r13/tools/gen_r13.py`, a streaming trainer
-over the packed sources, as trial 11 of the Optuna study r13w (a wide space:
+over the packed sources, as trial 20 of the Optuna study r13w (a wide space:
 rows seen, batch, lr and schedule, warmup, floor, weight decay, K, result
 blend, source mix, PSQT weight, initialisation):
 
 ```bash
-gen_r13.py train --name r13w_11 --init r12_M2 --lr 2e-3 --sched cosine --warmup 0.01 --lr-floor 1e-5 \
-  --batch 16384 --steps 73242 --k 1600 --lam 0 --mix e2b=0.46,sp13=0.54 --v2-src e2b --dumph-src dumpb
+gen_r13.py train --name r13w_20 --init r12_M2 --lr 2e-3 --sched cosine --warmup 0.01 --lr-floor 1e-5 \
+  --batch 16384 --steps 146484 --k 1600 --lam 0 --mix e2b=0.46,sp13=0.54 --v2-src e2b --dumph-src dumpb
 ```
 
-- **Length.** 1.2G rows = 73,242 steps of batch 16,384 (about 128 passes over
-  e2b, 8.4 over sp13), 28 minutes on the GPU; same loss, D4 augmentation and
-  AdamW (a tensor-argument variant that does not leak under DirectML), seed 1.
-- **Result.** Objective +20.2 Elo estimated against r12_M2 (SPH13 +20.7,
-  LADH +20.8, V2 +20.5, DUMPH +17.6); held-out loss on SPH13 3.5% below the
-  float r12_M2 net's (3.8% below the shipped quantized one's). In games +11.4 +/- 5.5 at 20 ms, +13.6 +/- 12.6 at CodinGame
-  compute, +11.8 +/- 11.0 as paste files (section 9).
+- **Length.** 2.4G rows = 146,484 steps of batch 16,384 (about 254 passes
+  over e2b, 17 over sp13), 73.5 minutes on the GPU; same loss, D4 augmentation
+  and AdamW (a tensor-argument variant that does not leak under DirectML),
+  seed 1.
+- **Result.** Objective +22.9 Elo estimated against r12_M2 (SPH13 +23.0,
+  LADH +24.5, V2 +24.0, DUMPH +18.1); held-out loss on SPH13 4.0% below the
+  float r12_M2 net's. In games +16.6 +/- 5.3 at 20 ms, +20.2 +/- 12.4 at
+  CodinGame compute, +16.0 +/- 10.9 as paste files (section 9). Trial 21,
+  the same recipe at lr 1e-3, scored +22.94 against +22.92: the learning
+  rate does not matter at this length.
 - **What the search found.** Random-init retraining of the round-twelve
   recipe on the new data only matched r12_M2 (-2.3 offline, -13.8 +/- 5.5 in games);
   longer fine-tunes from r12_M2 kept improving (100M rows +11.5, 300M +14.5,
-  1.2G +20.2); B-128 nets were +13 offline but tied r12_M2 in games (their
+  600M +18.3, 1.2G +20.2, 2.4G +22.9; the 1.2G net, r13w_11, was ship-tested
+  first and is the runner-up: SPH13 3.5% below the float r12_M2 net, +11.8
+  +/- 11.0 as paste files); B-128 nets were +13 offline but tied r12_M2 in games (their
   tables cost 16-31% of the nodes); model soups of the warm starts were below
   the longest one alone. SPH13's labels are r12_M2's own search, so the warm
   starts were judged on V2 / LADH and in games.
@@ -226,7 +232,7 @@ on co-activation), which cuts the nonzero pairs per evaluation from 37.7 to
 
 **Integer scales.** Every table is quantized to a power of two:
 
-| Scale | What | r13w_11 | r12_M2 | B64_d5M_57ep |
+| Scale | What | r13w_20 (and r13w_11) | r12_M2 | B64_d5M_57ep |
 | --- | --- | ---: | ---: | ---: |
 | `B64_QA` | the 64 accumulator lanes (int16) | 2^9 | 2^9 | 2^9 |
 | `B64_QPS` | the PSQT lane (int16, separate arrays) | 2^12 | 2^12 | 2^13 |
@@ -258,9 +264,9 @@ row, a bit width per group and Rice coding, in 30,923 CJK14 characters
 `cpp_impl/nnue_b64_net.hpp` from the lane-paired export and derives the five
 scales itself (a port of the loader's bound). The payload's own rounding keeps
 the bot at 4.72 / 163 from the float net, the same as the unrounded net.
-r13w_11's payload is 53,927 bytes = 28,762 U15 characters (r12_M2: 54,159 =
-28,885); its rounding moves the float eval by 1.69 mean / 41.8 max units on
-the 20,000 parity positions.
+r13w_20's payload is 53,834 bytes = 28,712 U15 characters (r13w_11: 53,927 =
+28,762; r12_M2: 54,159 = 28,885); its rounding moves the float eval by 1.97
+mean / 66.7 max units on the 20,000 parity positions (r13w_11: 1.69 / 41.8).
 
 ## 6. Runtime (`cpp_impl/nnue_b64.hpp`)
 
@@ -361,10 +367,14 @@ sparse `nnue.hpp` path, not this net.)
 
 ## 9. Strength and speed
 
-**r13w_11** (improvement log section 64) against r12_M2, fixed-length games:
-- the two CodinGame paste files through the protocol at 90 ms (`cg_match.py`, 5 referees, forfeit 1,000 ms): **N=1000, 317-400-283, +11.8 +/- 11.0 Elo**, pentanomial 9/75/301/103/12, 0 forfeits;
-- the candidate harness at 20 ms on the ThinkPad: +11.4 +/- 5.5 (12,000 games per net);
-- the Dell at its CodinGame compute (62 ms x 3 threads): +13.6 +/- 12.6 (1,000 games).
+**r13w_20** (improvement log section 64) against r12_M2, fixed-length games:
+- the two CodinGame paste files through the protocol at 90 ms (`cg_match.py`, 5 referees, forfeit 1,000 ms): **N=1000, 321-404-275, +16.0 +/- 10.9 Elo**, pentanomial 4/80/296/106/14, 0 forfeits, one late reply (main's);
+- the candidate harness at 20 ms on the ThinkPad: +16.6 +/- 5.3 (13,000 games per net);
+- the Dell at its CodinGame compute (62 ms x 3 threads): +20.2 +/- 12.4 (1,000 games).
+
+**r13w_11** (the 1.2G-row fine-tune, ship-tested first) the same three ways: paste files **N=1000,
+317-400-283, +11.8 +/- 11.0**, pentanomial 9/75/301/103/12, 0 forfeits; 20 ms +11.0 (+11.4 +/- 5.5 in
+the earlier 12,000-game fit); the Dell +13.6 +/- 12.6 and +9.4 +/- 12.8 in two runs.
 
 Same architecture, so the same speed; `port-check` IDENTICAL at depths 5, 7 and 9. A
 CodinGame-scaled SPRT net against net is not possible in the sprt harness (Dev and Prev
@@ -426,7 +436,8 @@ repository):
 
 | Net | Since | Checkpoint | Export (`--perm`) | Emitter | Scales | Payload | Matches |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| r13w_11 | 2026-10-01 (§64) | `datasets/nnue2/probe/r13w_11.pt` sha256 `8128258e168763b1…`, `.json` (trial 11 of study r13w, `gen_r13.py`) | `datasets/nnue2/fast/r13w_11_perm.bin` CRC-32 `75044cc4` | `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r13w_11_perm.bin --label r13w_11` (defaults; GPTQ calibration `d8_a.cfdg`) | 9, 12, 13, 13, 10 | 53,927 bytes = 28,762 chars, sha256 `712039a021b912bc92503b7f66c70cd6079a798f7f1734e72be6108f45342047` | paste files 90 ms N=1000 +11.8 +/- 11.0; 20 ms +11.4 +/- 5.5; Dell CodinGame compute +13.6 +/- 12.6 |
+| r13w_20 | 2026-10-01 (§64) | `datasets/nnue2/probe/r13w_20.pt` sha256 `eaf8c46b93bbbd03…`, `.json` (trial 20 of study r13w, `gen_r13.py`) | `datasets/nnue2/fast/r13w_20_perm.bin` CRC-32 `d18dccb2` | `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r13w_20_perm.bin --label r13w_20` (defaults; GPTQ calibration `d8_a.cfdg`) | 9, 12, 13, 13, 10 | 53,834 bytes = 28,712 chars, sha256 `492a36eaf2f1c1011fdd5fb2533a4ee2416574dfb73346252511ef2accd11916` | paste files 90 ms N=1000 +16.0 +/- 10.9; 20 ms +16.6 +/- 5.3; Dell CodinGame compute +20.2 +/- 12.4 |
+| r13w_11 | 2026-10-01 (§64; replaced by r13w_20 the same day, never submitted) | `datasets/nnue2/probe/r13w_11.pt` sha256 `8128258e168763b1…`, `.json` (trial 11 of study r13w, `gen_r13.py`) | `datasets/nnue2/fast/r13w_11_perm.bin` CRC-32 `75044cc4` | `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r13w_11_perm.bin --label r13w_11` (defaults; GPTQ calibration `d8_a.cfdg`) | 9, 12, 13, 13, 10 | 53,927 bytes = 28,762 chars, sha256 `712039a021b912bc92503b7f66c70cd6079a798f7f1734e72be6108f45342047` | paste files 90 ms N=1000 +11.8 +/- 11.0; 20 ms +11.4 +/- 5.5; Dell CodinGame compute +13.6 +/- 12.6 |
 | r12_M2 | 2026-09-28 (§57) | `datasets/nnue2/probe/r12_M2.pt` (`gen_r12.py`) | `datasets/nnue2/fast/r12_M2_perm.bin` CRC-32 `60f1f9ea` | `… r12_M2_perm.bin --label r12_M2` | 9, 12, 13, 13, 11 | 54,159 bytes = 28,885 chars, sha256 `4ba93b1a422c480c…` | 90 ms SPRT N=504 +70.6 +/- 19.7; paste files N=3000 +52.5 +/- 7.0 |
 | B64_d5M_57ep | 2026-09-27 (§56) | `datasets/nnue2/probe/B64_d5M_57ep.pt` (`gen_nnue.py`) | `datasets/nnue2/fast/B64_d5M_57ep_perm.bin` | `… B64_d5M_57ep_perm.bin --label B64_d5M_57ep` | 9, 13, 13, 13, 10 | 30,923 CJK14 chars | 90 ms SPRT N=420 +276.6 +/- 30.4; N=3000 +267.4 +/- 11.9 |
 
