@@ -116,7 +116,7 @@ int main(int argc, char **argv) {
     if (mode == 2) { std::fprintf(stderr, "mode 2 needs -DPLAY_BOOK_OPPONENT_HEADER\n"); return 2; }
 #endif
     CrossfishDev::init_mini_lut();
-    if (!pb_init<GlobalBoard, Move>()) { std::fprintf(stderr, "book failed to decode\n"); return 1; }
+    if (!pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); })) { std::fprintf(stderr, "book failed to decode\n"); return 1; }
     std::printf("book %d positions, %d %s, mode %d\n", PLAY_BOOK_ENTRIES, games, mode == 0 ? "games" : "paired openings", mode);
     std::fflush(stdout);
 

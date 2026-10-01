@@ -113,25 +113,53 @@ the interval is optimistic; mode 2 above is the engine-independent evidence.
 ## Size and cost
 
 Positions need no keys. `PbWalker` (in `play_book.hpp`) visits the book in one
-fixed order and the payload holds only mixed-radix digits: at each of our
-positions, the book move's index among the legal moves and a 0/1 "the book
-continues" digit; at each opponent position the book continues from, one 0/1
-"covered" digit per reply that does not end the game. The digits are packed in
-56-bit chunks and carried as CJK14 text like the network weights
-([minification.md](minification.md) section 4).
+fixed order and the payload is one arithmetic-coded stream of the walk's
+decisions (the LZMA binary range coder with adaptive 12-bit probabilities):
+
+- at each of our positions, the book move's **rank** among the legal moves
+  ordered by the NNUE's static evaluation of the position after the move (a
+  game-winning move first, ties in generation order), as truncated unary with
+  a context per legal-move count and rank position; then a "the book
+  continues" bit with the ply as context;
+- at each opponent position the book continues from, one "covered" bit per
+  reply that does not end the game, in the same evaluation order, with the
+  ply and the reply's rank as context.
+
+The ordering does the work: the book move ranks first 63% of the time, and a
+reply of rank 0 is covered 99% of the time against 7% at rank 7 and beyond.
+As plain digits the same decisions are 184,846 bits; coded they are 86,904.
+Children are evaluated through a light `PbView` of the board (markers,
+miniboard states, move count) rather than `GlobalBoard::makeMove`, whose
+move-history stack is slow when CodinGame compiles without `-O`. The stream is
+carried as U15 text like the network weights ([minification.md](minification.md)
+section 4).
 
 | | |
 | --- | --- |
-| Information content | 184,846 bits |
-| Payload | 23,548 bytes, 13,456 characters (the full-coverage book: 4,656) |
-| `cg_input.cpp` | 90,095 characters, 9,905 left |
-| Decode at startup | about 9 ms, inside the 1,000 ms first turn |
+| Decisions as plain digits | 184,846 bits |
+| Payload | 10,863 bytes, 5,794 characters (the mixed-radix digits: 13,456; the full-coverage book: 4,656) |
+| `cg_input.cpp` | 73,088 characters, 26,912 left |
+| Decode at startup | about 50 ms at -O3, 90 ms with CodinGame's flags, inside the 1,000 ms first turn (the plain digits: 9 / 20 ms) |
 
-The packer (`play_book_pack.cpp`) and the runtime drive the same `PbWalker`,
-so their order cannot drift. At runtime the walk rebuilds a table from a
-symmetry-canonical 64-bit position hash to the book move in canonical
-orientation. `pb_lookup` maps the move back to the real orientation and only
-returns it if it is legal in the actual position.
+The packer (`play_book_pack.cpp`) and the runtime drive the same `PbWalker`
+with the same evaluator (`b64::evaluate_board`, passed to `pb_init`), so
+neither the order nor the probabilities can drift. **A new net changes the
+ordering, so the book must be re-packed whenever `nnue_b64_net.hpp`
+changes** (`make -C cpp_impl play-book`, from `cpp_impl/play_book.txt`). A
+stale payload is refused, not decoded: the header carries
+`PLAY_BOOK_EVAL_FINGERPRINT`, a hash of the evaluator's values on 64 fixed
+pseudo-positions, and `pb_init` compares it with the evaluator it is given
+before reading a bit (0.1 ms). Should the fingerprints ever agree while the
+ordering differs, the walk stops as soon as it passes the expected entry
+count (19 ms at -O3, 132 ms at -O0 in a test with a perturbed evaluator;
+without the bound a stale book walked a tree of nonsense for 6-25 s). Either
+way `pb_init` returns false, the bot plays without a book, `cg_selfcheck`
+prints `book=FAILED` and exits 1, `test_play_book` fails, and the CI gate's
+exact protocol check (`--book cpp_impl/play_book.txt`) fails. At runtime the
+walk rebuilds a
+table from a symmetry-canonical 64-bit position hash to the book move in
+canonical orientation. `pb_lookup` maps the move back to the real orientation
+and only returns it if it is legal in the actual position.
 
 ## Files
 
@@ -140,7 +168,9 @@ returns it if it is legal in the actual position.
 | `cpp_impl/play_book.hpp` | Runtime: canonical hash, walk, decoder, lookup. Shipped. |
 | `cpp_impl/play_book_data.hpp` | Generated payload. Shipped. Do not edit. |
 | `cpp_impl/play_book_text.hpp` | Text book format and string-keyed symmetry helpers for the tools. |
-| `cpp_impl/play_book_pack.cpp` | Packs a text book into `play_book_data.hpp`. |
+| `cpp_impl/play_book.txt` | The shipped book as a text book (`S` lines), the packer's default input. |
+| `cpp_impl/play_book_pack.cpp` | Packs a text book into `play_book_data.hpp` (needs the NNUE: it orders moves like the bot). |
+| `cpp_impl/play_book_text_dump.cpp` | Writes the shipped payload back out as a text book (`make play-book-text`). |
 | `cpp_impl/play_book_check.cpp` | Decodes the payload and checks every entry against the text book. |
 | `cpp_impl/play_book_gen.cpp` | Generates a full-coverage book with crossfish's own search (the previous method). |
 | `cpp_impl/play_book_match.cpp` | Book-vs-no-book matches on the shipped book. |
@@ -169,12 +199,17 @@ The shipped book needs the uttt.ai fork (its GPU toolchain and net4):
 python book/uttt_book_gen.py book/uttt_book_v2.txt --cf crossfish_cg_debug.exe --chars 13000
 # about 1.8 h on the reference machine (GPU search plus 7 crossfish threads)
 
-cp <that text book> cpp_impl/bin/play_book.txt
+cp <that text book> cpp_impl/play_book.txt
 make -C cpp_impl play-book          # pack + check against the text book
 make -C cpp_impl test               # update the pinned table checksum in test_play_book first
 make -C cpp_impl cg-input
 make -C cpp_impl play-book-protocol # exact book use through the real protocol
 ```
+
+Re-packing the shipped book (after a net change, or a change to the coder)
+needs no generator: `cpp_impl/play_book.txt` is that book, and
+`make -C cpp_impl play-book-text` regenerates it from the current payload with
+the current net.
 
 `--chars` sets the payload budget (the packed result lands within a few percent
 of it), `--cover` the prior threshold, `--sims` uttt.ai's search, and

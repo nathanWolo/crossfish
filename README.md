@@ -316,7 +316,11 @@ a freeze:
    `tools/test_nnue_emit_b64_header.py` (see section 10 of
    `documentation/nnue_training_and_implementation.md`);
    Dev, Prev and the bot all read that one header. Keep large LUTs in static
-   storage.
+   storage. **A new net also needs the opening book re-packed**: its payload
+   is coded with the net's move ordering, so run `make -C cpp_impl play-book`
+   (from `cpp_impl/play_book.txt`) and commit `play_book_data.hpp`. A stale
+   book is refused at start-up (`cg_selfcheck` prints `book=FAILED` and exits
+   1; `test_play_book` fails), and the bot would play without a book.
 2. Prove the port: `make -C cpp_impl port-check` must print IDENTICAL at every
    depth (the CG search against Dev). For a tree-identical change,
    `cg_selfcheck` checksums must also match their pre-port values.
@@ -433,17 +437,22 @@ enable FMA in MiniNet; it will disagree with the scalar reference.
 ## CodinGame file and minifier
 
 CodinGame's source cap is **100,000 characters**, counted as UTF-16 code
-units. The NNUE generator (30,923 characters), the macro net (1,758) and the
-opening book (13,456) are packed at 14 bits per character using CJK ideographs
-(see `documentation/minification.md`), so the file is larger in bytes than in
+units. The NNUE generator (28,885 characters), the macro net (1,641) and the
+opening book (5,794) are packed at 15 bits per character on the U15 alphabet
+(CJK ideographs plus a private-use range, see
+`documentation/minification.md`), so the file is larger in bytes than in
 counted characters; trust the minifier's count, not `wc -c`. Paste
 **`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
-headers are intentionally kept separate for review.
+headers are intentionally kept separate for review. The file is **73,088
+characters** (26,912 left).
 
 `tools/cg_minify.py` is an ice4-style minifier: it can inline local quoted
-headers, strips comments and indentation, renames identifiers, and packs
-tokens. It does not change search or eval. Rebuild the paste file after
-editing the readable source:
+headers, strips comments and indentation, renames identifiers, turns the most
+repeated token runs (`int`, `return`, `__attribute__((always_inline))`, ...)
+into one- or two-letter `#define`s, and packs tokens. It does not change
+search or eval: `make -C cpp_impl cg-min-check` minifies the self-check
+harness itself and requires the same fixed-depth checksums as the readable
+build. Rebuild the paste file after editing the readable source:
 
 ```bash
 python3 tools/cg_minify.py cpp_impl/codingame_nnue.cpp \
@@ -463,8 +472,10 @@ uttt.ai, `cpp_impl/play_book_data.hpp`: a tree after the first player's
 center-center (moving second, the book assumes the opponent opened there) that
 covers the replies uttt.ai's policy rates at 0.03 or more, grown deepest along
 the likeliest lines (to ply 18). Our moves are uttt.ai's after a
-3,200-simulation search, with a crossfish veto. It is 34,066 positions in 13,456
-characters, stored without keys as digits along a fixed walk of the book.
+3,200-simulation search, with a crossfish veto. It is 34,066 positions in 5,794
+characters, stored without keys: the decisions along a fixed walk of the book,
+arithmetic-coded with the NNUE's move ordering as the model. A new net needs
+the book re-packed (`make -C cpp_impl play-book`, from `cpp_impl/play_book.txt`).
 
 Against the previous full-coverage book (same engine, 90 ms): **+99.4 ± 11.2**
 vs +18.7 ± 11.1 head-to-head against the plain engine over 3,000 games. The
@@ -493,8 +504,18 @@ LLR: +3.13 (H0=0, H1=+5) — PASS
 Timeouts: Prev=17 Dev=15
 ```
 
-See section 59 of the improvement log. The paste file is now 95,874
+See section 59 of the improvement log. The paste file was 95,874
 characters (4,126 left).
+
+On 2026-09-30 the paste file went from 95,927 to 72,105 characters with
+the same program (improvement log section 63): a `#define` pass in the
+minifier (-15,044), the opening book arithmetic-coded with the NNUE's move
+ordering as its model (13,456 -> 5,794 payload characters), and 15 payload
+bits per character instead of 14 (the U15 alphabet). `cg-min-check`,
+`port-check` and the CodinGame-flags node rate are unchanged; the first turn
+takes about 300 ms of its 1,000 ms with CodinGame's flags (was 250) because
+the book decode now evaluates the book's children. With sections 61 and 62
+merged and the book's net fingerprint it is **73,088 characters**.
 
 On 2026-09-29 speed round thirteen passed the official 90 ms SPRT against the
 r12_M2 freeze: three tree-identical speedups (make/unmake stop maintaining the

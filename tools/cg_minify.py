@@ -75,6 +75,11 @@ STD_METHODS = frozenset(
     """.split()
 )
 
+# Names that lex as an encoding prefix when they sit directly before a string
+# or character literal (u"..", R"(..)", LR'x'). They stay usable as short
+# names; stringify() keeps a space between one and a following literal.
+LITERAL_PREFIXES = frozenset("u U L R u8 uR LR UR u8R".split())
+
 RESERVED = KEYWORDS | C_NAMES
 
 _LOCAL_INCLUDE_RE = re.compile(
@@ -333,7 +338,7 @@ def _user_ident_at(tokens: list[str], i: int) -> bool:
     return True
 
 
-def rename_identifiers(tokens: list[str]) -> list[str]:
+def rename_identifiers(tokens: list[str], report: dict[str, str] | None = None) -> list[str]:
     """Global rename: most expensive names get the shortest ice4-style ids.
 
     ice4 colors names that never share a scope so they can reuse `a`. Without
@@ -372,6 +377,8 @@ def rename_identifiers(tokens: list[str]) -> list[str]:
             mapping[name] = short
             kept.add(short)
 
+    if report is not None:
+        report.update(mapping)
     out: list[str] = []
     for i, t in enumerate(tokens):
         if _user_ident_at(tokens, i):
@@ -379,6 +386,155 @@ def rename_identifiers(tokens: list[str]) -> list[str]:
         else:
             out.append(t)
     return out
+
+
+def _gram_len(gram: tuple[str, ...]) -> int:
+    """Characters the gram takes once stringified (spaces where words would glue)."""
+    # A placeholder (a macro picked earlier) will be a one- or two-letter name.
+    n = sum(2 if t.startswith("\x01") else len(t) for t in gram)
+    for a, b in zip(gram, gram[1:]):
+        if _is_word_char(a[-1]) and _is_word_char(b[0]):
+            n += 1
+    return n
+
+
+def _macro_token_ok(tok: str) -> bool:
+    if tok.startswith("#") or tok.startswith('"') or tok.startswith("'") or tok.startswith('R"'):
+        return False
+    return True
+
+
+def define_macros(
+    tokens: list[str],
+    renamed: set[str],
+    kept: set[str],
+    max_len: int = 8,
+    min_saving: int = 8,
+) -> list[str]:
+    """Greedy object-like #define pass over frequent token runs.
+
+    Keywords and attributes survive renaming (`int`, `return`, `static`,
+    `__attribute__((always_inline))`), and the preprocessor can shorten them:
+    a run of tokens that appears often enough becomes a one- or two-letter
+    macro. Bodies are token sequences, so expansion reproduces the original
+    tokens exactly; the defines go after the last preprocessor line, so no
+    header sees them, and only tokens after that point are rewritten.
+
+    Macros are picked under placeholder names. At the end the renamed
+    identifiers (`renamed`, from rename_identifiers) and the macros share one
+    ranking by use count, so `int` (hundreds of uses) gets a one-letter name
+    ahead of a rarely used variable. `kept` holds every spelling a short name
+    must avoid.
+    """
+    # The bundled file repeats #include lines where headers were inlined. A
+    # macro must not be visible to a header, so every #include moves up into
+    # the leading preprocessor block (before the target pragma, where the
+    # first ones already are), and the defines follow that block.
+    def is_pp(t: str) -> bool:
+        return t.startswith("#") and t.endswith("\n")
+
+    lead = 0
+    while lead < len(tokens) and is_pp(tokens[lead]):
+        lead += 1
+    head = tokens[:lead]
+    body: list[str] = []
+    depth = 0  # #if nesting: an #include under a condition cannot be hoisted
+    for t in tokens[lead:]:
+        if is_pp(t):
+            d = t.lstrip()[1:].lstrip()
+            if d.startswith(("if", "ifdef", "ifndef")):
+                depth += 1
+            elif d.startswith("endif"):
+                depth -= 1
+            elif d.startswith("include"):
+                if depth:
+                    raise SystemExit(f"cg_minify: cannot hoist a conditional {t.strip()!r} ahead of the macros")
+                if t not in head:
+                    last_inc = max(i for i, h in enumerate(head) if h.lstrip().startswith("#include"))
+                    head.insert(last_inc + 1, t)
+                continue
+        body.append(t)
+
+    defines: list[tuple[str, tuple[str, ...]]] = []
+
+    open_of = {")": "(", "]": "[", "}": "{"}
+    gram_len_cache: dict[tuple[str, ...], int] = {}
+    while True:
+        # Non-overlapping occurrences of every bracket-balanced run of 1..max_len
+        # usable tokens. From each start the run grows one token at a time with
+        # its bracket depths in hand, so no window is checked twice.
+        ok = [_macro_token_ok(t) for t in body]
+        counts: Counter[tuple[str, ...]] = Counter()
+        seen_at: dict[tuple[str, ...], int] = {}
+        nbody = len(body)
+        for i in range(nbody):
+            depth = {"(": 0, "[": 0, "{": 0}
+            for n in range(1, max_len + 1):
+                j = i + n - 1
+                if j >= nbody or not ok[j]:
+                    break
+                t = body[j]
+                if t in depth:
+                    depth[t] += 1
+                elif t in open_of:
+                    depth[open_of[t]] -= 1
+                    if depth[open_of[t]] < 0:
+                        break
+                if depth["("] or depth["["] or depth["{"]:
+                    continue
+                g = tuple(body[i:j + 1])
+                if seen_at.get(g, -n) <= i - n:
+                    counts[g] += 1
+                    seen_at[g] = i
+        name_len = 2
+        best, best_gain = None, min_saving
+        for g, k in counts.items():
+            if k < 2 or (len(g) == 1 and g[0].startswith("\x01")):
+                continue
+            L = gram_len_cache.get(g)
+            if L is None:
+                L = gram_len_cache[g] = _gram_len(g)
+            gain = k * (L - name_len) - (8 + name_len + 1 + L + 1)
+            # Equal gains: the longer run, then the lexically later one, so the
+            # choice does not depend on dictionary order.
+            if gain > best_gain or (gain == best_gain and best is not None and (len(g), g) > (len(best), best)):
+                best, best_gain = g, gain
+        if best is None:
+            break
+        name = "\x01%d" % len(defines)
+        defines.append((name, best))
+        out: list[str] = []
+        i = 0
+        n = len(best)
+        while i < len(body):
+            if tuple(body[i : i + n]) == best:
+                out.append(name)
+                i += n
+            else:
+                out.append(body[i])
+                i += 1
+        body = out
+
+    # Joint assignment: every renamed identifier and every macro, most used
+    # first, takes the next free short name (all one-letter names, then two).
+    short = set(renamed) | {name for name, _ in defines}
+    counts: Counter[str] = Counter(t for t in body if t in short)
+    for _, g in defines:
+        counts.update(t for t in g if t in short)
+    pool = iter(n for n in generate_variable_names(len(short) + 4096) if n not in kept)
+    final: dict[str, str] = {}
+    for name in sorted(counts, key=lambda n: (-counts[n], n)):
+        final[name] = next(pool)
+    for name in short:
+        final.setdefault(name, next(pool))
+    body = [final.get(t, t) for t in body]
+    head = [final.get(t, t) for t in head]
+    pp = [
+        "#define " + final[name] + " " + stringify([final.get(t, t) for t in g]).rstrip("\n") + "\n"
+        for name, g in defines
+    ]
+    # The defines go after the leading block's last #include and pragmas.
+    return head + pp + body
 
 
 def _compact_pp(tok: str) -> str:
@@ -406,6 +562,12 @@ def stringify(tokens: list[str]) -> str:
             a = prev[-1]
             b = t[0]
             need_space = _is_word_char(a) and _is_word_char(b)
+            # "text"X lexes as a user-defined-literal suffix, not two tokens,
+            # and u"text" / R"(text)" as a prefixed literal.
+            if a in ('"', "'") and _is_word_char(b):
+                need_space = True
+            if b in ('"', "'") and prev in LITERAL_PREFIXES:
+                need_space = True
             if (a, b) in _GLUE_PAIRS:
                 need_space = True
             if need_space:
@@ -420,10 +582,14 @@ def stringify(tokens: list[str]) -> str:
     return text
 
 
-def minify_cpp(src: str, rename: bool = True) -> str:
+def minify_cpp(src: str, rename: bool = True, macros: bool = True) -> str:
     tokens = tokenize(src)
     if rename:
-        tokens = rename_identifiers(tokens)
+        kept = set(RESERVED) | set(STD_METHODS) | {t for t in tokens if _is_ident(t)}
+        mapping: dict[str, str] = {}
+        tokens = rename_identifiers(tokens, mapping)
+        if macros:
+            tokens = define_macros(tokens, set(mapping.values()), kept)
     return stringify(tokens)
 
 
@@ -441,6 +607,7 @@ def main() -> None:
     ap.add_argument("src")
     ap.add_argument("-o", "--out", default="")
     ap.add_argument("--no-rename", action="store_true", help="whitespace-only (old conservative mode)")
+    ap.add_argument("--no-macros", action="store_true", help="skip the #define pass over frequent token runs")
     ap.add_argument(
         "--inline-local",
         action="store_true",
@@ -455,7 +622,7 @@ def main() -> None:
         src = inline_local_includes(
             src, source_path.parent, {source_path}
         )
-    out = minify_cpp(src, rename=not args.no_rename)
+    out = minify_cpp(src, rename=not args.no_rename, macros=not args.no_macros)
     dest = args.out or args.src
     with open(dest, "w", encoding="utf-8", newline="\n") as f:
         f.write(out)

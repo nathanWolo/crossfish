@@ -77,7 +77,7 @@ static uint16_t TERN[512];  // TERN[mask] = sum over the mask's squares i of 3^i
 
 // ---------------------------------------------------------------- payload
 
-// MSB-first bit reader straight over the CJK14 characters (14 bits each, U+4E00 + value).
+// MSB-first bit reader straight over the U15 characters (15 bits each; tools/nnue_cjk14.py).
 struct Bits {
     const unsigned char *p;
     uint64_t acc = 0;
@@ -85,9 +85,10 @@ struct Bits {
     unsigned get(int k) {
         while (n < k) {
             while ((*p & 0xF0) != 0xE0) p++;
-            acc = acc << 14 | ((((p[0] & 15u) << 12) | ((p[1] & 63u) << 6) | (p[2] & 63u)) - 0x4E00u);
+            uint32_t code = ((p[0] & 15u) << 12) | ((p[1] & 63u) << 6) | (p[2] & 63u);
+            acc = acc << 15 | (code >= 0xE000u ? code - 0xE000u + 27648u : code - 0x3400u);
             p += 3;
-            n += 14;
+            n += 15;
         }
         n -= k;
         return (unsigned)(acc >> n) & ((1u << k) - 1);

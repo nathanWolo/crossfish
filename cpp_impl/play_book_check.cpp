@@ -12,7 +12,7 @@
 #include <string>
 
 #include "global_board.hpp"
-#include "mini_eval_d16.hpp"
+#include "crossfish_dev.hpp"
 #include "play_book_text.hpp"
 #include "play_book.hpp"
 #include <algorithm>
@@ -77,7 +77,8 @@ int main(int argc, char **argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: play_book_check <book.txt>\n"); return 2; }
     if (!g_text.load(argv[1])) { std::fprintf(stderr, "cannot load %s\n", argv[1]); return 1; }
     auto t0 = std::chrono::steady_clock::now();
-    bool ok = pb_init<GlobalBoard, Move>();
+    crossfish_nnue_load_once();
+    bool ok = pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); });
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::printf("pb_init: %s, %zu table entries, %.1f ms\n", ok ? "ok" : "FAILED", PB_TABLE.size(), ms);
     if (!ok) return 1;

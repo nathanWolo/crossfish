@@ -50,7 +50,7 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import eval_data  # noqa: E402
-from nnue_cjk14 import decode_cjk14  # noqa: E402
+from nnue_cjk14 import decode_u15  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 N_IDX = 19683
@@ -65,7 +65,7 @@ def _payload(header: Path, name: str) -> bytes:
     m = re.search(name + r'\[\] = R"~\(\n(.*?)\n\)~";', text, re.S)
     if not m:
         raise SystemExit(f"no {name} payload in {header}")
-    return decode_cjk14(m.group(1))
+    return decode_u15(m.group(1))
 
 
 def load_shipped_mini(header: Path = ROOT / "cpp_impl/mini_eval_d16.hpp"):

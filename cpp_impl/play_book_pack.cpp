@@ -2,7 +2,9 @@
 // play_book_data.hpp.
 //
 // Walks the book with the same PbWalker the CodinGame bot uses to decode it,
-// so the stored order cannot drift from the runtime order. The text book only
+// so the stored order cannot drift from the runtime order, and codes each
+// decision with the same adaptive binary models and the same NNUE evaluator
+// (play_book.hpp), so the probabilities cannot drift either. The text book only
 // lists our positions: an opponent reply is covered when it leads to one of
 // them, and the book goes on after our move when any reply is covered. Fails if
 // the walk reaches a position the text book lacks, or if any text-book entry is
@@ -16,17 +18,43 @@
 #include <vector>
 
 #include "global_board.hpp"
+#include "crossfish_dev.hpp"
 #include "play_book_text.hpp"
 #define PLAY_BOOK_NO_DATA
 #include "play_book.hpp"
 
-// Same bit layout as tools/nnue_cjk14.py: 14-bit groups, MSB first, from U+4E00.
-static std::string encode_cjk14(const std::vector<unsigned char> &data) {
+// Binary range encoder, the mirror of PbDecoder (LZMA's carry handling).
+struct PbEncoder {
+    std::vector<unsigned char> out;
+    uint64_t low = 0, cache_size = 1;
+    uint32_t range = 0xFFFFFFFFu;
+    unsigned char cache = 0;
+    void shift_low() {
+        if ((uint32_t)low < 0xFF000000u || (low >> 32) != 0) {
+            unsigned char carry = (unsigned char)(low >> 32), temp = cache;
+            do { out.push_back((unsigned char)(temp + carry)); temp = 0xFF; } while (--cache_size != 0);
+            cache = (unsigned char)(low >> 24);
+        }
+        cache_size++;
+        low = (low & 0x00FFFFFFu) << 8;
+    }
+    int bit(uint16_t &p, int b) {
+        uint32_t bound = (range >> 12) * p;
+        if (b == 0) range = bound; else { low += bound; range -= bound; }
+        pb_adapt(p, b);
+        while (range < (1u << 24)) { range <<= 8; shift_low(); }
+        return b;
+    }
+    void finish() { for (int i = 0; i < 5; i++) shift_low(); }
+};
+
+// Same bit layout as tools/nnue_cjk14.py encode_u15: 15-bit groups, MSB first, on the U15 alphabet.
+static std::string encode_u15(const std::vector<unsigned char> &data) {
     std::string out;
     uint32_t acc = 0;
     int bits = 0, column = 0;
     auto emit = [&](uint32_t v) {
-        uint32_t code = 0x4E00 + v;
+        uint32_t code = v < 27648u ? 0x3400 + v : 0xE000 + v - 27648u;
         out += (char)(0xE0 | (code >> 12));
         out += (char)(0x80 | ((code >> 6) & 63));
         out += (char)(0x80 | (code & 63));
@@ -35,34 +63,40 @@ static std::string encode_cjk14(const std::vector<unsigned char> &data) {
     for (unsigned char byte : data) {
         acc = (acc << 8) | byte;
         bits += 8;
-        while (bits >= 14) {
-            bits -= 14;
-            emit((acc >> bits) & 0x3FFF);
+        while (bits >= 15) {
+            bits -= 15;
+            emit((acc >> bits) & 0x7FFF);
         }
         acc &= (1u << bits) - 1;
     }
-    if (bits) emit((acc << (14 - bits)) & 0x3FFF);
+    if (bits) emit((acc << (15 - bits)) & 0x7FFF);
     if (column == 0 && !out.empty()) out.pop_back();
     return out;
 }
 
-// The packer's walk decisions, each recorded as a mixed-radix digit.
+static int pb_nnue_eval(const PbView &v, int c) { return b64::evaluate_board(v, c); }
+
+// The packer's walk decisions, coded as they are made.
 struct PackHooks {
     Book &book;
-    std::vector<std::pair<int, int>> digits;  // (digit, radix)
-    int missing = 0, expanded = 0;
+    int (*eval)(const PbView &, int) = pb_nnue_eval;
+    PbEncoder enc;
+    PbModels m;
+    int missing = 0, expanded = 0, positions = 0, covered_bits = 0;
+    double uniform_bits = 0;  // what the plain digits would have cost
 
-    int choose(GlobalBoard &b, Move *legal, int n) {
-        Move m;
-        int index = 0;
-        if (book.lookup(b, m)) {
-            for (int i = 0; i < n; i++)
-                if (legal[i].mini_board == m.mini_board && legal[i].square == m.square) index = i;
+    int choose(GlobalBoard &b, Move *legal, const int *order, int n) {
+        Move bm;
+        int rank = 0;
+        if (book.lookup(b, bm)) {
+            for (int r = 0; r < n; r++)
+                if (legal[order[r]].mini_board == bm.mini_board && legal[order[r]].square == bm.square) rank = r;
         } else {
             missing++;
         }
-        digits.push_back({index, n});
-        return index;
+        positions++;
+        uniform_bits += std::log2((double)n);
+        return pb_code_rank([&](uint16_t &p, int bit) { return enc.bit(p, bit); }, m, n, rank);
     }
     bool more(GlobalBoard &b) {  // opponent to move in b: is any reply covered?
         Move legal[81];
@@ -73,14 +107,15 @@ struct PackHooks {
             any = b.checkWinner() == -1 && book.has(b);
             b.unmakeMove();
         }
-        digits.push_back({any ? 1 : 0, 2});
+        uniform_bits += 1;
         expanded += any;
-        return any;
+        return enc.bit(m.cont[PbModels::ply_ctx(b.n_moves)], any) != 0;
     }
-    bool covers(GlobalBoard &b, const Move &) {  // b: after the opponent's reply
+    bool covers(GlobalBoard &b, int rank) {  // b: after the opponent's reply
         bool yes = book.has(b);
-        digits.push_back({yes ? 1 : 0, 2});
-        return yes;
+        uniform_bits += 1;
+        covered_bits++;
+        return enc.bit(m.cover[PbModels::ply_ctx(b.n_moves)][rank < 7 ? rank : 7], yes) != 0;
     }
 };
 
@@ -91,6 +126,7 @@ int main(int argc, char **argv) {
     }
     Book book;
     if (!book.load(argv[1])) { std::fprintf(stderr, "cannot load %s\n", argv[1]); return 1; }
+    crossfish_nnue_load_once();
 
     PackHooks hooks{book};
     PbWalker<GlobalBoard, Move, PackHooks> walker{hooks};
@@ -101,22 +137,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Mixed radix in 56-bit chunks, mirroring PbReader exactly.
-    std::vector<uint64_t> chunks;
-    uint64_t range = ~0ull, mult = 1;
-    double info_bits = 0;
-    for (auto &d : hooks.digits) {
-        uint64_t radix = (uint64_t)d.second;
-        if (range > (1ull << 56) / radix) { chunks.push_back(0); range = 1; mult = 1; }
-        chunks.back() += (uint64_t)d.first * mult;
-        mult *= radix;
-        range *= radix;
-        info_bits += std::log2((double)radix);
-    }
-    std::vector<unsigned char> bytes;
-    for (uint64_t c : chunks)
-        for (int i = 0; i < 7; i++) bytes.push_back((unsigned char)(c >> (8 * i)));
-    std::string text = encode_cjk14(bytes);
+    hooks.enc.finish();
+    std::vector<unsigned char> &bytes = hooks.enc.out;
+    double info_bits = hooks.uniform_bits;
+    std::string text = encode_u15(bytes);
     size_t chars = 0;
     for (unsigned char ch : text) chars += (ch & 0xC0) != 0x80 && ch != '\n';
 
@@ -128,12 +152,15 @@ int main(int argc, char **argv) {
         "// %d of our positions and %d opponent positions whose replies it covers,\n"
         "// after the first player's center-center.\n\n"
         "static constexpr int PLAY_BOOK_ENTRIES = %d;\n"
-        "static constexpr int PLAY_BOOK_BYTES = %zu;\n\n"
+        "static constexpr int PLAY_BOOK_BYTES = %zu;\n"
+        "// pb_eval_fingerprint of the net the moves were ordered with; pb_init refuses the payload under another.\n"
+        "static constexpr uint64_t PLAY_BOOK_EVAL_FINGERPRINT = %lluull;\n\n"
         "static const char PLAY_BOOK_CJK[] = R\"~(\n%s\n)~\";\n",
-        walker.entries, hooks.expanded + 1, walker.entries, bytes.size(), text.c_str());
+        walker.entries, hooks.expanded + 1, walker.entries, bytes.size(),
+        (unsigned long long)pb_eval_fingerprint(hooks.eval), text.c_str());
     std::fclose(f);
-    std::printf("packed %d positions (%d expanded opponent positions): %.0f information bits, %zu bytes, "
-                "%zu payload characters -> %s\n",
+    std::printf("packed %d positions (%d expanded opponent positions): %.0f bits as plain digits, coded to "
+                "%zu bytes, %zu payload characters -> %s\n",
                 walker.entries, hooks.expanded + 1, info_bits, bytes.size(), chars, argv[2]);
     return 0;
 }

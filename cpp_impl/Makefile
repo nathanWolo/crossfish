@@ -21,7 +21,7 @@ PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,pyt
 BIN := $(SRC_DIR)/bin
 # Opening book (documentation/play_book.md). The text book is a build artifact;
 # only the packed play_book_data.hpp is committed.
-PLAY_BOOK_TXT ?= $(BIN)/play_book.txt
+PLAY_BOOK_TXT ?= $(SRC_DIR)/play_book.txt
 PLAY_BOOK_FIRST ?= 5
 PLAY_BOOK_SECOND ?= 4
 PLAY_BOOK_SEARCH_MS ?= 2000
@@ -36,7 +36,7 @@ CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX
 # pragmas and always_inline attributes make the submission fast there.
 CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
 
-.PHONY: all test bench cg-gate port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-check play-book-match play-book-protocol datagen clean
+.PHONY: all test bench cg-gate cg-min-check port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-text play-book-check play-book-match play-book-protocol datagen clean
 
 all: test
 
@@ -97,10 +97,10 @@ datagen: $(BIN)/datagen
 $(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_gen.cpp
 
-$(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp global_board.hpp | $(BIN)
+$(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_pack.cpp
 
-$(BIN)/play_book_check: play_book_check.cpp play_book.hpp play_book_data.hpp play_book_text.hpp mini_eval_d16.hpp | $(BIN)
+$(BIN)/play_book_check: play_book_check.cpp play_book.hpp play_book_data.hpp play_book_text.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_check.cpp
 
 $(BIN)/play_book_match: play_book_match.cpp play_book.hpp play_book_data.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
@@ -126,6 +126,24 @@ cg-flags: $(BIN)/cg_input_cgflags
 
 # Same tree at -O3 and with CodinGame's flags: the checksum lines must match,
 # and the seconds ratio is how much speed CodinGame's compiler still loses.
+# Minifier identity gate: minify cg_selfcheck.cpp itself (it bundles the CG
+# file, so every rename and macro applies to the whole program) and compare
+# its fixed-depth checksums with the readable build's.
+# Both compilers: -O3, and CodinGame's flags (no -O), where the AVX intrinsics
+# are function-like macros and the pragma does the optimizing.
+cg-min-check: $(BIN)/cg_selfcheck $(BIN)/cg_selfcheck_cgflags
+	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/cg_selfcheck.cpp -o cpp_impl/bin/cg_selfcheck_min.cpp --inline-local
+	$(CXX) $(CXXFLAGS) -o $(BIN)/cg_selfcheck_min $(BIN)/cg_selfcheck_min.cpp
+	$(CG_CXX) $(CG_FLAGS) -o $(BIN)/cg_selfcheck_min_cgflags $(BIN)/cg_selfcheck_min.cpp -lm -lpthread -ldl -lcrypt
+	@for d in 5 7 9; do \
+	  b=$$($(BIN)/cg_selfcheck 120 $$d | grep -v seconds | sed 's/ book_ms=.*//'); \
+	  for v in cg_selfcheck_min cg_selfcheck_min_cgflags; do \
+	    a=$$($(BIN)/$$v 120 $$d | grep -v seconds | sed 's/ book_ms=.*//'); \
+	    if [ "$$a" = "$$b" ]; then echo "cg-min-check $$v depth $$d: IDENTICAL"; \
+	    else echo "cg-min-check $$v depth $$d: DIFFERENT"; echo "$$a"; echo "$$b"; exit 1; fi; \
+	  done; \
+	done
+
 cg-speed: $(BIN)/cg_selfcheck $(BIN)/cg_selfcheck_cgflags
 	$(BIN)/cg_selfcheck 30 13
 	$(BIN)/cg_selfcheck_cgflags 30 13
@@ -149,6 +167,13 @@ test: test-cpp test-python compile-cg compile-legend book-inspect
 # into play_book_data.hpp and checks the result against it.
 play-book-gen: $(BIN)/play_book_gen
 	$(BIN)/play_book_gen $(PLAY_BOOK_TXT) $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND) $(PLAY_BOOK_SEARCH_MS)
+
+$(BIN)/play_book_text_dump: play_book_text_dump.cpp play_book.hpp play_book_data.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ play_book_text_dump.cpp
+
+# The shipped payload back as a text book, for re-packing after a coder change.
+play-book-text: $(BIN)/play_book_text_dump
+	$(BIN)/play_book_text_dump > $(PLAY_BOOK_TXT).tmp && mv $(PLAY_BOOK_TXT).tmp $(PLAY_BOOK_TXT) || { rm -f $(PLAY_BOOK_TXT).tmp; exit 1; }
 
 play-book: $(BIN)/play_book_pack
 	$(BIN)/play_book_pack $(PLAY_BOOK_TXT) $(SRC_DIR)/play_book_data.hpp

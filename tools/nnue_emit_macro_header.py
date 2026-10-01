@@ -10,8 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from nnue_cjk14 import encode_cjk14, wrap_cjk14
-
+from nnue_cjk14 import encode_u15, wrap_cjk14
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -62,7 +61,7 @@ def main() -> None:
     )
     blob = b"".join(value.tobytes() for value in arrays)
     blob += struct.pack("<f", float(scaled_bias))
-    packed_text = wrap_cjk14(encode_cjk14(blob))
+    packed_text = wrap_cjk14(encode_u15(blob))
 
     text = f'''#pragma once
 // Compact super-board/constraint residual head. The checkpoint's embeddings
@@ -145,30 +144,6 @@ __attribute__((always_inline)) static inline int evaluate_macro_key(int constrai
     return MACRO_SCORE[constraint][key];
 }}
 
-template <typename Board>
-static int evaluate_macro_fast(const Board &board) {{
-    if (!MACRO_READY && !macro_load_packed()) return 0;
-    const int stm = board.n_moves & 1;
-    const int constraint = d16_mini_board_constraint(board);
-    __m256 h0 = _mm256_add_ps(
-        _mm256_load_ps(MACRO_BASE),
-        _mm256_load_ps(MACRO_CONSTR[constraint]));
-    __m256 h1 = _mm256_add_ps(
-        _mm256_load_ps(MACRO_BASE + 8),
-        _mm256_load_ps(MACRO_CONSTR[constraint] + 8));
-    for (int mb = 0; mb < 9; mb++) {{
-        const int bit = 1 << mb;
-        int cls = 0;
-        if (board.mini_board_states[stm] & bit) cls = 1;
-        else if (board.mini_board_states[stm ^ 1] & bit) cls = 2;
-        else if (board.mini_board_states[2] & bit) cls = 3;
-        h0 = _mm256_add_ps(
-            h0, _mm256_load_ps(MACRO_EMB[mb][cls]));
-        h1 = _mm256_add_ps(
-            h1, _mm256_load_ps(MACRO_EMB[mb][cls] + 8));
-    }}
-    return macro_finish_hidden(h0, h1);
-}}
 '''
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(text, encoding="utf-8", newline="\n")
@@ -176,7 +151,6 @@ static int evaluate_macro_fast(const Board &board) {{
         f"wrote {args.out} chars={len(text)} blob={len(blob)} "
         f"scale={args.scale} clip={args.clip} empty_raw={empty_raw:.3f}"
     )
-
 
 if __name__ == "__main__":
     main()

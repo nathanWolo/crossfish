@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 import nnue_emit_mininet_cg as legacy
-from nnue_cjk14 import CJK14_DECODER, encode_cjk14, wrap_cjk14
+from nnue_cjk14 import CJK14_DECODER, encode_u15, wrap_cjk14
 
 
 def load_cfm2(path: Path):
@@ -464,7 +464,7 @@ def main() -> None:
         w2,
         b2,
     )
-    packed_text = wrap_cjk14(encode_cjk14(blob))
+    packed_text = wrap_cjk14(encode_u15(blob))
     emit_header(args.template, args.out, packed_text, d, h, args.tag)
     error = emb - reconstructed
     print(

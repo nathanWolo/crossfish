@@ -854,6 +854,33 @@ static void test_mini_fast_matches_scalar(TestCtx &ctx) {
     CHECK(max_diff <= 2);
 }
 
+// The macro net evaluated directly from its embeddings: the reference for the
+// exact lookup table the bot uses (macro_eval.hpp keeps only the table path).
+template <typename Board>
+static int evaluate_macro_fast(const Board &board) {
+    if (!MACRO_READY && !macro_load_packed()) return 0;
+    const int stm = board.n_moves & 1;
+    const int constraint = d16_mini_board_constraint(board);
+    __m256 h0 = _mm256_add_ps(
+        _mm256_load_ps(MACRO_BASE),
+        _mm256_load_ps(MACRO_CONSTR[constraint]));
+    __m256 h1 = _mm256_add_ps(
+        _mm256_load_ps(MACRO_BASE + 8),
+        _mm256_load_ps(MACRO_CONSTR[constraint] + 8));
+    for (int mb = 0; mb < 9; mb++) {
+        const int bit = 1 << mb;
+        int cls = 0;
+        if (board.mini_board_states[stm] & bit) cls = 1;
+        else if (board.mini_board_states[stm ^ 1] & bit) cls = 2;
+        else if (board.mini_board_states[2] & bit) cls = 3;
+        h0 = _mm256_add_ps(
+            h0, _mm256_load_ps(MACRO_EMB[mb][cls]));
+        h1 = _mm256_add_ps(
+            h1, _mm256_load_ps(MACRO_EMB[mb][cls] + 8));
+    }
+    return macro_finish_hidden(h0, h1);
+}
+
 static void test_d16_fast_matches_scalar(TestCtx &ctx) {
     d16_mini_load_packed();
     macro_load_packed();
@@ -898,7 +925,14 @@ static uint64_t play_book_child_hash(GlobalBoard b, Move m) {
 }
 
 static void test_play_book(TestCtx &ctx) {
-    CHECK((pb_init<GlobalBoard, Move>()));
+    crossfish_nnue_load_once();
+    // The payload is coded with this net's move ordering: its fingerprint must
+    // match the net, and a different evaluator must be refused before the walk.
+    auto nnue = [](const PbView &v, int c) { return b64::evaluate_board(v, c); };
+    auto other = [](const PbView &v, int c) { return b64::evaluate_board(v, c) + (v.n_moves & 1 ? 1 : -1); };
+    CHECK_EQ(pb_eval_fingerprint(nnue), PLAY_BOOK_EVAL_FINGERPRINT);
+    CHECK(pb_eval_fingerprint(other) != PLAY_BOOK_EVAL_FINGERPRINT);
+    CHECK((pb_init<GlobalBoard, Move>(nnue)));
     CHECK_EQ((int)PB_TABLE.size(), PLAY_BOOK_ENTRIES);
     // Pinned like the network payload hashes: regenerating the book changes it.
     std::vector<std::pair<uint64_t, uint8_t>> rows(PB_TABLE.begin(), PB_TABLE.end());
@@ -962,21 +996,22 @@ static void test_play_book(TestCtx &ctx) {
 
 static void test_cjk14_decoder(TestCtx &ctx) {
     unsigned char decoded[16]{};
-    // Bytes 0..9 from tools/nnue_cjk14.py, with a wrap newline to skip.
+    // Bytes 0..9 from tools/nnue_cjk14.py encode_u15, with a wrap newline to skip.
     int count = d16_mini_cjk_decode(
-        "\u4e00\u5e20\u5a10\n\u5306\u4fc2\u4e90", decoded, (int)sizeof(decoded));
-    CHECK_EQ(count, 10);
-    for (int i = 0; i < count; i++) {
+        "\u3400\u7480\u9480\n\u8460\u6c40\u5800", decoded, (int)sizeof(decoded));
+    CHECK_EQ(count, 11);  // 90 bits: the ten bytes plus one byte of zero padding
+    for (int i = 0; i < 10; i++) {
         CHECK_EQ((int)decoded[i], i);
     }
-    // Top of the alphabet: seven 0xFF bytes.
+    CHECK_EQ((int)decoded[10], 0);
+    // Top of the alphabet, in the private-use range: seven 0xFF bytes.
     count = d16_mini_cjk_decode(
-        "\u8dff\u8dff\u8dff\u8dff", decoded, (int)sizeof(decoded));
+        "\uf3ff\uf3ff\uf3ff\uf3f0", decoded, (int)sizeof(decoded));
     CHECK_EQ(count, 7);
     for (int i = 0; i < count; i++) {
         CHECK_EQ((int)decoded[i], 255);
     }
-    CHECK_EQ(d16_mini_cjk_decode("\u8dff\u8dff", decoded, 2), -1);
+    CHECK_EQ(d16_mini_cjk_decode("\uf3ff\uf3ff", decoded, 2), -1);
 
     auto fnv1a = [](const unsigned char *data, int size) {
         uint64_t hash = 0xcbf29ce484222325ULL;

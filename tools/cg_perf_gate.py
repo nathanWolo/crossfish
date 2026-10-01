@@ -333,7 +333,10 @@ def main() -> int:
 
     # 7. book coverage and protocol timing
     if not args.skip_book:
-        p = subprocess.run([sys.executable, str(ROOT / "tools/play_book_protocol_check.py"), str(bins["cand"]), "40"],
+        # With the text book the check is exact: the bot must play from the book at
+        # every book position, so a disabled or stale book fails the gate.
+        p = subprocess.run([sys.executable, str(ROOT / "tools/play_book_protocol_check.py"), str(bins["cand"]), "40",
+                            "--book", str(ROOT / "cpp_impl/play_book.txt")],
                            capture_output=True, text=True, cwd=ROOT)
         tail = [l for l in p.stdout.strip().splitlines() if l][-2:]
         record("book", p.returncode == 0, " / ".join(tail) if tail else p.stderr.strip()[-300:])

@@ -140,17 +140,20 @@ IEEE single arithmetic in numpy and in C++.
   and `bias` round to nearest. The encoder is GPTQ-rounded but not refit: on
   this net its refit moved rare patterns' embeddings (max error 116 against 11
   at 16 bits everywhere).
-- **Size.** 54,159 bytes = **30,948 CJK14 characters** (payload sha256
+- **Size.** 54,159 bytes = **28,885 U15 characters** (payload sha256
   `4ba93b1a...`, pinned by `tools/test_nnue_emit_b64_header.py`).
 - **Error.** For r12_M2 on 20,000 positions, the bot's integer eval is 5.80
   mean / 166 max eval units from the float net (the unquantized export in the
   same integer engine: 5.63 / 211; the dequantized generator alone, in float:
   1.08 / 45). B64_d5M_57ep's were 4.72 / 163 and 0.91 / 61. A
-  29,472-character configuration (enc 14, proj 11, fwd 12, dec 14, con 12,
-  dense 14, psqt 14) would free 1,450 characters for about 0.1 more mean
-  error, if the headroom is ever needed.
+  configuration enc 14, proj 11, fwd 12, dec 14, con 12, dense 14, psqt 14
+  would free about 1,350 characters for about 0.1 more mean error, if the
+  headroom is ever needed. Lossless recoding has nothing left to take: the
+  quantized weights use 12-13 significant bits each (median |q| 300-1,600 on
+  a 14-bit grid), and per-row Rice, Laplacian, Gaussian and adaptive
+  bit-length models all land within 1% of the shipped Rice code.
 
-At start-up `b64::load()` reads the bits straight from the CJK14 characters
+At start-up `b64::load()` reads the bits straight from the U15 characters
 (`b64::Bits`, no byte buffer), then bakes and quantizes the tables in about
 50 ms, inside the 1,000 ms first turn
 ([nnue_training_and_implementation.md](nnue_training_and_implementation.md)
@@ -236,11 +239,11 @@ At startup, `d16_mini_load_packed()`:
 The textual payload is compact, while the larger speed-oriented tables exist
 only in process memory and therefore do not consume source characters.
 
-## 4. CJK14 payload encoding
+## 4. U15 payload encoding
 
 The network payloads (the NNUE generator, the macro net and the retired D16
-MiniNet) use the deterministic encoder in `tools/nnue_cjk14.py`. The gameplay
-opening book packs its mixed-radix digits into the same CJK14 alphabet and
+MiniNet) use the deterministic encoder in `tools/nnue_cjk14.py` (`encode_u15`).
+The gameplay opening book packs its coded stream into the same alphabet and
 decodes with the same decoder ([play_book.md](play_book.md)).
 
 ### 4.1 Why not ASCII
@@ -250,21 +253,34 @@ length), not bytes. A CodinGame forum user established this by testing,
 reporting a consistent limit only in UTF-16 units, and the official
 documentation says only "100k characters".
 Every character from U+0000 through U+FFFF except surrogates is one unit. An
-alphabet of 2^14 such characters therefore carries 14 payload bits per counted
+alphabet of 2^15 such characters therefore carries 15 payload bits per counted
 character:
 
 ```text
 ASCII85  8 bits per 1.25 characters  = 6.4 bits per character
 Base64   8 bits per 1.33 characters  = 6.0 bits per character
-CJK14                                = 14 bits per character
+CJK14                                = 14 bits per character (until 2026-09-30)
+U15                                  = 15 bits per character
 ```
 
-The alphabet is U+4E00 through U+8DFF, the first 16,384 CJK Unified
-Ideographs. The block contains no combining marks, line or paragraph
-separators, bidi controls, invisible characters, or characters with Unicode
-normalization decompositions, so an editor or paste box has nothing to
-rewrite. A 15-bit alphabet would have to span other blocks with combining
-marks, which is why the encoding stops at 14 bits.
+The U15 alphabet is U+3400 through U+9FFF (CJK Unified Ideographs Extension
+A, the 64 Yijing hexagram symbols and the CJK Unified Ideographs: 27,648
+characters) followed by U+E000 through U+F3FF (5,120 Private Use characters);
+a value below 27,648 maps into the first range, the rest into the second.
+None of these characters is a combining mark, a line or paragraph separator,
+a bidi control, an invisible character or a character with a Unicode
+normalization decomposition (`tools/test_nnue_cjk14.py` walks the whole
+alphabet with `unicodedata`), so an editor or paste box has nothing to
+rewrite; the private-use characters merely render as boxes. No single block
+of 2^15 such characters exists, which is why the previous alphabet, CJK14
+(U+4E00 through U+8DFF), stopped at 14 bits. Wider alphabets are possible:
+one top CodinGame bot packs 15.875 bits per character by treating every
+non-surrogate, non-separator code point as a base digit, which takes in
+blocks with canonical decompositions (Hangul syllables) and a bignum decode;
+that is another 4% on the payloads if it is ever needed.
+
+`decode_cjk14` stays in `tools/nnue_cjk14.py` to read headers generated
+before the switch.
 
 The file is UTF-8 on disk. Each payload character is three UTF-8 bytes, so the
 submission is larger in bytes than in counted characters.
@@ -272,16 +288,15 @@ submission is larger in bytes than in counted characters.
 ### 4.2 Encoding algorithm
 
 1. Treat the payload as one big-endian bit stream.
-2. Emit each 14-bit group as the character `U+4E00 + group`.
+2. Emit each 15-bit group as `U+3400 + group` below 27,648, else
+   `U+E000 + group - 27648`.
 3. Zero-pad the final group.
 
-Decoding yields `floor(14 * characters / 8)` bytes. When the final group
+Decoding yields `floor(15 * characters / 8)` bytes. When the final group
 carries eight or more padding bits that is one zero byte more than the input.
 Every loader sizes its reads from the known layout (`count < need` fails,
 extra bytes are ignored; the NNUE reader stops at the end of its last
-matrix), so the padding is harmless. The macro payload pads by 4 bits and
-decodes to exactly its input length; the NNUE payload pads by 10, so a byte
-decoder would return one extra zero byte, which its bit reader never reaches.
+matrix), so the padding is harmless.
 
 ### 4.3 Raw-string delimiter safety
 
@@ -322,7 +337,7 @@ The committed tests pin the payloads to:
 | Payload | Bytes | Characters | Pinned hash |
 | --- | ---: | ---: | --- |
 | NNUE generator | 54,159 | 30,948 | sha256 `4ba93b1a422c480c...` (`tools/test_nnue_emit_b64_header.py`), plus the 16 baked tables' hashes (`unit_tests.cpp`) |
-| Macro residual | 3,076 | 1,758 | FNV-1a 64 `626e29f3a8d65679` |
+| Macro residual | 3,076 | 1,641 | FNV-1a 64 `626e29f3a8d65679` |
 | D16 local evaluator (retired) | 42,855 | 24,489 | FNV-1a 64 `e35e987c17a453cf` |
 
 The macro and D16 bytes are the same the ASCII85 encoding decoded to.
@@ -467,6 +482,30 @@ A small source edit can change identifier frequencies and therefore cascade
 into many different short names in `cg_input.cpp`. Such a generated diff does
 not imply a large semantic change.
 
+### 7.4 The `#define` pass
+
+Keywords, attributes and intrinsics survive renaming, and the bot repeats
+them thousands of times (`int` 647 times, `__attribute__((always_inline))`
+100 times). After renaming, `define_macros()` greedily picks the run of 1-8
+tokens whose replacement saves the most characters (occurrences times the
+run's length, less the define line), replaces it with a placeholder, and
+repeats until no run saves eight characters. Bodies must be bracket-balanced:
+the AVX intrinsics are function-like macros when CodinGame compiles without
+`-O`, and an expansion that opened or closed a parenthesis across their
+argument lists broke them. Every `#include` moves into the leading
+preprocessor block so no header ever sees a macro, and the defines follow that
+block. Finally the renamed identifiers and the macros share one ranking by use
+count, so the most used tokens get the one-letter names. `stringify()`
+separates a literal from a following macro name, which would otherwise lex as
+a user-defined-literal suffix, and a name that is also an encoding prefix
+(`u`, `U`, `L`, `R`, `u8`, `uR`, `LR`, `UR`, `u8R`) from a following literal,
+which would otherwise lex as one prefixed literal. Equal gains go to the
+longer run, so the choice does not depend on dictionary order. An `#include`
+inside an `#if` block cannot be hoisted and stops the minifier with an error
+(the bundle has none). `--no-macros` skips the pass; it costs about 15 s
+against 0.05 s for renaming alone. The pass took `cg_input.cpp` from 95,927
+to 80,883 characters; `tools/test_cg_minify.py` covers it.
+
 ## 8. Token reconstruction
 
 `stringify()` joins the renamed token stream with the minimum required
@@ -510,7 +549,7 @@ compiler. It does not:
 - eliminate dead code;
 - merge declarations or expressions;
 - color identifiers by scope;
-- expand or rewrite macros;
+- expand or rewrite the source's own macros;
 - alter constants, control flow, search, or evaluation;
 - compress the program into a self-extracting binary/text wrapper.
 
@@ -527,10 +566,10 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 108232 (bundled 196780)
--> cpp_impl/cg_input.cpp 94922
-saved 101858
-cap 5078 left
+cpp_impl/codingame_nnue.cpp 113642 (bundled 197911)
+-> cpp_impl/cg_input.cpp 73088
+saved 124823
+cap 26912 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
@@ -544,11 +583,11 @@ bytes. The CLI exits with failure when output is 100,000 units or larger.
 
 | Part of `cg_input.cpp` | UTF-16 units |
 | --- | ---: |
-| code (minified engine, NNUE runtime, book reader) | 48,760 |
-| NNUE generator payload | 30,948 |
-| gameplay opening book payload | 13,456 |
-| macro net payload | 1,758 |
-| **total** | **94,922** (5,078 left) |
+| code (minified engine, NNUE runtime, book decoder) | 36,768 |
+| NNUE generator payload | 28,885 |
+| gameplay opening book payload | 5,794 |
+| macro net payload | 1,641 |
+| **total** | **73,088** (26,912 left) |
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
@@ -562,10 +601,13 @@ opening book (13,456 payload characters against 4,656) to 90,095, with
 24,489 payload characters with the generator's 30,923 and took the HCE and
 MiniNet code out of the bot (50,392 code characters down to 48,760): **94,897,
 with 5,103 left**. The r12_M2 payload (section 57) is 25 characters longer:
-**94,922, with 5,078 left**. Headroom is again worth watching: a smaller NNUE payload
-configuration would free about 1,450 (section 3.1), and the two templates the
-bot never instantiates (`evaluate_macro_fast` in the shared `macro_eval.hpp`
-and `b64::evaluate_board`) cost 688.
+**94,922, with 5,078 left**; the futility and IIR rounds brought it to 95,927.
+On 2026-09-30 the `#define` pass (section 7.4) took it to 80,883, the
+arithmetic-coded opening book ([play_book.md](play_book.md)) to 74,853, the
+U15 alphabet (section 4) to 72,317 and dropping `evaluate_macro_fast` from
+the shipped macro header to 72,105; with improvement log sections 61 and 62
+and the book's net fingerprint it is **73,088, with 26,912 left**. A smaller
+NNUE payload configuration would still free about 1,350 (section 3.1).
 
 ## 11. Reproducible generation procedure
 
@@ -689,7 +731,17 @@ Coverage relevant to this pipeline includes:
   scalar reference along a search-like walk;
 - scalar versus optimized evaluator paths.
 
-### 12.4 Behavioral and timing checks
+### 12.4 Minifier identity
+
+`make -C cpp_impl cg-min-check` minifies `cg_selfcheck.cpp` itself (it bundles
+the CodinGame file, so every rename and macro applies to the whole program),
+builds it at `-O3` and with CodinGame's flags (no `-O`, where the AVX
+intrinsics are function-like macros), and requires the fixed-depth
+checksums, node counts and book checksum of both at depths 5, 7 and 9 to
+equal the readable build's. Run it after any minifier change; it is the gate
+the `#define` pass was accepted through.
+
+### 12.5 Behavioral and timing checks
 
 For a representation-only payload change, verify:
 
