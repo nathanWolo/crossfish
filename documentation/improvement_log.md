@@ -3878,6 +3878,11 @@ r13w_20's length) is training and ungamed.
 **Not yet done.** The 4.8G-row fine-tune's games (and a paste-file match
 against r13w_20). The sprt harness cannot run a CodinGame-scaled SPRT net
 against net, because Dev and Prev share the net header; the paste-file match
-above is the ship test. The CodinGame IDE paste and copy-back test and CI's
-`cg-perf-gate` (which needs g++-11; the desktop's toolchain is clang, so
-`cg-min-check`'s CodinGame-flags half is CI's) remain to be run.
+above is the ship test. The g++ 11 half of the gate ran on the ThinkPad at
+06:12: `cg_input.cpp` compiles with CodinGame's exact command line and zero
+diagnostics, `make cg-min-check CG_CXX=g++-11` is IDENTICAL on both legs at
+depths 5, 7 and 9, `cg_selfcheck_cgflags` loads the book (book=ok, the same
+depth-5 checksum as the clang build) at 15.0M nps, and the exact book
+protocol check passes 40/40 (first turn at most 223 ms, later replies 90.1 ms
+median, 90.4 ms max). The CodinGame IDE paste and copy-back test and CI's
+`cg-perf-gate` remain to be run.
