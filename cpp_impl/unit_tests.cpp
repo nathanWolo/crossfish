@@ -1111,37 +1111,38 @@ static uint64_t nnue_table_hash(const void *p, size_t n) {
     return h;
 }
 
-// load() must bake exactly the tables of the verified CodinGame build of the committed net (r12_M2,
-// datasets/nnue2/cg/r12): same payload, same float bake, same quantization.
+// load() must bake exactly the tables of the verified build of the committed net (r13w_11, the build of
+// improvement log section 64's ship match; the hashes are nnue_emit_b64_header.py --check's): same payload,
+// same float bake, same quantization.
 static void test_nnue_tables_match_verified_build(TestCtx &ctx) {
     b64::load();
     CHECK_EQ(B64_QA, 9);
     CHECK_EQ(B64_QPS, 12);
     CHECK_EQ(B64_QB, 13);
     CHECK_EQ(B64_Q2, 13);
-    CHECK_EQ(B64_QO, 11);
+    CHECK_EQ(B64_QO, 10);
     const struct {
         const char *name;
         const void *p;
         size_t n;
         uint64_t want;
     } tables[] = {
-        {"T", b64::T, sizeof(b64::T), 0xfaccfc87cfd0b6d0ull},
-        {"TP", b64::TP, sizeof(b64::TP), 0x9e3ec366d8c3fb4aull},
-        {"F", b64::F, sizeof(b64::F), 0xf456392f8ba17975ull},
-        {"FP", b64::FP, sizeof(b64::FP), 0xd331d7412ca0185aull},
-        {"DEC", b64::DEC, sizeof(b64::DEC), 0xf696cbe1be77ca93ull},
-        {"DECP", b64::DECP, sizeof(b64::DECP), 0xae23933a779e37adull},
-        {"CON", b64::CON, sizeof(b64::CON), 0x3157b6212f30ac80ull},
-        {"CONP", b64::CONP, sizeof(b64::CONP), 0x99bd53d0b46749e3ull},
-        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x02e8408a9380a607ull},
+        {"T", b64::T, sizeof(b64::T), 0x8467a8b43b1781abull},
+        {"TP", b64::TP, sizeof(b64::TP), 0xd115d9d2344a015cull},
+        {"F", b64::F, sizeof(b64::F), 0xcdae0bbc33217c1bull},
+        {"FP", b64::FP, sizeof(b64::FP), 0x0827752cb06824cbull},
+        {"DEC", b64::DEC, sizeof(b64::DEC), 0x10b25653b45b4759ull},
+        {"DECP", b64::DECP, sizeof(b64::DECP), 0x25e158f8276b3d58ull},
+        {"CON", b64::CON, sizeof(b64::CON), 0x3538d69f7a3a74e7ull},
+        {"CONP", b64::CONP, sizeof(b64::CONP), 0x71329dd7cab3cabdull},
+        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x27b847b7560d6d92ull},
         {"BIASP", &b64::BIASP, sizeof(b64::BIASP), 0x9a691300c548b8fbull},
-        {"W1p", b64::W1p, sizeof(b64::W1p), 0x7cf86c63bbd44d5eull},
-        {"B1", b64::B1, sizeof(b64::B1), 0xeddd686a2a1ccfe3ull},
-        {"W2p", b64::W2p, sizeof(b64::W2p), 0x70f17bbda9b46047ull},
-        {"B2", b64::B2, sizeof(b64::B2), 0x4db449aabff4541eull},
-        {"WO", b64::WO, sizeof(b64::WO), 0x7662257aebc69d1full},
-        {"BO", &b64::BO, sizeof(b64::BO), 0xcafde29f2adc4a1full},
+        {"W1p", b64::W1p, sizeof(b64::W1p), 0x4ffb93373ab96169ull},
+        {"B1", b64::B1, sizeof(b64::B1), 0x9650ef9b37e383d3ull},
+        {"W2p", b64::W2p, sizeof(b64::W2p), 0x7155982c2fbf7f0full},
+        {"B2", b64::B2, sizeof(b64::B2), 0x5435d739cc7b6f4bull},
+        {"WO", b64::WO, sizeof(b64::WO), 0x084874555f3d0ae2ull},
+        {"BO", &b64::BO, sizeof(b64::BO), 0x64be4e773b169f15ull},
     };
     for (const auto &t : tables) {
         const uint64_t got = nnue_table_hash(t.p, t.n);
@@ -1264,12 +1265,12 @@ static void nnue_position(int i, GlobalBoard &b) {
     }
 }
 
-// The committed net's (r12_M2) evals on those positions, checked against the float net in PyTorch (mean
-// |d| 4.9, max 28; the 20,000-position parity is 5.8 / 166): a change to the net, the bake, the quantization
-// or the kernels shows up here.
+// The committed net's (r13w_11) evals on those positions, checked against the float net in PyTorch (mean
+// |d| 8.9, max 31; r12_M2's were 4.9 / 28 with a 20,000-position parity of 5.8 / 166): a change to the net,
+// the bake, the quantization or the kernels shows up here.
 static void test_nnue_fixed_positions(TestCtx &ctx) {
-    static const int want[16] = {1141, -1169, -340,  -79,   645,  810,  905,  1357,
-                                 2746, -2466, 15694, 12937, 8106, 9027, 5272, 15737};
+    static const int want[16] = {1529, -1513, -346,  -92,   386,  832,  580,  1518,
+                                 2290, -2430, 12107, 16910, 9430, 10518, 6017, 15700};
     CrossfishDev dev;
     int drawn = 0, free_moves = 0, decided = 0;
     for (int i = 0; i < 16; i++) {
