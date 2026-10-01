@@ -138,5 +138,6 @@ int main(int argc, char **argv) {
     std::printf("cg_selfcheck book=%s entries=%zu table_checksum=%llu book_ms=%.1f\n",
                 book_ok ? "ok" : "FAILED", PB_TABLE.size(),
                 (unsigned long long)play_book_table_checksum(), book_ms);
-    return 0;
+    // A book packed with another net (or none) is a shipping error: fail the gate.
+    return book_ok ? 0 : 1;
 }

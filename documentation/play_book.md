@@ -138,16 +138,25 @@ section 4).
 | --- | --- |
 | Decisions as plain digits | 184,846 bits |
 | Payload | 10,863 bytes, 5,794 characters (the mixed-radix digits: 13,456; the full-coverage book: 4,656) |
-| `cg_input.cpp` | 72,105 characters, 27,895 left |
+| `cg_input.cpp` | 73,088 characters, 26,912 left |
 | Decode at startup | about 50 ms at -O3, 90 ms with CodinGame's flags, inside the 1,000 ms first turn (the plain digits: 9 / 20 ms) |
 
 The packer (`play_book_pack.cpp`) and the runtime drive the same `PbWalker`
 with the same evaluator (`b64::evaluate_board`, passed to `pb_init`), so
 neither the order nor the probabilities can drift. **A new net changes the
 ordering, so the book must be re-packed whenever `nnue_b64_net.hpp`
-changes** (`make -C cpp_impl play-book`); a stale payload decodes to the
-wrong number of entries, `pb_init` reports failure and the bot plays without
-a book (`cg_selfcheck` prints `book=FAILED`). At runtime the walk rebuilds a
+changes** (`make -C cpp_impl play-book`, from `cpp_impl/play_book.txt`). A
+stale payload is refused, not decoded: the header carries
+`PLAY_BOOK_EVAL_FINGERPRINT`, a hash of the evaluator's values on 64 fixed
+pseudo-positions, and `pb_init` compares it with the evaluator it is given
+before reading a bit (0.1 ms). Should the fingerprints ever agree while the
+ordering differs, the walk stops as soon as it passes the expected entry
+count (19 ms at -O3, 132 ms at -O0 in a test with a perturbed evaluator;
+without the bound a stale book walked a tree of nonsense for 6-25 s). Either
+way `pb_init` returns false, the bot plays without a book, `cg_selfcheck`
+prints `book=FAILED` and exits 1, `test_play_book` fails, and the CI gate's
+exact protocol check (`--book cpp_impl/play_book.txt`) fails. At runtime the
+walk rebuilds a
 table from a symmetry-canonical 64-bit position hash to the book move in
 canonical orientation. `pb_lookup` maps the move back to the real orientation
 and only returns it if it is legal in the actual position.

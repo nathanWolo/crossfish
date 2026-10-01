@@ -5,6 +5,8 @@
 
 static constexpr int PLAY_BOOK_ENTRIES = 34066;
 static constexpr int PLAY_BOOK_BYTES = 10863;
+// pb_eval_fingerprint of the net the moves were ordered with; pb_init refuses the payload under another.
+static constexpr uint64_t PLAY_BOOK_EVAL_FINGERPRINT = 14680970995260692808ull;
 
 static const char PLAY_BOOK_CJK[] = R"~(
 㑛糚鋜痸鈠蠽兵㡢臬䇤鷼嶢良糝譤嚩㠢狩咹鋜䔴蜗陘䙦齩㜜㶥佛髁矕鑈㤃䛗膠維暆莕軗鷼㲜匈缿屻耭醈覵瑛䲪澲䶂繰㫒贙袺薆貳

@@ -152,9 +152,12 @@ int main(int argc, char **argv) {
         "// %d of our positions and %d opponent positions whose replies it covers,\n"
         "// after the first player's center-center.\n\n"
         "static constexpr int PLAY_BOOK_ENTRIES = %d;\n"
-        "static constexpr int PLAY_BOOK_BYTES = %zu;\n\n"
+        "static constexpr int PLAY_BOOK_BYTES = %zu;\n"
+        "// pb_eval_fingerprint of the net the moves were ordered with; pb_init refuses the payload under another.\n"
+        "static constexpr uint64_t PLAY_BOOK_EVAL_FINGERPRINT = %lluull;\n\n"
         "static const char PLAY_BOOK_CJK[] = R\"~(\n%s\n)~\";\n",
-        walker.entries, hooks.expanded + 1, walker.entries, bytes.size(), text.c_str());
+        walker.entries, hooks.expanded + 1, walker.entries, bytes.size(),
+        (unsigned long long)pb_eval_fingerprint(hooks.eval), text.c_str());
     std::fclose(f);
     std::printf("packed %d positions (%d expanded opponent positions): %.0f bits as plain digits, coded to "
                 "%zu bytes, %zu payload characters -> %s\n",

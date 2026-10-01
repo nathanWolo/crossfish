@@ -926,7 +926,13 @@ static uint64_t play_book_child_hash(GlobalBoard b, Move m) {
 
 static void test_play_book(TestCtx &ctx) {
     crossfish_nnue_load_once();
-    CHECK((pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); })));
+    // The payload is coded with this net's move ordering: its fingerprint must
+    // match the net, and a different evaluator must be refused before the walk.
+    auto nnue = [](const PbView &v, int c) { return b64::evaluate_board(v, c); };
+    auto other = [](const PbView &v, int c) { return b64::evaluate_board(v, c) + (v.n_moves & 1 ? 1 : -1); };
+    CHECK_EQ(pb_eval_fingerprint(nnue), PLAY_BOOK_EVAL_FINGERPRINT);
+    CHECK(pb_eval_fingerprint(other) != PLAY_BOOK_EVAL_FINGERPRINT);
+    CHECK((pb_init<GlobalBoard, Move>(nnue)));
     CHECK_EQ((int)PB_TABLE.size(), PLAY_BOOK_ENTRIES);
     // Pinned like the network payload hashes: regenerating the book changes it.
     std::vector<std::pair<uint64_t, uint8_t>> rows(PB_TABLE.begin(), PB_TABLE.end());

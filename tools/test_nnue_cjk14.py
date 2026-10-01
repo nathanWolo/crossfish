@@ -39,7 +39,8 @@ class TestU15Encoding(unittest.TestCase):
             c = encode_u15(bytes([v >> 7, (v & 127) << 1]))[0]
             self.assertEqual(u15_value(c), v)
             seen.add(c)
-            self.assertIn(unicodedata.category(c), ("Lo", "So", "Co"))
+            # Python 3.10's Unicode 13 still has U+9FFD..U+9FFF unassigned.
+            self.assertIn(unicodedata.category(c), ("Lo", "So", "Co", "Cn"))
             self.assertEqual(unicodedata.decomposition(c), "")
             self.assertEqual(unicodedata.normalize("NFKC", c), c)
         self.assertEqual(len(seen), 1 << 15)

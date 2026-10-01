@@ -316,7 +316,11 @@ a freeze:
    `tools/test_nnue_emit_b64_header.py` (see section 10 of
    `documentation/nnue_training_and_implementation.md`);
    Dev, Prev and the bot all read that one header. Keep large LUTs in static
-   storage.
+   storage. **A new net also needs the opening book re-packed**: its payload
+   is coded with the net's move ordering, so run `make -C cpp_impl play-book`
+   (from `cpp_impl/play_book.txt`) and commit `play_book_data.hpp`. A stale
+   book is refused at start-up (`cg_selfcheck` prints `book=FAILED` and exits
+   1; `test_play_book` fails), and the bot would play without a book.
 2. Prove the port: `make -C cpp_impl port-check` must print IDENTICAL at every
    depth (the CG search against Dev). For a tree-identical change,
    `cg_selfcheck` checksums must also match their pre-port values.
@@ -439,8 +443,8 @@ opening book (5,794) are packed at 15 bits per character on the U15 alphabet
 `documentation/minification.md`), so the file is larger in bytes than in
 counted characters; trust the minifier's count, not `wc -c`. Paste
 **`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
-headers are intentionally kept separate for review. The file is **72,105
-characters** (27,895 left).
+headers are intentionally kept separate for review. The file is **73,088
+characters** (26,912 left).
 
 `tools/cg_minify.py` is an ice4-style minifier: it can inline local quoted
 headers, strips comments and indentation, renames identifiers, turns the most
@@ -503,14 +507,15 @@ Timeouts: Prev=17 Dev=15
 See section 59 of the improvement log. The paste file was 95,874
 characters (4,126 left).
 
-On 2026-09-30 the paste file went from 95,927 to **72,105 characters** with
+On 2026-09-30 the paste file went from 95,927 to 72,105 characters with
 the same program (improvement log section 63): a `#define` pass in the
 minifier (-15,044), the opening book arithmetic-coded with the NNUE's move
 ordering as its model (13,456 -> 5,794 payload characters), and 15 payload
 bits per character instead of 14 (the U15 alphabet). `cg-min-check`,
 `port-check` and the CodinGame-flags node rate are unchanged; the first turn
-takes about 325 ms of its 1,000 ms with CodinGame's flags (was 250) because
-the book decode now evaluates the book's children.
+takes about 300 ms of its 1,000 ms with CodinGame's flags (was 250) because
+the book decode now evaluates the book's children. With sections 61 and 62
+merged and the book's net fingerprint it is **73,088 characters**.
 
 On 2026-09-29 speed round thirteen passed the official 90 ms SPRT against the
 r12_M2 freeze: three tree-identical speedups (make/unmake stop maintaining the

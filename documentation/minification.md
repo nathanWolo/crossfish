@@ -497,8 +497,14 @@ preprocessor block so no header ever sees a macro, and the defines follow that
 block. Finally the renamed identifiers and the macros share one ranking by use
 count, so the most used tokens get the one-letter names. `stringify()`
 separates a literal from a following macro name, which would otherwise lex as
-a user-defined-literal suffix. `--no-macros` skips the pass. The pass took
-`cg_input.cpp` from 95,927 to 80,883 characters.
+a user-defined-literal suffix, and a name that is also an encoding prefix
+(`u`, `U`, `L`, `R`, `u8`, `uR`, `LR`, `UR`, `u8R`) from a following literal,
+which would otherwise lex as one prefixed literal. Equal gains go to the
+longer run, so the choice does not depend on dictionary order. An `#include`
+inside an `#if` block cannot be hoisted and stops the minifier with an error
+(the bundle has none). `--no-macros` skips the pass; it costs about 15 s
+against 0.05 s for renaming alone. The pass took `cg_input.cpp` from 95,927
+to 80,883 characters; `tools/test_cg_minify.py` covers it.
 
 ## 8. Token reconstruction
 
@@ -560,10 +566,10 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 111040 (bundled 193373)
--> cpp_impl/cg_input.cpp 72105
-saved 121268
-cap 27895 left
+cpp_impl/codingame_nnue.cpp 113642 (bundled 197911)
+-> cpp_impl/cg_input.cpp 73088
+saved 124823
+cap 26912 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
@@ -577,11 +583,11 @@ bytes. The CLI exits with failure when output is 100,000 units or larger.
 
 | Part of `cg_input.cpp` | UTF-16 units |
 | --- | ---: |
-| code (minified engine, NNUE runtime, book decoder) | 35,785 |
+| code (minified engine, NNUE runtime, book decoder) | 36,768 |
 | NNUE generator payload | 28,885 |
 | gameplay opening book payload | 5,794 |
 | macro net payload | 1,641 |
-| **total** | **72,105** (27,895 left) |
+| **total** | **73,088** (26,912 left) |
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
@@ -599,8 +605,9 @@ with 5,103 left**. The r12_M2 payload (section 57) is 25 characters longer:
 On 2026-09-30 the `#define` pass (section 7.4) took it to 80,883, the
 arithmetic-coded opening book ([play_book.md](play_book.md)) to 74,853, the
 U15 alphabet (section 4) to 72,317 and dropping `evaluate_macro_fast` from
-the shipped macro header to **72,105, with 27,895 left**. A smaller NNUE
-payload configuration would still free about 1,350 (section 3.1).
+the shipped macro header to 72,105; with improvement log sections 61 and 62
+and the book's net fingerprint it is **73,088, with 26,912 left**. A smaller
+NNUE payload configuration would still free about 1,350 (section 3.1).
 
 ## 11. Reproducible generation procedure
 
@@ -727,10 +734,12 @@ Coverage relevant to this pipeline includes:
 ### 12.4 Minifier identity
 
 `make -C cpp_impl cg-min-check` minifies `cg_selfcheck.cpp` itself (it bundles
-the CodinGame file, so every rename and macro applies to the whole program)
-and requires its fixed-depth checksums, node counts and book checksum at
-depths 5, 7 and 9 to equal the readable build's. Run it after any minifier
-change; it is the gate the `#define` pass was accepted through.
+the CodinGame file, so every rename and macro applies to the whole program),
+builds it at `-O3` and with CodinGame's flags (no `-O`, where the AVX
+intrinsics are function-like macros), and requires the fixed-depth
+checksums, node counts and book checksum of both at depths 5, 7 and 9 to
+equal the readable build's. Run it after any minifier change; it is the gate
+the `#define` pass was accepted through.
 
 ### 12.5 Behavioral and timing checks
 

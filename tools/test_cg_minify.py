@@ -557,3 +557,91 @@ class TestMainCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDefineMacros(unittest.TestCase):
+    """The #define pass (cg_minify.define_macros) and the names it may use."""
+
+    SRC = (
+        "#include <cstdint>\n"
+        "static int f(int a){return a;}\n"
+        "static int g(int a){return a;}\n"
+        "static int h(int a){return a;}\n"
+        "static int k(int a){return a;}\n"
+        "static constexpr int X=1;\n"
+        "static constexpr int Y=2;\n"
+        "static constexpr int Z=3;\n"
+    )
+
+    def _preprocess(self, src):
+        """Expand the output's own object-like #defines, textually, for comparison."""
+        defines = {}
+        body = []
+        for line in src.split("\n"):
+            if line.startswith("#define "):
+                name, _, value = line[len("#define "):].partition(" ")
+                defines[name] = value
+            elif not line.startswith("#"):
+                body.append(line)
+        toks = m.tokenize("\n".join(body))
+        changed = True
+        while changed:
+            changed = False
+            out = []
+            for t in toks:
+                if t in defines:
+                    out.extend(m.tokenize(defines[t]))
+                    changed = True
+                else:
+                    out.append(t)
+            toks = out
+        return toks
+
+    def test_macros_reproduce_the_token_stream(self):
+        with_macros = m.minify_cpp(self.SRC)
+        without = m.minify_cpp(self.SRC, macros=False)
+        self.assertIn("#define", with_macros)
+        self.assertLess(len(with_macros), len(without))
+        self.assertEqual(self._preprocess(with_macros), self._preprocess(without))
+
+    def test_defines_follow_the_includes(self):
+        out = m.minify_cpp(self.SRC + '#include <vector>\nstatic int q(int a){return a;}\n')
+        lines = out.split("\n")
+        last_include = max(i for i, l in enumerate(lines) if l.startswith("#include"))
+        first_define = min(i for i, l in enumerate(lines) if l.startswith("#define"))
+        self.assertLess(last_include, first_define)
+        self.assertEqual(lines.count("#include<cstdint>"), 1)
+        self.assertEqual(lines.count("#include<vector>"), 1)
+
+    def test_bodies_are_bracket_balanced(self):
+        src = "".join(f"static int f{i}(int a){{return __builtin_popcount(a)+(1<<a);}}\n" for i in range(12))
+        for line in m.minify_cpp(src).split("\n"):
+            if line.startswith("#define "):
+                body = line.split(" ", 2)[2]
+                for o, c in ("()", "[]", "{}"):
+                    self.assertEqual(body.count(o), body.count(c), line)
+
+    def test_literal_prefix_names_are_spaced_from_literals(self):
+        # u"x" / R"(x)" / L'c' lex as one prefixed literal: a short name that is
+        # also a prefix must not touch a following literal.
+        for name in sorted(m.LITERAL_PREFIXES):
+            self.assertEqual(m.stringify([name, '"x"']), name + ' "x"\n')
+            self.assertEqual(m.stringify([name, "'c'"]), name + " 'c'\n")
+            self.assertEqual(m.stringify([name, 'R"~(x)~"']), name + ' R"~(x)~"\n')
+        self.assertEqual(m.stringify(["ab", '"x"']), 'ab"x"\n')
+        # End to end: many identifiers exhaust the one-letter pool, so some
+        # function is named u, U, L or R and is called with a literal argument.
+        src = "#include <cstdint>\n" + "".join(
+            f"static int name_{i}(const char *a){{return a[{i % 3}];}}\n" for i in range(80)
+        ) + "static int all(){int s=0;" + "".join(f's+=name_{i}("x");' for i in range(80)) + "return s;}\n"
+        out = m.minify_cpp(src)
+        body = "\n".join(l for l in out.split("\n") if not l.startswith("#"))
+        self.assertNotRegex(body, r"(?<![A-Za-z0-9_])(?:u|U|L|R|u8|uR|LR|UR|u8R)[\"']")
+
+    def test_literal_followed_by_word_gets_a_space(self):
+        self.assertEqual(m.stringify(['"x"', "abc"]), '"x" abc\n')
+        self.assertEqual(m.stringify(["'c'", "abc"]), "'c' abc\n")
+        self.assertEqual(m.stringify(['"x"', ";"]), '"x";\n')
+
+    def test_no_macros_flag(self):
+        self.assertNotIn("#define", m.minify_cpp(self.SRC, macros=False))

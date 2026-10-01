@@ -129,14 +129,19 @@ cg-flags: $(BIN)/cg_input_cgflags
 # Minifier identity gate: minify cg_selfcheck.cpp itself (it bundles the CG
 # file, so every rename and macro applies to the whole program) and compare
 # its fixed-depth checksums with the readable build's.
-cg-min-check: $(BIN)/cg_selfcheck
+# Both compilers: -O3, and CodinGame's flags (no -O), where the AVX intrinsics
+# are function-like macros and the pragma does the optimizing.
+cg-min-check: $(BIN)/cg_selfcheck $(BIN)/cg_selfcheck_cgflags
 	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/cg_selfcheck.cpp -o cpp_impl/bin/cg_selfcheck_min.cpp --inline-local
 	$(CXX) $(CXXFLAGS) -o $(BIN)/cg_selfcheck_min $(BIN)/cg_selfcheck_min.cpp
+	$(CG_CXX) $(CG_FLAGS) -o $(BIN)/cg_selfcheck_min_cgflags $(BIN)/cg_selfcheck_min.cpp -lm -lpthread -ldl -lcrypt
 	@for d in 5 7 9; do \
-	  a=$$($(BIN)/cg_selfcheck_min 120 $$d | grep -v seconds | sed 's/ book_ms=.*//'); \
 	  b=$$($(BIN)/cg_selfcheck 120 $$d | grep -v seconds | sed 's/ book_ms=.*//'); \
-	  if [ "$$a" = "$$b" ]; then echo "cg-min-check depth $$d: IDENTICAL"; \
-	  else echo "cg-min-check depth $$d: DIFFERENT"; echo "$$a"; echo "$$b"; exit 1; fi; \
+	  for v in cg_selfcheck_min cg_selfcheck_min_cgflags; do \
+	    a=$$($(BIN)/$$v 120 $$d | grep -v seconds | sed 's/ book_ms=.*//'); \
+	    if [ "$$a" = "$$b" ]; then echo "cg-min-check $$v depth $$d: IDENTICAL"; \
+	    else echo "cg-min-check $$v depth $$d: DIFFERENT"; echo "$$a"; echo "$$b"; exit 1; fi; \
+	  done; \
 	done
 
 cg-speed: $(BIN)/cg_selfcheck $(BIN)/cg_selfcheck_cgflags
@@ -168,7 +173,7 @@ $(BIN)/play_book_text_dump: play_book_text_dump.cpp play_book.hpp play_book_data
 
 # The shipped payload back as a text book, for re-packing after a coder change.
 play-book-text: $(BIN)/play_book_text_dump
-	$(BIN)/play_book_text_dump > $(PLAY_BOOK_TXT)
+	$(BIN)/play_book_text_dump > $(PLAY_BOOK_TXT).tmp && mv $(PLAY_BOOK_TXT).tmp $(PLAY_BOOK_TXT) || { rm -f $(PLAY_BOOK_TXT).tmp; exit 1; }
 
 play-book: $(BIN)/play_book_pack
 	$(BIN)/play_book_pack $(PLAY_BOOK_TXT) $(SRC_DIR)/play_book_data.hpp

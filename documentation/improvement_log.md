@@ -3684,7 +3684,14 @@ code 49,765, NNUE payload 30,948, opening book 13,456, macro net 1,758.
   through `GlobalBoard::makeMove` (its `std::stack` move history costs 190
   ms under -O0). The book table is unchanged (pinned checksum). The book
   now depends on the net: `make play-book` after every net change, from the
-  text book now committed as `cpp_impl/play_book.txt`.
+  text book now committed as `cpp_impl/play_book.txt`. The payload carries
+  a fingerprint of the evaluator (its values on 64 fixed pseudo-positions)
+  and `pb_init` refuses a mismatch in 0.1 ms; a walk that outgrows the
+  expected entry count stops too (review finding: without it a stale book
+  decoded nonsense for 6 s at -O3 and 25 s with CodinGame's flags, a
+  first-turn timeout). `cg_selfcheck` exits 1 on a failed book and the CI
+  gate's protocol check runs with the text book, so a stale book cannot
+  ship quietly.
 - **U15 alphabet: 15 payload bits per character (-2,536).** No single block
   of 2^15 plain characters exists, but U+3400..U+9FFF (Extension A, the
   Yijing symbols, the unified ideographs) plus 5,120 private-use characters
@@ -3694,11 +3701,13 @@ code 49,765, NNUE payload 30,948, opening book 13,456, macro net 1,758.
   4% of the payloads if ever needed.)
 - **`evaluate_macro_fast` out of the shipped header (-212).**
 
-Everything is tree-identical: `port-check` and `cg-min-check` IDENTICAL at
-depths 5, 7 and 9, 31/31 unit tests, 95 Python tests, the same node rate
-through the CodinGame protocol with CodinGame's flags (680k vs 679k nodes per
-searched move). The first turn with CodinGame's flags takes about 325 ms of
-its 1,000 ms (was 250) for the book's evaluations.
+Everything is tree-identical: `port-check` and `cg-min-check` (at -O3 and
+with CodinGame's flags) IDENTICAL at depths 5, 7 and 9, 31/31 unit tests, 96
+Python tests, the same node rate through the CodinGame protocol with
+CodinGame's flags (680k vs 679k nodes per searched move). The first turn
+with CodinGame's flags takes about 300 ms of its 1,000 ms (was 250) for the
+book's evaluations. Merged after sections 61 and 62, with the fingerprint,
+the file is 73,088 characters (26,912 left).
 
 Not pursued: shipping a compiled binary inside a wrapper, as that top bot
 does (UPX-packed C, ~200 KB in 95k characters). Our dynamic g++-11 binary is

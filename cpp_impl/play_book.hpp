@@ -201,6 +201,39 @@ static inline void pb_adapt(uint16_t &p, int bit) {
     if (bit) p -= p >> 5; else p += (4096 - p) >> 5;
 }
 
+// Fingerprint of the evaluator the book was packed with: the evaluations of 64
+// fixed pseudo-positions. A payload coded with another net would be decoded
+// by a different move ordering into a huge tree of nonsense, so pb_init
+// compares this first and refuses the payload instead.
+template <typename Eval>
+static uint64_t pb_eval_fingerprint(Eval &eval) {
+    uint64_t x = 0x243F6A8885A308D3ull, h = 1469598103934665603ull;
+    auto next = [&x]() {  // splitmix64
+        uint64_t z = (x += 0x9E3779B97F4A7C15ull);
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+        return z ^ (z >> 31);
+    };
+    for (int i = 0; i < 64; i++) {
+        PbView v{};
+        for (int mb = 0; mb < 9; mb++) {
+            uint64_t r = next();
+            int a = (int)(r & 511), b = (int)(r >> 9 & 511) & ~a;  // disjoint markers
+            v.mini_boards[mb].markers[0] = a;
+            v.mini_boards[mb].markers[1] = b;
+        }
+        uint64_t r = next();
+        v.mini_board_states[0] = (int)(r & 511);
+        v.mini_board_states[1] = (int)(r >> 9 & 511) & ~v.mini_board_states[0];
+        v.mini_board_states[2] = (int)(r >> 18 & 511) & ~(v.mini_board_states[0] | v.mini_board_states[1]);
+        v.n_moves = (int)(r >> 27 & 63);
+        int score = eval(v, (int)(r >> 33) % 10);
+        h ^= (uint64_t)(uint32_t)score;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
 // Our move's rank as truncated unary: bit k says "rank > k". `code` encodes or
 // decodes one bit and returns its value, so the packer and the runtime share
 // this binarization.
@@ -223,9 +256,11 @@ struct PbWalker {
     Hooks &hooks;
     std::unordered_set<uint64_t> seen_opponent;
     int entries = 0;
+    int limit = 1 << 30;  // the runtime sets the expected entry count: a stale payload stops here
 
     void ours(Board &b) {
         int t;
+        if (entries > limit) return;
         uint64_t h = pb_canonical(b, t);
         if (PB_TABLE.count(h)) return;
         MoveT legal[81];
@@ -242,6 +277,7 @@ struct PbWalker {
 
     void opponent(Board &b) {
         int t;
+        if (entries > limit) return;
         if (!seen_opponent.insert(pb_canonical(b, t)).second) return;
         MoveT legal[81];
         int order[81];
@@ -292,6 +328,7 @@ struct PbDecoder {
 template <typename Board, typename MoveT, typename Eval>
 static bool pb_init(Eval eval) {
     if (PB_READY) return true;
+    if (pb_eval_fingerprint(eval) != PLAY_BOOK_EVAL_FINGERPRINT) return false;  // packed with another net
     static unsigned char buf[PLAY_BOOK_BYTES + 16];
     int n = d16_mini_cjk_decode(PLAY_BOOK_CJK, buf, (int)sizeof(buf));
     if (n < PLAY_BOOK_BYTES) return false;
@@ -309,6 +346,7 @@ static bool pb_init(Eval eval) {
     } hooks{eval, PbDecoder{buf, n}, PbModels{}};
     hooks.dec.init();
     PbWalker<Board, MoveT, Hooks> walker{hooks};
+    walker.limit = PLAY_BOOK_ENTRIES;
     walker.run();
     PB_READY = walker.entries == PLAY_BOOK_ENTRIES;
     if (!PB_READY) PB_TABLE.clear();

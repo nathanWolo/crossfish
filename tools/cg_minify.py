@@ -75,6 +75,11 @@ STD_METHODS = frozenset(
     """.split()
 )
 
+# Names that lex as an encoding prefix when they sit directly before a string
+# or character literal (u"..", R"(..)", LR'x'). They stay usable as short
+# names; stringify() keeps a space between one and a following literal.
+LITERAL_PREFIXES = frozenset("u U L R u8 uR LR UR u8R".split())
+
 RESERVED = KEYWORDS | C_NAMES
 
 _LOCAL_INCLUDE_RE = re.compile(
@@ -399,22 +404,6 @@ def _macro_token_ok(tok: str) -> bool:
     return True
 
 
-def _balanced(gram: tuple[str, ...]) -> bool:
-    """Brackets open and close inside the gram, so an expansion can never sit
-    across a function-like macro's argument list (the AVX intrinsics are
-    macros when CodinGame compiles without -O)."""
-    depth = {"(": 0, "[": 0, "{": 0}
-    close = {")": "(", "]": "[", "}": "{"}
-    for t in gram:
-        if t in depth:
-            depth[t] += 1
-        elif t in close:
-            depth[close[t]] -= 1
-            if depth[close[t]] < 0:
-                return False
-    return not any(depth.values())
-
-
 def define_macros(
     tokens: list[str],
     renamed: set[str],
@@ -449,31 +438,51 @@ def define_macros(
         lead += 1
     head = tokens[:lead]
     body: list[str] = []
+    depth = 0  # #if nesting: an #include under a condition cannot be hoisted
     for t in tokens[lead:]:
-        if is_pp(t) and t.lstrip().startswith("#include"):
-            if t not in head:
-                last_inc = max(i for i, h in enumerate(head) if h.lstrip().startswith("#include"))
-                head.insert(last_inc + 1, t)
-            continue
+        if is_pp(t):
+            d = t.lstrip()[1:].lstrip()
+            if d.startswith(("if", "ifdef", "ifndef")):
+                depth += 1
+            elif d.startswith("endif"):
+                depth -= 1
+            elif d.startswith("include"):
+                if depth:
+                    raise SystemExit(f"cg_minify: cannot hoist a conditional {t.strip()!r} ahead of the macros")
+                if t not in head:
+                    last_inc = max(i for i, h in enumerate(head) if h.lstrip().startswith("#include"))
+                    head.insert(last_inc + 1, t)
+                continue
         body.append(t)
 
     defines: list[tuple[str, tuple[str, ...]]] = []
 
+    open_of = {")": "(", "]": "[", "}": "{"}
+    gram_len_cache: dict[tuple[str, ...], int] = {}
     while True:
-        # Non-overlapping occurrences of every run of 1..max_len usable tokens.
+        # Non-overlapping occurrences of every bracket-balanced run of 1..max_len
+        # usable tokens. From each start the run grows one token at a time with
+        # its bracket depths in hand, so no window is checked twice.
         ok = [_macro_token_ok(t) for t in body]
         counts: Counter[tuple[str, ...]] = Counter()
-        for n in range(1, max_len + 1):
-            seen_at: dict[tuple[str, ...], int] = {}
-            bad = sum(1 for f in ok[:n] if not f)
-            for i in range(len(body) - n + 1):
-                if i:
-                    bad += (not ok[i + n - 1]) - (not ok[i - 1])
-                if bad:
+        seen_at: dict[tuple[str, ...], int] = {}
+        nbody = len(body)
+        for i in range(nbody):
+            depth = {"(": 0, "[": 0, "{": 0}
+            for n in range(1, max_len + 1):
+                j = i + n - 1
+                if j >= nbody or not ok[j]:
+                    break
+                t = body[j]
+                if t in depth:
+                    depth[t] += 1
+                elif t in open_of:
+                    depth[open_of[t]] -= 1
+                    if depth[open_of[t]] < 0:
+                        break
+                if depth["("] or depth["["] or depth["{"]:
                     continue
-                g = tuple(body[i : i + n])
-                if not _balanced(g):
-                    continue
+                g = tuple(body[i:j + 1])
                 if seen_at.get(g, -n) <= i - n:
                     counts[g] += 1
                     seen_at[g] = i
@@ -482,9 +491,13 @@ def define_macros(
         for g, k in counts.items():
             if k < 2 or (len(g) == 1 and g[0].startswith("\x01")):
                 continue
-            L = _gram_len(g)
+            L = gram_len_cache.get(g)
+            if L is None:
+                L = gram_len_cache[g] = _gram_len(g)
             gain = k * (L - name_len) - (8 + name_len + 1 + L + 1)
-            if gain > best_gain:
+            # Equal gains: the longer run, then the lexically later one, so the
+            # choice does not depend on dictionary order.
+            if gain > best_gain or (gain == best_gain and best is not None and (len(g), g) > (len(best), best)):
                 best, best_gain = g, gain
         if best is None:
             break
@@ -549,8 +562,11 @@ def stringify(tokens: list[str]) -> str:
             a = prev[-1]
             b = t[0]
             need_space = _is_word_char(a) and _is_word_char(b)
-            # "text"X lexes as a user-defined-literal suffix, not two tokens.
+            # "text"X lexes as a user-defined-literal suffix, not two tokens,
+            # and u"text" / R"(text)" as a prefixed literal.
             if a in ('"', "'") and _is_word_char(b):
+                need_space = True
+            if b in ('"', "'") and prev in LITERAL_PREFIXES:
                 need_space = True
             if (a, b) in _GLUE_PAIRS:
                 need_space = True
