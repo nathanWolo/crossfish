@@ -1,5 +1,5 @@
 #pragma once
-// The engine's evaluation: the B-64 pattern-generator NNUE (net r13w_11 since 2026-10-01, section 64; r12_M2
+// The engine's evaluation: the B-64 pattern-generator NNUE (net r13w_20 since 2026-10-01, section 64; r12_M2
 // from 2026-09-28, section 57; B64_d5M_57ep before that). crossfish_dev.hpp and the CodinGame bot
 // (codingame_nnue.cpp) include this same file.
 //

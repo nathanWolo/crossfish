@@ -1,6 +1,6 @@
 """The committed NNUE payload (cpp_impl/nnue_b64_net.hpp) against the verified CodinGame build.
 
-The constants are the verified build's (net r13w_11, improvement log section 64; the checkpoint and export are in
+The constants are the verified build's (net r13w_20, improvement log section 64; the checkpoint and export are in
 datasets/nnue2/, not in the repository): the sha256 of its payload and the hashes of the 16 integer tables its
 loader bakes, as printed by `python tools/nnue_emit_b64_header.py --check`.
 unit_tests.cpp checks the same table hashes on the C++ loader, so the two mirrors of load() agree.
@@ -14,13 +14,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import nnue_emit_b64_header as emit  # noqa: E402
 
-PAYLOAD_SHA256 = "712039a021b912bc92503b7f66c70cd6079a798f7f1734e72be6108f45342047"
+PAYLOAD_SHA256 = "492a36eaf2f1c1011fdd5fb2533a4ee2416574dfb73346252511ef2accd11916"
 SCALES = (9, 12, 13, 13, 10)
 TABLE_HASHES = dict(
-    T=0x8467a8b43b1781ab, TP=0xd115d9d2344a015c, F=0xcdae0bbc33217c1b, FP=0x0827752cb06824cb,
-    DEC=0x10b25653b45b4759, DECP=0x25e158f8276b3d58, CON=0x3538d69f7a3a74e7, CONP=0x71329dd7cab3cabd,
-    BIAS=0x27b847b7560d6d92, BIASP=0x9a691300c548b8fb, W1p=0x4ffb93373ab96169, B1=0x9650ef9b37e383d3,
-    W2p=0x7155982c2fbf7f0f, B2=0x5435d739cc7b6f4b, WO=0x084874555f3d0ae2, BO=0x64be4e773b169f15)
+    T=0xf623c7a433e9a061, TP=0x9f6946f7fa2959aa, F=0xafded9ee1ef97baf, FP=0xa2b2b1f01b573ae4,
+    DEC=0xe1d9159b20fda09d, DECP=0xc3f79c86aa8e1c19, CON=0xbbfe1b08d4e93216, CONP=0x28e3600224ecb9d8,
+    BIAS=0xf0e9125df319e7bb, BIASP=0x9a691300c548b8fb, W1p=0x1523376b7f54dcf9, B1=0x1d236f5c045033a8,
+    W2p=0xad0edf378bbe6acb, B2=0x9a2c5c8b9668e27b, WO=0x7e46fe2cf04bc9df, BO=0x064ec39d99e87f9d)
 
 
 class CommittedHeaderTest(unittest.TestCase):
@@ -32,7 +32,7 @@ class CommittedHeaderTest(unittest.TestCase):
 
     def test_payload_is_the_verified_one(self):
         import hashlib
-        self.assertEqual(len(self.payload), 53927)
+        self.assertEqual(len(self.payload), 53834)
         self.assertEqual(hashlib.sha256(self.payload).hexdigest(), PAYLOAD_SHA256)
         self.assertEqual(self.qexp, SCALES)
 
