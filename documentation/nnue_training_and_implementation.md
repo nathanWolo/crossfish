@@ -202,7 +202,7 @@ gen_r13.py train --name r13w_20 --init r12_M2 --lr 2e-3 --sched cosine --warmup 
 ```
 
 - **Length.** 2.4G rows = 146,484 steps of batch 16,384 (about 254 passes
-  over e2b, 17 over sp13), 73.5 minutes on the GPU; same loss, D4 augmentation
+  over e2b, 17 over sp13), 73 minutes on the GPU; same loss, D4 augmentation
   and AdamW (a tensor-argument variant that does not leak under DirectML),
   seed 1.
 - **Result.** Objective +22.9 Elo estimated against r12_M2 (SPH13 +23.0,
@@ -215,7 +215,7 @@ gen_r13.py train --name r13w_20 --init r12_M2 --lr 2e-3 --sched cosine --warmup 
   recipe on the new data only matched r12_M2 (-2.3 offline, -13.8 +/- 5.5 in games);
   longer fine-tunes from r12_M2 kept improving (100M rows +11.5, 300M +14.5,
   600M +18.3, 1.2G +20.2, 2.4G +22.9; the 1.2G net, r13w_11, was ship-tested
-  first and is the runner-up: SPH13 3.5% below the float r12_M2 net, +11.8
+  first and is the runner-up: SPH13 3.6% below the float r12_M2 net, +11.8
   +/- 11.0 as paste files); B-128 nets were +13 offline but tied r12_M2 in games (their
   tables cost 16-31% of the nodes); model soups of the warm starts were below
   the longest one alone. SPH13's labels are r12_M2's own search, so the warm

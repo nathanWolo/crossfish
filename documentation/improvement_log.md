@@ -3782,7 +3782,7 @@ DUMPH 15%), calibrated on round twelve's nets (measured 20 ms Elo = 3.38 +
 | r13w_21 | the same at lr 1e-3 | +22.9 |
 
 - **The winner, trial 20:** r12_M2's weights fine-tuned for 2.4G rows =
-  146,484 steps of batch 16,384 (73.5 minutes on the GPU), lr 2e-3 cosine (1%
+  146,484 steps of batch 16,384 (73 minutes on the GPU), lr 2e-3 cosine (1%
   warmup, floor 1e-5), K 1600, no result blend, mix e2b 46% / sp13 54%
   (about 254 passes over e2b and 17 over sp13), D4 augmentation, seed 1.
   Held-out loss on SPH13 4.0% below the float r12_M2 net's. Trial 21, the
@@ -3791,7 +3791,7 @@ DUMPH 15%), calibrated on round twelve's nets (measured 20 ms Elo = 3.38 +
 - **Length is the lever.** The fine-tune keeps improving with the rows seen:
   100M +11.5, 300M +14.5, 600M +18.3, 1.2G +20.2, 2.4G +22.9 offline, and the
   order holds in games (below). Trial 11 (1.2G rows, 73,242 steps, 28
-  minutes; SPH13 3.5% below the float r12_M2 net, 3.8% below the shipped
+  minutes; SPH13 3.6% below the float r12_M2 net, 3.8% below the shipped
   quantized one) was the first net tested in the shipped engine and is the
   runner-up.
 - **Random-init retraining does not beat r12_M2.** Round twelve's recipe on
@@ -3820,7 +3820,8 @@ search, commit `c278cde`), fixed-length round robins, 1,000 games per pair:
 - **Dell at its CodinGame compute** (62 ms x 3 threads, 1,000 games each vs
   r12_M2): **r13w_20 +20.2 +/- 12.4**; r13w_11 +13.6 +/- 12.6 and +9.4 +/-
   12.8 in two runs, r13w_5 +12.9 +/- 12.2, r13w_3 +10.4 +/- 12.2, r13w_10
-  +9.4 +/- 12.7, r13w_1 +0.3, r13_pre_b128_s2 -0.3.
+  +9.4 +/- 12.7 and +16.3 +/- 12.8 in two runs, r13w_1 +0.3, r13_pre_b128_s2 -0.3;
+  head to head at the same compute r13w_20 beat r13w_11 by +8.7 +/- 12.2 (W214 D597 L189).
 - **The shipped engine:** this branch's `cg_input.cpp` against main's
   (r12_M2), the CodinGame paste files through the protocol at 90 ms
   (`cg_match.py`, 5 referees, forfeit at 1,000 ms, late replies counted:
