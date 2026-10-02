@@ -3717,3 +3717,172 @@ pragma-optimized -O0 build. But CodinGame's compile costs only 5% of nodes
 today (`cg-speed`: 9.14M against 9.59M nps), the binary must be built
 against the arena's libstdc++ and glibc, and it can only be tested by
 submitting; the source route above already leaves 27,895 characters free.
+
+---
+
+## 64. Round 13 net: warm start from r12_M2 on 80M depth-13 self-play (30 September - 1 October 2026)
+
+Round twelve trained on 13M rows of the NNUE engine's self-play. Round
+thirteen generated 80M, relabelled every other source with the current
+engine, added a holdout of real ladder positions, and searched the training
+recipe instead of fixing it. The net that ships, **r13w_20**, is not a fresh
+training run: it is r12_M2's own weights fine-tuned on the new data for 2.4G
+rows. Same architecture, runtime and speed; only `nnue_b64_net.hpp`'s
+payload, its scales and the re-packed opening book change. In play it is
+about **+16 to +20 Elo** over r12_M2 (three independent matches); the shipped
+engine's paste file with it beat main's over 1,000 games at 90 ms by
+**+16.0 +/- 10.9**. r13w_11, the 1.2G-row fine-tune that was ship-tested
+first (+11.8 +/- 11.0 the same way), is the runner-up.
+
+### Data
+
+- **sp13: 80.0M records of depth-13 self-play** (79.8M rows: 77.4M train + 2.39M holdout) by the current engine (the
+  section 62 freeze's search, net r12_M2; `datagen play ... d13`, round
+  twelve's openings and randomisation) on three machines (desktop, ThinkPad,
+  Dell). Holdout **SPH13**: 3% of the games per shard, 2,388,278 rows.
+- **e2b: eval2 relabelled** by the same engine at depth 14 (4,339,877
+  training rows). **V2** is round twelve's 482,136 rows with these labels.
+- **dumpb: the SPRT dumps' positions relabelled at depth 13** (the 30
+  `datasets/eval2/sprt_dump` files, 3.49M positions; the dumps' game scores
+  are no longer labels). Holdout **DUMPH**: 3% of the games per file,
+  106,495 rows.
+- **LADH, a ladder holdout:** 193,320 positions from 2,939 saved CodinGame
+  games (the board before each move from ply 9, not decided, deduplicated up
+  to the 8 symmetries and colour, plus two one-move children per position;
+  74,722 played positions, half of them from our games against the top
+  seven), labelled at depth 14. No training row is a LADH position.
+
+Every training label is the current engine's search. The data tools
+(`r13_prep.py`, `ladh.py`) and the trainer live with the data in
+`datasets/nnue2/r13/` (not in the repository; its README has the full
+record).
+
+### Training
+
+`datasets/nnue2/r13/tools/gen_r13.py` streams a weighted mix of the packed
+sources from disk (about 750k rows/s on the GPU through DirectML) for a fixed
+step budget, and reports on the four holdouts every 1/20 of it. An Optuna
+study, **r13w**, searched a wide space: rows seen (2e8..1.6e9) and batch, lr
+and its schedule (cosine / linear / exponential, warmup, floor), weight
+decay, K, the result blend, the source mix, the PSQT weight and the
+initialisation (random, or r12_M2's weights). Its objective is an Elo
+estimate against r12_M2 from the holdouts (SPH13 35%, LADH 35%, V2 15%,
+DUMPH 15%), calibrated on round twelve's nets (measured 20 ms Elo = 3.38 +
+0.940 x objective, r 0.998, residual 2.4 Elo).
+
+| Run | Recipe | Objective (Elo est. vs r12_M2) |
+| --- | --- | ---: |
+| r13w_0 | round twelve's recipe (random init, 32,490 steps) on the new data | -2.3 |
+| r13_pre_b128, _s2 | the same with 128 lanes, two seeds (not shippable: the runtime is B-64) | +12.7, +13.7 |
+| r13w_1 | **warm start** from r12_M2, lr 2e-3, 100M rows | +11.5 |
+| r13w_5 | warm start, 300M rows | +14.5 |
+| r13w_10 | warm start, 600M rows | +18.3 |
+| r13w_11 | warm start, 1.2G rows | +20.2 (SPH13 +20.7, LADH +20.8, V2 +20.5, DUMPH +17.6) |
+| **r13w_20** | **warm start, 2.4G rows** | **+22.9** (SPH13 +23.0, LADH +24.5, V2 +24.0, DUMPH +18.1) |
+| r13w_21 | the same at lr 1e-3 | +22.9 |
+
+- **The winner, trial 20:** r12_M2's weights fine-tuned for 2.4G rows =
+  146,484 steps of batch 16,384 (73 minutes on the GPU), lr 2e-3 cosine (1%
+  warmup, floor 1e-5), K 1600, no result blend, mix e2b 46% / sp13 54%
+  (about 254 passes over e2b and 17 over sp13), D4 augmentation, seed 1.
+  Held-out loss on SPH13 4.0% below the float r12_M2 net's. Trial 21, the
+  same recipe at lr 1e-3, scored +22.94 against +22.92: the learning rate
+  does not matter at this length.
+- **Length is the lever.** The fine-tune keeps improving with the rows seen:
+  100M +11.5, 300M +14.5, 600M +18.3, 1.2G +20.2, 2.4G +22.9 offline, and the
+  order holds in games (below). Trial 11 (1.2G rows, 73,242 steps, 28
+  minutes; SPH13 3.6% below the float r12_M2 net, 3.8% below the shipped
+  quantized one) was the first net tested in the shipped engine and is the
+  runner-up.
+- **Random-init retraining does not beat r12_M2.** Round twelve's recipe on
+  the new data (trial 0) is -2.3 offline and -13.8 +/- 5.5 in games (20 ms,
+  12,000-game fit): the relabel alone
+  does not lift it, and three times the rows at equal steps are worth about
+  one seed's difference. The data loop pays through the warm start.
+- **Capacity pays offline, not in play.** B-128 nets were +13 offline but
+  tied r12_M2 at 20 ms on the ThinkPad (-1.7 and +2.5 +/- 8.3) and at the
+  Dell's CodinGame compute (-0.3 +/- 13.4): their tables are twice B-64's and
+  the search loses 16-31% of its nodes. A generic-width runtime exists on a
+  side branch for a later round.
+- Model soups of the warm starts (+12.4, +13.2) were below the longest
+  fine-tune alone. SPH13's labels are r12_M2's own search, so a warm start
+  that stays close to it is flattered there; the warm starts were judged on
+  V2 / LADH and in games.
+
+### Games
+
+Candidate engines as in round twelve (the fast-NNUE harness on the pre-NNUE
+search, commit `c278cde`), fixed-length round robins, 1,000 games per pair:
+
+- **20 ms on the ThinkPad** (13,000 games per net, ratings fitted with
+  r12_M2 = 0): **r13w_20 +16.6 +/- 5.3**, r13w_10 +11.9, r13w_11 +11.0
+  (+11.4 +/- 5.5 in the earlier 12,000-game fit), r13w_5 +8.0.
+- **Dell at its CodinGame compute** (62 ms x 3 threads, 1,000 games each vs
+  r12_M2): **r13w_20 +20.2 +/- 12.4**; r13w_11 +13.6 +/- 12.6 and +9.4 +/-
+  12.8 in two runs, r13w_5 +12.9 +/- 12.2, r13w_3 +10.4 +/- 12.2, r13w_10
+  +9.4 +/- 12.7 and +16.3 +/- 12.8 in two runs, r13w_1 +0.3, r13_pre_b128_s2 -0.3;
+  head to head at the same compute r13w_20 beat r13w_11 by +8.7 +/- 12.2 (W214 D597 L189).
+- **The shipped engine:** this branch's `cg_input.cpp` against main's
+  (r12_M2), the CodinGame paste files through the protocol at 90 ms
+  (`cg_match.py`, 5 referees, forfeit at 1,000 ms, late replies counted:
+  0 forfeits, one late reply, main's):
+
+```text
+90 ms: N 1000  W 321 / D 404 / L 275
+Penta 4 / 80 / 296 / 106 / 14
++16.0 +/- 10.9 Elo
+Forfeits: 0
+```
+
+  r13w_11 measured the same way (the desktop then loaded by the trainer, a
+  relabel and ten bots, so late replies were frequent and symmetric): N 1000,
+  317-400-283, pentanomial 9/75/301/103/12, **+11.8 +/- 11.0**, 0 forfeits.
+
+Offline +14..+23 became +9..+20 at CodinGame compute: the objective
+overstates the fine-tunes by about 1.2-1.5x, with the ranking intact.
+
+### The build
+
+- `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r13w_20_perm.bin --label r13w_20`
+  (every other option at its default; export CRC-32 `d18dccb2`, checkpoint
+  `datasets/nnue2/probe/r13w_20.pt` sha256 `eaf8c46b...`): scales **9, 12,
+  13, 13, 10** (r13w_11's; QO one bit below r12_M2's), payload **53,834
+  bytes = 28,712 U15 characters** (r13w_11: 28,762; r12_M2: 28,885), sha256
+  `492a36ea...`. The payload's rounding moves the float eval by 1.97 mean /
+  66.7 max units on the 20,000 parity positions (r13w_11: 1.69 / 41.8); on
+  the 16 pinned test positions the integer engine is 6.1 mean / 30 max from
+  the PyTorch net (r13w_11: 8.9 / 31).
+- The opening book re-packed (`make -C cpp_impl play-book`): its moves are
+  unchanged (table checksum 17441813851168678777), the coding differs, 10,654
+  bytes = 5,683 characters (r13w_11's packing 5,619, r12_M2's 5,794);
+  `cg_selfcheck` prints book=ok.
+- `cg_input.cpp` is **72,803 characters** (27,197 left); `make cg-input`
+  reproduces it byte for byte.
+- `port-check` IDENTICAL at depths 5, 7 and 9 (nodes 536445 / 831874 /
+  1819208, checksums 8838790865174526946 / 11722602351321275973 /
+  14786683063888215671); 31/31 unit tests and 120 Python tests with the new
+  pins (the 16 table hashes, the 16 fixed-position evals, the payload sha256
+  and length, the book's net fingerprint; the five scales are r13w_11's).
+
+**Freeze.** Dev and Prev share `nnue_b64_net.hpp`, so both now carry r13w_20;
+nothing else in the engine changed. A same-shape net is not an eval-architecture
+change, so the CodinGame gate needs no declaration.
+
+**How r13w_20 replaced r13w_11.** r13w_11 (1.2G rows) was chosen and
+ship-tested first; trial 20 finished while that was written, scored +22.9
+offline, and then won every match it entered (+16.6 +/- 5.3 at 20 ms, +20.2
++/- 12.4 at the Dell's CodinGame compute, +16.0 +/- 10.9 as paste files), so
+the branch was re-pinned to it the same morning. A 4.8G-row fine-tune (twice
+r13w_20's length) is training and ungamed.
+
+**Not yet done.** The 4.8G-row fine-tune's games (and a paste-file match
+against r13w_20). The sprt harness cannot run a CodinGame-scaled SPRT net
+against net, because Dev and Prev share the net header; the paste-file match
+above is the ship test. The g++ 11 half of the gate ran on the ThinkPad at
+06:12: `cg_input.cpp` compiles with CodinGame's exact command line and zero
+diagnostics, `make cg-min-check CG_CXX=g++-11` is IDENTICAL on both legs at
+depths 5, 7 and 9, `cg_selfcheck_cgflags` loads the book (book=ok, the same
+depth-5 checksum as the clang build) at 15.0M nps, and the exact book
+protocol check passes 40/40 (first turn at most 223 ms, later replies 90.1 ms
+median, 90.4 ms max). The CodinGame IDE paste and copy-back test and CI's
+`cg-perf-gate` remain to be run.

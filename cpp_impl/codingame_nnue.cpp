@@ -112,6 +112,10 @@ template <class T> struct cf_heap_array {
 // Net r12_M2 since 2026-09-28 (section 57): round twelve's data loop (labels
 // from the NNUE engine itself, NNUE self-play). Same architecture and code;
 // only the payload and its five integer scales changed.
+// Net r13w_20 since 2026-10-01 (section 64): r12_M2's weights fine-tuned on
+// round thirteen's 80M depth-13 self-play and relabelled data (2.4G rows).
+// Same architecture and code; the payload, its scales and the re-packed book
+// changed. Paste files at 90 ms, N=1000: 321-404-275, +16.0 +/- 10.9 Elo.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     cf_array<int, 2> markers = {0, 0};
