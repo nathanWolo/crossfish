@@ -116,6 +116,11 @@ template <class T> struct cf_heap_array {
 // round thirteen's 80M depth-13 self-play and relabelled data (2.4G rows).
 // Same architecture and code; the payload, its scales and the re-packed book
 // changed. Paste files at 90 ms, N=1000: 321-404-275, +16.0 +/- 10.9 Elo.
+// Net r14_d5_final_s2_rs since 2026-10-04 (section 65): r13w_20's weights
+// fine-tuned 600M rows on round thirteen's data and labels with a WDL
+// contradiction filter and a power loss, its eval rescaled by 1/1.047 to
+// r13w_20's spread. Same architecture, code and scales; the payload and the
+// re-packed book changed. Booked builds at 90 ms, N=4000: +9.1 +/- 5.9 Elo.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     cf_array<int, 2> markers = {0, 0};

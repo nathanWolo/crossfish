@@ -127,7 +127,7 @@ decisions (the LZMA binary range coder with adaptive 12-bit probabilities):
 
 The ordering does the work: the book move ranks first 63% of the time, and a
 reply of rank 0 is covered 99% of the time against 7% at rank 7 and beyond.
-As plain digits the same decisions are 184,846 bits; coded they are 86,904 with r12_M2's move ordering (85,232 with r13w_20's, the shipped packing since 2026-10-01).
+As plain digits the same decisions are 184,846 bits; coded they are 86,904 with r12_M2's move ordering (85,232 with r13w_20's; 86,656 with r14_d5_final_s2_rs's, the shipped packing since 2026-10-04).
 Children are evaluated through a light `PbView` of the board (markers,
 miniboard states, move count) rather than `GlobalBoard::makeMove`, whose
 move-history stack is slow when CodinGame compiles without `-O`. The stream is
@@ -137,8 +137,8 @@ section 4).
 | | |
 | --- | --- |
 | Decisions as plain digits | 184,846 bits |
-| Payload | 10,654 bytes, 5,683 characters with r13w_20's ordering (10,863 bytes, 5,794 characters with r12_M2's; the mixed-radix digits: 13,456; the full-coverage book: 4,656) |
-| `cg_input.cpp` | 72,803 characters, 27,197 left (73,088 with r12_M2's net and book) |
+| Payload | 10,832 bytes, 5,778 characters with r14_d5_final_s2_rs's ordering (10,654 bytes, 5,683 characters with r13w_20's; 10,863 bytes, 5,794 characters with r12_M2's; the mixed-radix digits: 13,456; the full-coverage book: 4,656) |
+| `cg_input.cpp` | 72,914 characters, 27,086 left (72,803 with r13w_20's net and book, 73,088 with r12_M2's) |
 | Decode at startup | about 50 ms at -O3, 90 ms with CodinGame's flags, inside the 1,000 ms first turn (the plain digits: 9 / 20 ms) |
 
 The packer (`play_book_pack.cpp`) and the runtime drive the same `PbWalker`
