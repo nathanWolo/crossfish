@@ -3886,3 +3886,196 @@ depth-5 checksum as the clang build) at 15.0M nps, and the exact book
 protocol check passes 40/40 (first turn at most 223 ms, later replies 90.1 ms
 median, 90.4 ms max). The CodinGame IDE paste and copy-back test and CI's
 `cg-perf-gate` remain to be run.
+
+## 65. Round 14 net: a WDL filter and a power loss on round 13's data (3-4 October 2026)
+
+Round fourteen was a pre-registered ablation round: one fixed base recipe,
+one-factor changes judged by games against r13w_20 with confidence
+intervals, and the decision rules written down before the games
+(`datasets/nnue2/r14/DESIGN.md` with its dated log, and `REPORT.md`; not in
+the repository). The net that ships, **r14_d5_final_s2_rs**, is r13w_20's
+own weights fine-tuned for 600M rows on round thirteen's data and labels,
+with the two trainer changes that survived: a WDL contradiction filter on
+the self-play rows and a power loss. Same architecture, runtime, speed and
+scales; only `nnue_b64_net.hpp`'s payload and the re-packed opening book
+change. Against r13w_20, with the shipped engine's booked paste builds at
+90 ms, it is **+9.1 +/- 5.9 Elo** over 4,000 fresh-opening games. On the
+CodinGame ladder the difference is below resolution: no measurable change,
+and no regression.
+
+### Recipe
+
+The base, **R-old**, is round thirteen's continuation: r13w_20's weights,
+lr 1e-3 cosine (1% warmup, floor 1e-5), batch 16,384 for 36,621 steps (600M
+rows), K 1600, no result blend, e2b 46.4% / sp13 53.6% of the rows with
+round thirteen's labels. The shipped run adds the filter and the loss
+(`datasets/nnue2/r14/tools/gen_r14.py`, frozen as `r14/frozen_x`; holdout
+options left out):
+
+```bash
+gen_r14.py train --name r14_d5_final_s2 --init r13w_20 --lr 1e-3 --sched cosine --warmup 0.01 \
+  --lr-floor 1e-5 --batch 16384 --steps 36621 --seed 2 --mix e2b=0.4644,sp13=0.5356 \
+  --wdl-filter --wdl-src sp13 --wdl-only sp13 --pow-exp 2.5 --qp-asym 0.2 --psqt-w 0.06878
+```
+
+- **WDL filter.** A win/draw/loss model of sp13's labels and game results,
+  P(win) = sigmoid((s - d) / s0) and P(loss) = sigmoid((-s - d) / s0),
+  fitted by maximum likelihood (d 1,108, s0 608), skips each sp13 row with
+  probability 1 - P(observed result | label): a row whose search score
+  contradicts how its game ended is likely dropped. About 70% of sp13's rows
+  are kept; eval2 is kept whole.
+- **Power loss.** |p_net - p_target|^2.5, weighted 1.2x where the net is
+  above the target (Stockfish's trainer), with the PSQT term's weight scaled
+  by the new loss's ratio to the squared one (0.1 x 0.688 = 0.06878).
+- **Eval scale.** The filter widens the eval: the raw evals' spread is 1.047
+  times r13w_20's (standard deviation over 200,000 SPH13 positions with
+  |eval| <= 2,000). The search margins are tuned to r13w_20's scale, so by a
+  rule fixed before any games the net is multiplied by 1/1.0473 = 0.9548
+  before export (`r14/tools/scale_b.py --apply`, which writes
+  `r14_d5_final_s2_rs`): the PSQT lane of every first-layer table and the
+  last dense layer, which scales the eval exactly and leaves the lanes'
+  sparsity alone. Every WDL-filter net needed it; the power loss alone did
+  not.
+- 14.6 minutes on the GPU (730k rows/s), seed 2.
+
+### What the round found
+
+- **The labels stay old.** Nets fine-tuned on the same positions relabelled
+  by r13w_20's search (`datagen label`) lost to their old-label twins:
+  -10.6 +/- 2.5 Elo over three seed pairs of 10,000 games each at 20 ms
+  (-11.3 over the first two, which triggered the pre-registered pivot back to
+  the old labels), although every offline metric preferred them. The loss
+  came from relabelling the self-play, whose old labels are the in-game
+  searches (-10.4 +/- 5.5); relabelling eval2 was neutral (+0.9 +/- 3.4).
+  About half of it remains at fixed depth, and the relabelled nets grow 1.09
+  times larger trees.
+- **Length bought nothing.** Continuing r13w_20 on data it has already fit
+  gained +0.2 +/- 2.5 Elo per doubling from 600M to 2.4G rows at 20 ms while
+  the offline objective rose, so 600M it is.
+- **Of the trainer ideas, two passed their screens**, and a 2x2 factorial
+  at 600M rows (four fresh seeds per cell, 4,000 games per net against
+  r13w_20 at 20 ms) measured them:
+
+| Cell | Seeds 11-14 | Mean |
+| --- | --- | ---: |
+| R-old | +1.4, +5.9, +4.6, +3.3 | +3.80 |
+| + WDL filter | +4.1, +6.9, +11.6, +3.2 | +6.45 |
+| + power loss | +8.2, +3.6, +5.2, +6.0 | +5.75 |
+| + both (R\*) | +10.9, +11.0, +6.8, +14.4 | **+10.78** |
+
+  Main effects: WDL filter **+3.84** (one-sided p 0.024), power loss
+  **+3.14** (p 0.054), interaction +1.2 (not significant); the seeds vary no
+  more than the games' noise. Three more fresh seeds of R\* scored +7.6,
+  +8.3 and +2.2 (+/- 4.9 each, 8,000 games at 20 ms on the ThinkPad): +6.1 on
+  average, and +6.8 over replays of R-old on the same openings (the factorial
+  predicted +7.0).
+- The activation-sparsity penalty, the lambda schedule, a low-lr finish and
+  1-10% ladder positions in the mix failed their screens.
+- **Offline metrics did not predict play.** Both kept ideas lower the
+  label-based objectives: the shipped net is -8.8 on round thirteen's
+  objective against r13w_20, and across round fourteen's nets that objective
+  correlated with games at r = -0.43. Every decision was made on games.
+
+### The ship tests
+
+The candidate came from a 2,000-game screen at the Dell's CodinGame compute
+(62 ms x 3 threads) of the three fresh R\* seeds and the factorial's best R\*
+net: s2 +10.6, s4 +9.6, s3 +8.0, s14 +5.7, all within one standard error of
+each other, so the pre-registered tie-break (the lowest fresh seed) picked
+s2. Those games are selection data only. Then three pre-registered tests
+against r13w_20, each engine the shipped one with its own net and re-packed
+book (paste builds in their match mode, CodinGame's rules,
+`r14/eval/gauntlet.py`):
+
+- **90 ms GSPRT [0, 6]** (desktop, 7 pinned workers; pentanomial LLR, alpha
+  = beta = 0.05): **accepts H1** at 4,200 games, LLR +3.323. Its Elo is
+  sequentially stopped, so it is a decision, not an estimate (nElo +14.1 +/-
+  10.5).
+- **4,000 fresh-opening games at 90 ms**, the estimate:
+
+```text
+90 ms: N 4000 W 777 D 2551 L 672
+Penta: 29 / 417 / 1028 / 472 / 54
+Elo diff: +9.1 +/- 5.9 (nElo +16.5 +/- 10.8, LOS 99.9%)
+Forfeits: 0, late replies: 0
+```
+
+- **CodinGame-compute veto** (Dell, 62 ms x 3 threads, 4,000 games):
+  **+12.9 +/- 6.4**; the veto (an upper bound below zero) does not apply.
+
+In both 90 ms runs neither engine forfeited or replied late (over 120 ms);
+the longest moves were 90.7-90.9 ms. Against r12_M2 the net is +23.8 +/- 7.2
+(4,000 games at 20 ms).
+
+### On the ladder
+
+The user submitted this paste twice on 2026-10-04 (agents 6780732 and
+6780755): **#4 at 33.19 and #3 at 33.30**, against #3 to #7 (32.38 to 33.27)
+for r13w_20's eleven placements with various books. Against r13w_20's
+submission with the same book (agent 6776785):
+
+| | r14_d5_final_s2_rs (2 agents) | r13w_20, same book |
+| --- | ---: | ---: |
+| second player vs the top 7 | 0.074 +/- 0.018 (n 148) | 0.064 +/- 0.028 (n 78) |
+| first player vs the top 7 | 0.929 +/- 0.017 | 0.942 +/- 0.020 |
+| both seats vs the 7 top agents unchanged since 10-01 | 0.518 +/- 0.029 (n 274) | 0.518 +/- 0.041 (n 142) |
+
+**No measurable change, and no regression.** The local gain (+9 to +13 Elo,
+about +0.013 to +0.019 per game) is below the ladder's resolution of about
++/-0.03 per cell, as round thirteen's +16 was. The higher rank is not a net
+effect: no game cell explains it, and the field moved during the
+placements. The second player's games against the top seven are still
+decided by the book's lines. The first placement had 4 timeouts of ours in
+276 games (and 8 by opponents), the second none in 260; the burst hit both
+sides during one placement only, which points at CodinGame's judges rather
+than the build. The analysis is
+`datasets/nnue2/cg/ladder/prep/r14/ladder_r14_d5_final_s2_rs.md`.
+
+### The build
+
+- Checkpoint `datasets/nnue2/probe/r14_d5_final_s2_rs.pt` (sha256
+  `68ad5e53...`, the rescaled copy of `r14_d5_final_s2.pt`); export
+  `export_bgn.py export r14_d5_final_s2_rs datasets/nnue2/fast/r14_d5_final_s2_rs_perm.bin --perm`
+  (CRC-32 `65bdbb1a`, sha256 `993ec0f5...`; it rebuilds from the checkpoint
+  byte for byte).
+- `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r14_d5_final_s2_rs_perm.bin --label r14_d5_final_s2_rs`
+  (every other option at its default): scales **9, 12, 13, 13, 10**
+  (r13w_20's), payload **53,865 bytes = 28,728 U15 characters** (r13w_20:
+  28,712), sha256 `cde8c610...`. The header is byte for byte round
+  fourteen's verified build (sha256 `aa2819fe...`), from which the tested
+  and submitted pastes were made. The payload's rounding moves the float eval
+  by 1.73 mean / 74.4 max units on the 20,000 parity positions (r13w_20:
+  1.97 / 66.7); on the 16 pinned test positions the integer engine is 8.8
+  mean / 48 max from the PyTorch net (r13w_20: 6.1 / 30; the 48 is on an
+  eval of 11,193).
+- The opening book re-packed (`make -C cpp_impl play-book`): its moves are
+  unchanged (table checksum 17441813851168678777), the coding differs, 10,832
+  bytes = 5,778 characters (r13w_20's packing 5,683); `cg_selfcheck` prints
+  book=ok.
+- `cg_input.cpp` is **72,914 characters** (27,086 left); `make cg-input`
+  reproduces it byte for byte, and it is byte for byte the paste submitted on
+  2026-10-04 (sha256 `b32979a6...`).
+- `port-check` IDENTICAL at depths 5, 7 and 9 (nodes 568480 / 897652 /
+  1900326, checksums 14701287764179133873 / 253444004976430199 /
+  5993005870751148654); 31/31 unit tests and 120 Python tests with the new
+  pins (the 16 table hashes, the 16 fixed-position evals, the payload sha256
+  and length, the book's net fingerprint; the five scales are r13w_20's).
+
+**Speed.** Same architecture, so the same nodes per second: paired on one
+ThinkPad core, 7.1M against r13w_20's 7.2M, within run-to-run noise. The net
+does search more nodes to a given depth: 4.5-7.9% more at depths 5, 7 and 9
+over `port-check`'s 120 positions and 14.5% more at depth 13 over 30 (round
+fourteen's plain replicate fine-tunes of r13w_20 also took about 5% longer
+to depth 14), and on the ladder it reached depth 19.2 at plies 21-40 against
+r13w_20's 19.9, on the same median of 316k nodes. The games above include
+that cost.
+
+**Freeze.** Dev and Prev share `nnue_b64_net.hpp`, so both now carry
+r14_d5_final_s2_rs; nothing else in the engine changed. A same-shape net is
+not an eval-architecture change, so the CodinGame gate needs no declaration.
+
+**Not yet done.** The g++ 11 half of the gate (CodinGame's compiler and
+flags, on the ThinkPad). The paste has run on the ladder itself, so the IDE
+copy-back test was not repeated; CI's `cg-perf-gate` runs on the pull
+request. Round fourteen's exploratory architecture track (wider encoder and
+head, macro-board contexts) is still training.

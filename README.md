@@ -437,14 +437,14 @@ enable FMA in MiniNet; it will disagree with the scalar reference.
 ## CodinGame file and minifier
 
 CodinGame's source cap is **100,000 characters**, counted as UTF-16 code
-units. The NNUE generator (28,712 characters), the macro net (1,641) and the
-opening book (5,683) are packed at 15 bits per character on the U15 alphabet
+units. The NNUE generator (28,728 characters), the macro net (1,641) and the
+opening book (5,778) are packed at 15 bits per character on the U15 alphabet
 (CJK ideographs plus a private-use range, see
 `documentation/minification.md`), so the file is larger in bytes than in
 counted characters; trust the minifier's count, not `wc -c`. Paste
 **`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
-headers are intentionally kept separate for review. The file is **72,803
-characters** (27,197 left).
+headers are intentionally kept separate for review. The file is **72,914
+characters** (27,086 left).
 
 `tools/cg_minify.py` is an ice4-style minifier: it can inline local quoted
 headers, strips comments and indentation, renames identifiers, turns the most
@@ -472,7 +472,7 @@ uttt.ai, `cpp_impl/play_book_data.hpp`: a tree after the first player's
 center-center (moving second, the book assumes the opponent opened there) that
 covers the replies uttt.ai's policy rates at 0.03 or more, grown deepest along
 the likeliest lines (to ply 18). Our moves are uttt.ai's after a
-3,200-simulation search, with a crossfish veto. It is 34,066 positions in 5,794
+3,200-simulation search, with a crossfish veto. It is 34,066 positions in 5,778
 characters, stored without keys: the decisions along a fixed walk of the book,
 arithmetic-coded with the NNUE's move ordering as the model. A new net needs
 the book re-packed (`make -C cpp_impl play-book`, from `cpp_impl/play_book.txt`).
@@ -489,6 +489,32 @@ opening, the bot has no book. Design, measurements and the regeneration
 procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
+
+On 2026-10-04 the net **r14_d5_final_s2_rs** replaced r13w_20 as the
+evaluation (improvement log section 65): r13w_20's own weights fine-tuned
+for 600M rows on round thirteen's data and labels with the two trainer
+changes a pre-registered factorial kept, a WDL contradiction filter on the
+self-play rows and a power loss (power 2.5, asymmetry 0.2), its eval then
+rescaled by 1/1.047 to r13w_20's spread. Same architecture, runtime, speed
+and scales; the payload and the re-packed opening book change. The shipped
+engine's booked paste builds against r13w_20's, 4,000 fresh-opening games
+at 90 ms (the paste's match mode with CodinGame's rules,
+`datasets/nnue2/r14/eval/gauntlet.py`):
+
+```text
+90 ms: N 4000 W 777 D 2551 L 672
+Penta: 29 / 417 / 1028 / 472 / 54
+Elo diff: +9.1 +/- 5.9
+Forfeits: 0
+```
+
+The pre-registered 90 ms GSPRT [0, 6] accepted at 4,200 games (LLR +3.32),
+and at the Dell's CodinGame compute (62 ms x 3 threads) it is +12.9 +/- 6.4
+over 4,000 games. On the CodinGame ladder the gain is below resolution: two
+submissions placed #4 (33.19) and #3 (33.30), and moving second against the
+top seven it scores 0.074 +/- 0.018 against r13w_20's 0.064 with the same
+book, so no measurable change and no regression. The paste file is
+**72,914 characters** (27,086 left).
 
 On 2026-10-01 the net **r13w_20** replaced r12_M2 as the evaluation
 (improvement log section 64): r12_M2's own weights fine-tuned for 2.4G rows
@@ -562,10 +588,10 @@ See section 58 of the improvement log.
 
 The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
 search with the mate-window pruning fix, the pattern-generator NNUE as its
-whole evaluation (net r13w_20 since 2026-10-01, r12_M2 before it), the CodinGame-compiler
-inlining work and the uttt.ai opening book. It is **72,803 characters**, 27,197
-under the cap (the minifier's count; `wc -c` reports UTF-8 bytes); the r13w_20
-file has not been submitted yet. The 2026-09-27 submission (94,922 characters,
+whole evaluation (net r14_d5_final_s2_rs since 2026-10-04, r13w_20 before it), the CodinGame-compiler
+inlining work and the uttt.ai opening book. It is **72,914 characters**, 27,086
+under the cap (the minifier's count; `wc -c` reports UTF-8 bytes); this exact
+file was submitted twice on 2026-10-04 and placed #4 (33.19) and #3 (33.30). The 2026-09-27 submission (94,922 characters,
 net B64_d5M_57ep) finished placement at **rank 1** of CodinGame's Ultimate
 Tic-Tac-Toe ladder. Built with CodinGame's flags
 on the laptop, replies take 90.2-90.5 ms against the 100 ms referee, and the
@@ -617,6 +643,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-10-04 | NNUE net r14_d5_final_s2_rs: r13w_20 fine-tuned for 600M rows on round thirteen's data and labels with a WDL filter and a power loss, rescaled to r13w_20's eval spread | booked paste builds vs r13w_20, 90 ms: GSPRT [0, 6] accepts H1 at N=4200 (LLR +3.32); fresh openings N=4000, 777-2551-672, +9.1 ± 5.9; Dell at CodinGame compute +12.9 ± 6.4 (N=4000); ladder: no measurable change (#4 33.19, #3 33.30) | §65 |
 | 2026-10-01 | NNUE net r13w_20: r12_M2 fine-tuned for 2.4G rows on round thirteen's 80M depth-13 self-play and relabelled data | paste files, 90 ms, N=1000, 321-404-275, +16.0 ± 10.9; 20 ms round robin +16.6 ± 5.3 (N=13000); Dell at CodinGame compute +20.2 ± 12.4 (N=1000); r13w_11 (1.2G rows) +11.8 ± 11.0 / +11.0 / +9.4 the same ways | §64 |
 | 2026-09-30 | Futility margins tighten by open squares (no own global threat) | N=3062, 610-1930-522, +9.99 ± 6.79, LLR +3.13 PASS | §59 |
 | 2026-09-29 | Speed round thirteen (dead HCE upkeep, forward pass, 8-byte eval cache) + early-game RFP/futility margins | N=3684, 768-2243-673, +8.96 ± 6.31, LLR +3.09 PASS | §58 |
