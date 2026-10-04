@@ -432,9 +432,10 @@ builds in their match mode (`datasets/nnue2/r14/eval/gauntlet.py`, CodinGame's r
 At 20 ms on the ThinkPad it is +7.6 +/- 4.9 against r13w_20 (8,000 games) and +23.8 +/- 7.2 against
 r12_M2 (4,000). On the CodinGame ladder the gain is below resolution: #4 at 33.19 and #3 at 33.30 in two
 submissions, second player against the top seven 0.074 +/- 0.018 against r13w_20's 0.064 with the same book
-(no measurable change, no regression). Same architecture, so the same nodes per second (7.1M against
-r13w_20's 7.2M paired on one ThinkPad core), but 4.5-7.9% more nodes to depths 5-9 on `port-check`'s
-positions; the games include that.
+(no measurable change, no regression). Same architecture, so the same nodes per second (median ratio
+0.997 against r13w_20's build over 15 alternating pairs on one ThinkPad core, with CodinGame's flags), but
+4.5-7.9% more nodes to depths 5-9 on `port-check`'s positions; the games include that. The g++ 11
+CodinGame-flags gate passed on the ThinkPad (improvement log section 65).
 
 **r13w_20** (improvement log section 64) against r12_M2, fixed-length games:
 - the two CodinGame paste files through the protocol at 90 ms (`cg_match.py`, 5 referees, forfeit 1,000 ms): **N=1000, 321-404-275, +16.0 +/- 10.9 Elo**, pentanomial 4/80/296/106/14, 0 forfeits, one late reply (main's);

@@ -4061,8 +4061,9 @@ than the build. The analysis is
   pins (the 16 table hashes, the 16 fixed-position evals, the payload sha256
   and length, the book's net fingerprint; the five scales are r13w_20's).
 
-**Speed.** Same architecture, so the same nodes per second: paired on one
-ThinkPad core, 7.1M against r13w_20's 7.2M, within run-to-run noise. The net
+**Speed.** Same architecture, so the same nodes per second: alternating with
+r13w_20's build on one ThinkPad core, the median ratio is 0.997 over 15
+pairs (the gate, below). The net
 does search more nodes to a given depth: 4.5-7.9% more at depths 5, 7 and 9
 over `port-check`'s 120 positions and 14.5% more at depth 13 over 30 (round
 fourteen's plain replicate fine-tunes of r13w_20 also took about 5% longer
@@ -4074,8 +4075,22 @@ that cost.
 r14_d5_final_s2_rs; nothing else in the engine changed. A same-shape net is
 not an eval-architecture change, so the CodinGame gate needs no declaration.
 
-**Not yet done.** The g++ 11 half of the gate (CodinGame's compiler and
-flags, on the ThinkPad). The paste has run on the ladder itself, so the IDE
+**The g++ 11 gate** ran on the ThinkPad at 12:24 on CPUs 0-1, while
+self-play datagen held CPUs 2-11 (the cores' clock moved between 2.0 and
+4.0 GHz): `cg_input.cpp` compiles with CodinGame's exact command line and
+zero diagnostics, `make cg-min-check CG_CXX=g++-11` is IDENTICAL on both
+legs at depths 5, 7 and 9, `cg_selfcheck_cgflags` loads the book (book=ok)
+and gives the clang build's checksums at depths 5, 7 and 9, and the exact
+book protocol check passes 40/40 twice (first turn at most 538 and 527 ms,
+later replies 90.1 ms median, 91.6 and 92.2 ms max). The load, not the net,
+sets those times: main's r13w_20 bot in the same conditions took up to 653
+ms on its first turn (90.1 / 91.6 ms later). The gate's single speed run
+read 5.0M nps at 2.1 GHz (round thirteen's gate: 15.0M); alternating this
+build's `cg_selfcheck_cgflags` with main's on one core, 15 pairs, the median
+ratio is 0.997 (single runs 4.7M to 10.3M as the clock moved), so the speed
+is unchanged.
+
+**Not yet done.** The paste has run on the ladder itself, so the IDE
 copy-back test was not repeated; CI's `cg-perf-gate` runs on the pull
 request. Round fourteen's exploratory architecture track (wider encoder and
 head, macro-board contexts) is still training.
