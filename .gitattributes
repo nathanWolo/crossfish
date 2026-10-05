@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The native CodinGame submission is hashed byte for byte (tools/test_cg_native.py).
+cpp_impl/cg_input_native.py text eol=lf
