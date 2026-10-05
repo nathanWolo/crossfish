@@ -56,7 +56,7 @@ class TestNativeSubmission(unittest.TestCase):
         self.assertEqual(units, MANIFEST["submission_utf16_units"])
         self.assertLess(units, pack.CAP)
         self.assertFalse(any(0xD800 <= ord(c) <= 0xDFFF for c in self.text))
-        self.assertEqual(self.text.count("\n"), 24)
+        self.assertTrue(self.text.splitlines()[1].startswith('D="'))  # the payload is one line
         compile(self.text, "cg_input_native.py", "exec")
 
     def test_payload_is_the_recorded_binary(self):

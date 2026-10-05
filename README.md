@@ -6,8 +6,11 @@ The **active engine is C++**. Its evaluation is a 35,243-parameter
 pattern-generator NNUE (`cpp_impl/nnue_b64.hpp`, payload
 `cpp_impl/nnue_b64_net.hpp`) with integer, incremental AVX2 inference.
 `cpp_impl/codingame_nnue.cpp` is the readable CodinGame engine and includes
-the eval headers; `cpp_impl/cg_input.cpp` is the bundled/minified file to
-paste into CodinGame. Local SPRT compares `cpp_impl/crossfish_dev.hpp` against
+the eval headers; `cpp_impl/cg_input.cpp` is the bundled/minified C++ file.
+**The live CodinGame submission is `cpp_impl/cg_input_native.py`**: the same
+bot compiled by clang (about 7.5% faster than CodinGame's own g++ build), in
+a Python 3 launcher; `cg_input.cpp` is its reference and fallback
+([native build](documentation/native_build.md)). Local SPRT compares `cpp_impl/crossfish_dev.hpp` against
 the frozen previous in `cpp_impl/crossfish_prev.hpp`.
 `cpp_impl/cg_legend_hce.cpp` is a snapshot from the first Legend hit. The
 Python tree under `python_impl/` is legacy.
@@ -25,6 +28,7 @@ Detailed project documentation:
 - The NNUE experiments' own tools and results: [trainers](tools/experiments/nnue2/README.md) and
   [fast inference, candidate builds, checks and two-net matches](tools/experiments/fast_nnue/README.md)
 - [CodinGame submission and minifier](documentation/minification.md)
+- [Native submission](documentation/native_build.md): the clang build in a Python 3 launcher that is live on CodinGame
 - [Gameplay opening book](documentation/play_book.md): the book the CodinGame bot plays from
 - [SPRT opening book](documentation/opening_book.md): the frozen starting positions the SPRT harness uses
 
@@ -66,6 +70,8 @@ the CodinGame performance gate (see **Compiler and local builds**).
 | `make roundrobin` | 10k-game pairs at 20 ms/move between the HCE-only `crossfish.cpp` bot, the Legend snapshot and the Python bot (a legacy sanity check, not the shipped engine) |
 | `make cg` | Compile the CodinGame bot, the paste file (at `-O3` and with CodinGame's flags) and the HCE bot |
 | `make cg-input` | Rebuild `cpp_impl/cg_input.cpp` from `codingame_nnue.cpp` with the minifier |
+| `make cg-native` | Rebuild the live submission `cpp_impl/cg_input_native.py` with clang (Linux x86-64 only; `CF_CLANG=/path/to/clang++`; see `documentation/native_build.md`) |
+| `make cg-native-check` | The native submission's d5/d7/d9 fingerprint against the readable build, book check and 40 CodinGame-protocol games through the launcher |
 | `make -C cpp_impl cg-flags` | Build the paste file with CodinGame's exact command line (`bin/cg_input_cgflags`) |
 | `make -C cpp_impl cg-speed` | Same-tree search time of the CodinGame port at `-O3` and with CodinGame's flags; checksums must match |
 | `make -C cpp_impl cg-gate` | The CI CodinGame performance gate, locally in a `gcc:11.2` container (needs Docker) |
@@ -328,11 +334,19 @@ a freeze:
    headers before shortening the source. The CI gate fails if the committed
    `cg_input.cpp` is not exactly this output.
 4. Confirm the minifier's count is under 100,000 and that the CodinGame
-   performance gate passes. Paste **that** file into CodinGame, not the
-   readable source. Its first line must be `#pragma GCC optimize("O3")`; a
+   performance gate passes. If you paste the C++ file, paste **that** file,
+   not the readable source. Its first line must be `#pragma GCC optimize("O3")`; a
    paste without it searches about a fifth of its normal nodes per move,
    which the bot's `N` output shows at once.
-5. Record the result: the SPRT line (N, W/D/L, pentanomial counts, Elo, LLR,
+5. Rebuild the live submission on Linux: `CF_CLANG=/path/to/clang++ make
+   cg-native`, then `make cg-native-check` (IDENTICAL at depths 5, 7 and 9,
+   40/40 protocol games). Commit `cpp_impl/cg_input_native.py` and
+   `tools/cg_native/manifest.json`; `tools/test_cg_native.py` fails in CI if
+   the bot's sources changed after the last native build. Paste
+   `cg_input_native.py` into CodinGame with the language set to **Python 3**
+   (`documentation/native_build.md`). Never in a contest: there, submit
+   `cg_input.cpp` as C++.
+6. Record the result: the SPRT line (N, W/D/L, pentanomial counts, Elo, LLR,
    hypotheses, timeouts, NPS) in a new improvement-log section, and a row in
    **Latest strength result**.
 
@@ -441,10 +455,20 @@ units. The NNUE generator (28,728 characters), the macro net (1,641) and the
 opening book (5,778) are packed at 15 bits per character on the U15 alphabet
 (CJK ideographs plus a private-use range, see
 `documentation/minification.md`), so the file is larger in bytes than in
-counted characters; trust the minifier's count, not `wc -c`. Paste
-**`cpp_impl/cg_input.cpp`** into the IDE; the readable source and generated
+counted characters; trust the minifier's count, not `wc -c`.
+`cpp_impl/cg_input.cpp` is the C++ submission; the readable source and generated
 headers are intentionally kept separate for review. The file is **72,914
 characters** (27,086 left).
+
+**The live submission is `cpp_impl/cg_input_native.py`** (language: Python 3,
+72,056 characters): the same bot as `cg_input.cpp`, built by clang 23 with
+`-O3 -march=haswell`, xz-compressed and U15-encoded into a launcher that execs
+it. It searches the identical tree about 7.5% faster than CodinGame's g++
+build of the paste (GSPRT [0, 5] H1 at 5,400 games at 62 ms, about +6 to +8
+Elo). `make cg-native` rebuilds it (Linux only) and `make cg-native-check`
+proves it; see [native_build.md](documentation/native_build.md), which also
+covers the rules (fine on the bot-programming ladder, not in contests) and
+how to switch back to the C++ paste.
 
 `tools/cg_minify.py` is an ice4-style minifier: it can inline local quoted
 headers, strips comments and indentation, renames identifiers, turns the most
@@ -672,7 +696,8 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `cpp_impl/codingame_nnue.cpp` — readable CodinGame search source
 - `cpp_impl/nnue_b64.hpp` / `nnue_b64_net.hpp` — the evaluation: NNUE runtime and generated payload (`tools/nnue_emit_b64_header.py`)
 - `cpp_impl/mini_eval_d16.hpp` / `macro_eval.hpp` — the previous MiniNet and macro heads; the macro net is the macro correction history's prior; `d16_helpers.hpp` holds the three MiniNet-header helpers the CG bot keeps
-- `cpp_impl/cg_input.cpp` — bundled/minified paste file for the CodinGame IDE
+- `cpp_impl/cg_input.cpp` — bundled/minified C++ paste file for the CodinGame IDE (reference and fallback)
+- `cpp_impl/cg_input_native.py` — **the live CodinGame submission** (Python 3): the clang build of the same bot in a launcher; built by `tools/cg_native/` (`make cg-native`), recorded in `tools/cg_native/manifest.json`, checked by `tools/test_cg_native.py`
 - `cpp_impl/crossfish.cpp` — self-contained HCE CG bot (packing source for MiniNet)
 - `cpp_impl/test_bots.cpp` — SPRT / Texel harness
 - `cpp_impl/bench_ab.cpp` — deterministic Dev-vs-Prev equivalence and node-count screen (`make -C cpp_impl bench`)
@@ -696,3 +721,4 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `documentation/opening_book.md` — SPRT book selection, binary format, validation, and versioning policy
 - `documentation/play_book.md` — the gameplay opening book: design, measurements, regeneration
 - `documentation/minification.md` — from readable source to the 100,000-character paste file
+- `documentation/native_build.md` — the native submission: toolchain, build, checks, measurements, rules

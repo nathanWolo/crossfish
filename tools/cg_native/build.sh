@@ -74,7 +74,7 @@ sed 's/^int main(int argc, char \*\*argv) {/static int selfcheck_main(int argc, 
 grep -q 'static int selfcheck_main' "$B/src/sc_body.cpp" || die "could not rename cg_selfcheck.cpp's main()"
 cp "$ROOT/tools/cg_native/native_main.cpp" "$B/src/native_main.cpp"
 
-echo "compiling (thin LTO, ~1 min)"
+echo "compiling (thin LTO)"
 t0=$(date +%s)
 (cd "$B" && $RUN "$CLANG" --gcc-install-dir="$GCC_DIR" $COMMON -I"$CPP" \
    -o native.bin src/native_main.cpp $LINK)

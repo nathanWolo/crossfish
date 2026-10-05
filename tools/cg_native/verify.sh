@@ -24,7 +24,8 @@ mkdir -p "$B"
 fail=0
 
 echo "== 1. static checks ($F)"
-(cd "$ROOT" && "$PY" -m unittest tools.test_cg_native 2>&1 | tail -n 3) || fail=1
+if out=$(cd "$ROOT" && "$PY" -m unittest tools.test_cg_native 2>&1); then echo "$out" | tail -n 3
+else echo "$out"; fail=1; fi
 
 echo "== 2. identity: launcher selfcheck vs bin/cg_selfcheck (the readable C++ build)"
 norm() { grep -v seconds | sed 's/ book_ms=.*//'; }
