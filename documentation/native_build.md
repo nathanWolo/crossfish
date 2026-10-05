@@ -186,8 +186,8 @@ same file.
 3. **Protocol.** It plays 40 CodinGame-protocol games through the launcher
    (`tools/play_book_protocol_check.py`). The book check is exact: the bot must
    play from the book precisely where the text book says. The result at this
-   PR: 40/40, later moves 90.2 ms median and 90.3 ms max, first turn at most
-   480 ms, on a shared laptop.
+   PR (two runs on a shared laptop): 40/40 both times, later moves 90.1-90.2 ms
+   median and 90.3-90.4 ms max, first turn at most 480 and 412 ms.
 
 **CI** (`make test` runs `tools/test_cg_native.py`, with no clang):
 
