@@ -36,7 +36,7 @@ CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX
 # pragmas and always_inline attributes make the submission fast there.
 CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
 
-.PHONY: all test bench cg-gate cg-min-check port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-text play-book-check play-book-match play-book-protocol datagen clean
+.PHONY: all test bench cg-gate cg-min-check port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-text play-book-check play-book-match play-book-protocol datagen cg-native cg-native-check clean
 
 all: test
 
@@ -198,6 +198,19 @@ cg: compile-cg
 
 cg-input:
 	cd $(ROOT) && $(PYTHON) tools/cg_minify.py cpp_impl/codingame_nnue.cpp -o cpp_impl/cg_input.cpp --inline-local
+
+# The native submission (documentation/native_build.md): clang -O3 build of
+# codingame_nnue.cpp + the cg_selfcheck driver, packed into the Python 3
+# launcher cg_input_native.py (the live CodinGame submission). Linux x86-64
+# only. CF_CLANG names the clang++ (the shipped binary: LLVM 23.1.2).
+cg-native:
+	cd $(ROOT) && PYTHON=$(PYTHON) bash tools/cg_native/build.sh
+
+# Its checks: static (tools/test_cg_native.py), the d5/d7/d9 fingerprint through
+# the launcher against the readable build, and CodinGame-protocol games with the
+# exact book check. CF_PROTOCOL_GAMES (default 40), CF_RUN (command prefix).
+cg-native-check: $(BIN)/cg_selfcheck $(BIN)/play_book_text_dump
+	cd $(ROOT) && PYTHON=$(PYTHON) bash tools/cg_native/verify.sh
 
 # CodinGame performance gate (tools/cg_perf_gate.py) in a g++ 11.2 Linux
 # container, the compiler CodinGame uses. Compares against BASE (default

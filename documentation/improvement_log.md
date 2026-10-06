@@ -4094,3 +4094,46 @@ is unchanged.
 copy-back test was not repeated; CI's `cg-perf-gate` runs on the pull
 request. Round fourteen's exploratory architecture track (wider encoder and
 head, macro-board contexts) is still training.
+
+## 66. Native submission: the clang build in a Python 3 launcher (5 October 2026)
+
+The live CodinGame file is now **`cpp_impl/cg_input_native.py`** (ladder
+submissions 41456153 and 41456253). It holds the unchanged r14 bot,
+`codingame_nnue.cpp` with net r14_d5_final_s2_rs and the book, as a Linux
+x86-64 executable. clang 23.1.2 builds it with `-O3 -march=haswell
+-ffp-contract=off` and thin LTO, links it dynamically against libstdc++, then
+xz-compresses and U15-encodes it into a stdlib-only launcher. The launcher
+writes the binary to a memfd and execs it. The file is 72,056 characters, which
+is 27,944 under the cap and smaller than the C++ paste. `cg_input.cpp` stays as
+the reference and the fallback. [native_build.md](native_build.md) has the
+toolchain, the commands and the checks.
+
+**Same tree.** The launcher's `selfcheck` reproduces the C++ build's
+fingerprint at depths 5, 7 and 9 (568,480 / 897,652 / 1,900,326 nodes), with
+book=ok. `-ffp-contract=off` is required. A contracted NNUE bake fails at every
+depth. The exact book protocol check passes 40/40 games through the launcher.
+
+**Speed.** Measured in user-mode cycles at d12, the clang build is **+7.5% ±
+2.0** against CodinGame's own build of the paste (40 paired rounds). g++
+`-O3 -march=haswell` gains +0.1% ± 1.7, because the paste's pragmas already
+give it -O3 code. PGO (FE, IR and CS-IR) added nothing. UPX was 4.7 KB larger
+than xz and 9 ms slower to start.
+
+**Strength.** Against CodinGame's build of the paste at 62 ms, GSPRT [0, 5]
+(α = β = 0.05) accepted **H1 at 5,400 games**: W 1,685 / D 2,160 / L 1,555,
++8.4 ± 5.9 Elo, LLR +3.10. The first 2,000 games were a fixed block (+12.0 ±
+11.8). The continuation alone gave +6.2 ± 6.3, so read the gain as about +6 to
++8 Elo. Neither side timed out.
+
+**CodinGame.** The runtime is Python 3.11.5 with glibc 2.36 and GLIBCXX_3.4.30.
+memfd works. The CPU is a Haswell without TSX. In its first 258 ladder games
+the file timed out once, the same rate as the C++ build. On the rules,
+TomAlard's write-up calls the method fine for bot-programming leaderboards and
+banned in contests. So in a contest, submit `cg_input.cpp`.
+
+**Reproducible.** `make cg-native` was run twice from a clean export of this
+change, with LLVM 23.1.2 and g++ 11.4.0 headers on Pop!_OS 22.04. Both times it
+rebuilt the live binary bit for bit (sha256 `68381d0c...cba61e58`) and the live
+file byte for byte (`aaf96195...0848260`). `tools/cg_native/manifest.json`
+records both hashes and the hashes of the sources. `tools/test_cg_native.py`
+fails in CI if the bot changes without a native rebuild.

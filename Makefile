@@ -1,4 +1,4 @@
-.PHONY: test test-cpp test-python sprt verify cg roundrobin opening-book book-inspect clean
+.PHONY: test test-cpp test-python sprt verify cg cg-input cg-native cg-native-check roundrobin opening-book book-inspect clean
 
 test:
 	$(MAKE) -C cpp_impl test
@@ -17,6 +17,15 @@ verify:
 
 cg:
 	$(MAKE) -C cpp_impl cg
+
+cg-input:
+	$(MAKE) -C cpp_impl cg-input
+
+cg-native:
+	$(MAKE) -C cpp_impl cg-native
+
+cg-native-check:
+	$(MAKE) -C cpp_impl cg-native-check
 
 roundrobin:
 	$(MAKE) -C cpp_impl roundrobin

@@ -36,6 +36,15 @@ CodinGame bot. `cpp_impl/cg_input.cpp` is generated output. Do not hand-edit
 the minified file: make the change in the readable source or generated
 evaluator inputs, then regenerate it.
 
+> **Live submission.** Since 5 October 2026 the file on CodinGame is
+> `cpp_impl/cg_input_native.py`. It is the same `codingame_nnue.cpp` compiled
+> by clang and carried in a Python 3 launcher, and it is about 7.5% faster
+> than CodinGame's g++ build of `cg_input.cpp`. It reuses this document's
+> U15 alphabet (section 4) for its payload. `cg_input.cpp` stays the
+> reference and the fallback: everything below still applies, CI still gates
+> it, and the native build must match its fingerprint. See
+> [native_build.md](native_build.md).
+
 ## 1. Files and responsibilities
 
 | File | Responsibility |
@@ -54,6 +63,8 @@ evaluator inputs, then regenerate it.
 | `tools/cg_minify.py` | Bundles local headers, tokenizes C++, shortens identifiers, and emits one compact source file. |
 | `cpp_impl/cg_input.cpp` | Final generated file to paste into CodinGame. |
 | `tools/cg_perf_gate.py` | CI gate: checks the committed paste file is fresh, under the cap, and fast when built CodinGame's way (section 13). |
+| `tools/cg_native/` | The native submission's clang build, packer and checks (`make cg-native`, `make cg-native-check`; [native_build.md](native_build.md)). |
+| `cpp_impl/cg_input_native.py` | The live submission: the clang binary of the same bot, xz + U15, in a Python 3 launcher. Generated; `tools/test_cg_native.py` checks it in CI. |
 
 The normal build entry point is:
 
@@ -794,6 +805,12 @@ local test measured (improvement log sections 47 and 52). The README's
 **Compiler and local builds** section lists the checks (`cg-flags`,
 `cg-speed`, the objdump call listing), and CI runs `tools/cg_perf_gate.py` in a
 `gcc:11.2` container on every pull request.
+
+The native submission ([native_build.md](native_build.md)) does not depend
+on any of these rules. clang compiles the readable source at `-O3`, and the
+pragmas are only hints there. Its gain over this build (+7.5% cycles) is
+clang's code generation. A g++ `-O3 -march=haswell` build gains about 1%,
+which shows the rules above already give the paste file -O3 code.
 
 ## 14. Troubleshooting
 

@@ -1,0 +1,26 @@
+{
+  "submission": "cpp_impl/cg_input_native.py",
+  "submission_sha256": "aaf96195513a17ad9f2b5607e04368167dfd629d274c2c96637e1389c0848260",
+  "submission_utf16_units": 72056,
+  "binary_sha256": "68381d0c21501eb6074b6d908ee0c003e00d587d25b10b28809adc78cba61e58",
+  "binary_bytes": 283408,
+  "xz_bytes": 133120,
+  "xz_sha256": "03aa1697980f67e3ba4b5fda86becaacd37e1abd54e83029a6d0e836f32e911f",
+  "toolchain": "clang version 23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb)",
+  "libstdcxx": "g++ 11.4.0 headers (/usr/lib/gcc/x86_64-linux-gnu/11)",
+  "compile_flags": "-std=gnu++17 -O3 -march=haswell -mtune=haswell -ffp-contract=off -pthread -fno-pie -fno-plt -fno-semantic-interposition -ffunction-sections -fdata-sections -flto=thin -Wno-unknown-pragmas -Wno-ignored-attributes -Wno-ignored-pragmas -Wno-gcc-compat",
+  "link_flags": "-fuse-ld=lld -no-pie -Wl,--gc-sections -Wl,-O2 -Wl,--as-needed -Wl,--hash-style=gnu -Wl,--icf=all -s",
+  "symbol_versions": "GLIBC_2.34 GLIBCXX_3.4.29 CXXABI_1.3.11",
+  "needed": "libc.so.6 libgcc_s.so.1 libm.so.6 libstdc++.so.6",
+  "sources": {
+    "cpp_impl/codingame_nnue.cpp": "752aa5eb8de7c79d199fa6f87811122bc415d6e752b5358514cebfc751fd8d41",
+    "cpp_impl/d16_helpers.hpp": "dcdab1be687b2d239218d232d156166c5b3057f8f8415337379a01c682f5a131",
+    "cpp_impl/macro_eval.hpp": "6a9a3f573ce63d1cbe4b0994c11009d370cd6b7f05e5c5fa22fcd478567e196b",
+    "cpp_impl/nnue_b64.hpp": "358bf512c1b0bf180c3acae472f35369caf598e12f1198b0ff096d5ec2f67abd",
+    "cpp_impl/nnue_b64_net.hpp": "aa2819fec4ed16d4668211c583e9cdbbb26b33c442a52ce1fc88c9bbd0f12130",
+    "cpp_impl/play_book.hpp": "91ceab2c86d82b7dd5a91612745240ca8d087e144278825ca92e0549d0c753c6",
+    "cpp_impl/play_book_data.hpp": "a805387e911fc521088de6a10bfb4149ae45335540fa26dab3bc913ed66d50a8",
+    "cpp_impl/cg_selfcheck.cpp": "3e24d13a7f564f9a77dbeb42957115755bfaae8164783343c1fd09f46fee15ad",
+    "tools/cg_native/native_main.cpp": "1f42a6063c2503c41771320d448d9120263c74e5fe03df43fefadc64e4a7e990"
+  }
+}
