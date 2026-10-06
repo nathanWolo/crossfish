@@ -991,6 +991,12 @@ class CrossfishDev {
         static constexpr int FP_EARLY_PAWNS = 20;
         static constexpr int QDELTA_PAWNS = 350;
         static constexpr int IIR_MIN_DEPTH = 4;
+        // ProbCut (crossfish_dev.hpp): depth >= 5 null-window nodes try the
+        // first 3 ordered moves against beta + 60 pawns at depth - 4.
+        static constexpr int PC_MIN_DEPTH = 5;
+        static constexpr int PC_PAWNS = 60;
+        static constexpr int PC_MOVES = 3;
+        static constexpr int PC_REDUCTION = 4;
         // Random-play MiniNet residuals reached ~4500; slack for search positions.
         static constexpr int MINI_MAX = 8000;
         CrossfishDev() {
@@ -1825,13 +1831,66 @@ class CrossfishDev {
                 sort_move_keys(move_keys, nmoves);
             }
 
+            int stm = board.n_moves & 1;
+            int opponent_global_targets =
+                fast_win_moves[board.mini_board_states[stm ^ 1]];
+            if (!pv_node && depth >= PC_MIN_DEPTH && !g_disable_eval_prune
+                && beta > -CORR_MATE_BOUND && beta < CORR_MATE_BOUND) {
+                const int pc_beta = beta + PC_PAWNS * eval_weights[PAWN_IDX];
+                if (!(tt_hit && entry.depth >= depth - PC_REDUCTION + 1 && entry.score < pc_beta)) {
+                    if (defer_move_scores && nmoves > 1) {
+                        get_fast_move_scores(legal_moves + 1, nmoves - 1,
+                                             board, ply, move_keys + 1, false);
+                        sort_move_keys(move_keys + 1, nmoves - 1);
+                        defer_move_scores = false;
+                    }
+                    const int n_try = nmoves < PC_MOVES ? nmoves : PC_MOVES;
+                    for (int i = 0; i < n_try; i++) {
+                        FastMove pc_fast = move_from_key(move_keys[i]);
+                        Move pc_move = unpack_fast_move(pc_fast);
+                        make_move_fast(board, pc_move);
+                        int pc_val = min_val;
+                        if (opponent_global_targets
+                            && has_immediate_global_win(board, opponent_global_targets)) {
+                            pc_val = min_val;
+                        } else if (has_forced_global_win_after_reply(board, stm)) {
+                            pc_val = max_val - ply - 3;
+                        } else {
+                            pc_val = -qsearch(board, -pc_beta, -pc_beta + 1, ply + 1);
+                            if (pc_val >= pc_beta && !stopped) {
+                                pc_val = -search_child(board, depth - PC_REDUCTION, ply + 1,
+                                                       -pc_beta, -pc_beta + 1);
+                            }
+                        }
+                        unmake_move_fast(board);
+                        if (stopped) return min_val;
+                        if (pc_val >= pc_beta) {
+                            CompactTTEntry pc_entry = {
+                                board.tt_hash,
+                                pc_val,
+                                (int16_t)(depth - PC_REDUCTION + 1),
+                                (int8_t)TT_LOWER,
+                                pack_tt_move(pc_fast)
+                            };
+                            CompactTTBucket &pc_bucket =
+                                transposition_table[board.tt_hash & (tt_bucket_count - 1)];
+                            int slot = pc_bucket.entries[0].zobrist_hash == board.tt_hash ? 0
+                                     : pc_bucket.entries[1].zobrist_hash == board.tt_hash ? 1
+                                     : pc_bucket.entries[0].depth <= pc_bucket.entries[1].depth ? 0 : 1;
+                            if (!(pc_bucket.entries[slot].zobrist_hash == board.tt_hash
+                                  && pc_bucket.entries[slot].depth > depth - PC_REDUCTION + 1)) {
+                                pc_bucket.entries[slot] = pc_entry;
+                            }
+                            return pc_val >= CORR_MATE_BOUND ? pc_val : pc_val - (pc_beta - beta);
+                        }
+                    }
+                }
+            }
+
             FastMove best_move = move_from_key(move_keys[0]);
             int best_val = min_val;
             int alpha_orig = alpha;
             int val;
-            int stm = board.n_moves & 1;
-            int opponent_global_targets =
-                fast_win_moves[board.mini_board_states[stm ^ 1]];
             // A child's key is this key minus the old destination term plus
             // the one combo term for the move (a move that also decides a
             // miniboard adds more, and its prefetch is merely wasted).
