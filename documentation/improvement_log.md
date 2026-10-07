@@ -4464,3 +4464,19 @@ The paired 20 ms screen from offset 45000 was stopped as marginal at
 N=812, 168-460-184, −6.85 ± 15.19 Elo, LLR −0.78, with no timeouts.
 The altered LMR decision was not a strength gain. Dev was restored to
 the section 67 freeze.
+
+---
+
+## 76. History aging across moves (7 October 2026)
+
+The frozen engine halves butterfly and continuation history before
+each new move's search. Dev tried carrying three quarters or one
+quarter of each table instead. Both variants passed `make test` and
+kept the exact fixed-depth tree, since that entry point resets history.
+
+Three-quarter carryover lost 0.035 ply in the 20 ms persistent-engine
+walk and was not screened for strength. One-quarter carryover gained
+0.100 ply in the walk, but a paired 20 ms screen from offset 46000
+was inconclusive at N=1600, 357-874-369, −2.61 ± 10.72 Elo,
+LLR −0.85, with no timeouts. The original halving rule was retained.
+Dev was restored to the freeze.
