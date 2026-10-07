@@ -4556,3 +4556,59 @@ mixed timed-depth readings; its best prefetch variant ran 2.2%
 more nodes per second but lost 0.146 ply over 500 fresh 90 ms
 searches. None was frozen. Dev was restored to the section 67
 freeze and Prev and the CodinGame submission were not changed.
+
+---
+
+## 80. Cache the futility inputs in the search board (7 October 2026)
+
+`fp_pawns` recounted empty squares on every live miniboard at many non-PV
+search nodes. Dev now initializes a one-byte live-empty count at the root,
+decrements it on a move, subtracts the newly decided miniboard's remaining
+empty squares, and restores the previous count on unmake. A temporary
+validation build recomputed the count after every make and unmake across
+492 persistent fixed-depth-10 searches without a mismatch. The futility
+margin calculation is otherwise unchanged.
+
+The global two-in-a-row check in the same function scanned eight lines.
+For a nonterminal position, the existing `fast_win_moves_open[mine]`
+table reports exactly the free square that would complete such a line;
+masking out the opponent's and drawn boards gives the old answer.
+Exhaustive enumeration confirmed equivalence on all 15,248 disjoint,
+non-winning mine/blocker states. A board-level threat cache was slower,
+so Dev uses the existing table directly. Dev also drops unused fields
+from its move undo record, taking it from 32 to 24 bytes, the same size
+as the current CodinGame record before the new count.
+
+The combined Dev candidate computes identical scores and node counts on
+200 fresh depth-9 positions and 492 persistent depth-10 searches.
+`make test` passed. Pinned, paired `speed_ab` timing over 16 six-game
+fixed-depth runs measured **+2.11%** speed
+([+1.81%, +2.41%], 95% interval), with equal nodes on every run.
+A five-game 90 ms walk finished 0.1165 more ply per search over 249
+paired searches and searched 2.61% more nodes.
+
+A separate, unshipped CodinGame source copy matched Dev's fixed-depth
+fingerprints at depths 5, 7 and 9 over 120 positions, both at `-O3`
+and with CodinGame's no-`-O` flags. GCC 11.2 with those flags also
+matched the frozen CodinGame source's nodes and fingerprints at those
+depths. The minified candidate is 73,594 characters, below the
+100,000-character cap. This host is a Xeon Platinum 8259CL; these
+speed timings do **not** measure CodinGame's Haswell CPU. A GCC 11
+timing attempt while the match used seven workers was too noisy to
+interpret and was discarded.
+
+The official 90 ms H0=0/H1=+5 Dev-vs-Prev match started on fresh book
+positions at offset 12000 and is pending. No Elo pass or freeze is
+claimed. The accepted Prev and shipped CodinGame source remain
+unchanged while this trial runs.
+
+Other speed probes on this host were not kept. Removing all NNUE
+move-path prefetches slowed fixed-depth search 1.91%
+([1.55%, 2.26%]); removing only row prefetches slowed it 1.23%
+([1.04%, 1.42%]); removing only the cache prefetch was within noise.
+A one-move accumulator-sync shortcut slowed it 0.45%
+([0.12%, 0.77%]). Direct sorts for two- and three-move lists measured
++0.23% speed with an interval spanning zero. AVX2 forward-pass trials
+with more accumulation chains or a shuffle-based second layer were
+slower in a kernel bench. An AVX-512 kernel sped up the host's forward
+pass but was discarded because CodinGame's Haswell lacks AVX-512.

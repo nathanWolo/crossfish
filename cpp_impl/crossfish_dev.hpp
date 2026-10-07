@@ -134,6 +134,7 @@ class CrossfishDev {
             // reads one vector instead of nine class-dependent loads.
             alignas(32) int32_t super_acc[2][8]{};
             uint8_t active_board = 9;
+            uint8_t live_empties = 81;
             // check_winner_fast's answer for the current position. Only a move
             // that decides a miniboard can change it, so make/unmake refresh it
             // and every node reads one byte instead of redoing the test.
@@ -192,6 +193,15 @@ class CrossfishDev {
                   combo_hashes(get_combo_hashes(board)),
                   n_moves(board.n_moves),
                   prev_move_was_pass(board.prev_move_was_pass) {
+                int empties = 0;
+                for (int mb = 0; mb < 9; mb++) {
+                    if ((out_of_play & (1 << mb)) == 0) {
+                        empties += 9 - __builtin_popcount(
+                            (unsigned)(mini_boards[mb].markers[0]
+                                     | mini_boards[mb].markers[1]));
+                    }
+                }
+                live_empties = (uint8_t)empties;
                 auto history = board.move_history;
                 move_history.count = (int)history.size();
                 for (int i = move_history.count - 1; i >= 0; i--) {
@@ -1310,18 +1320,27 @@ class CrossfishDev {
         // of the decided-state masks.
         struct MoveUndo {
             uint64_t tt_hash;
-            int32_t hce_local;
-            int32_t hce_global;
             int32_t tiar_maps[2];
-            int16_t mb_score;
-            uint8_t mb_flags;
-            uint8_t code[2];
+            uint8_t live_empties;
             uint8_t active;
             int8_t terminal;
             int8_t decided;  // -1, or the mini_board_states index gained
         };
-        static_assert(sizeof(MoveUndo) == 32);
+        static_assert(sizeof(MoveUndo) == 24);
         std::array<MoveUndo, 128> move_undo{};
+#ifdef CROSSFISH_VERIFY_LIVE_EMPTIES
+        static void verify_live_empties(const FastBoard &board) {
+            int empties = 0;
+            for (int mb = 0; mb < 9; mb++) {
+                if ((board.out_of_play & (1 << mb)) == 0) {
+                    empties += 9 - __builtin_popcount(
+                        (unsigned)(board.mini_boards[mb].markers[0]
+                                 | board.mini_boards[mb].markers[1]));
+                }
+            }
+            if (empties != board.live_empties) __builtin_trap();
+        }
+#endif
         // Bakes the NNUE tables once per process (crossfish_nnue_load_once)
         // before the stack's constructor calls b64::load().
         struct NnueLoadOnce {
@@ -1343,6 +1362,7 @@ class CrossfishDev {
             u.tt_hash = board.tt_hash;
             u.tiar_maps[0] = hce_tiar_maps[0];
             u.tiar_maps[1] = hce_tiar_maps[1];
+            u.live_empties = board.live_empties;
             u.active = board.active_board;
             u.terminal = board.terminal;
             if (board.n_moves > 0) {
@@ -1352,6 +1372,7 @@ class CrossfishDev {
             }
             board.move_history.push(move);
             board.mini_boards[mb].markers[stm] = before | bit;
+            board.live_empties--;
             // The MiniNet codes are not read with the NNUE eval.
             xor_move_combo(board, stm, mb, move.square);
             int decided_state = -1;
@@ -1370,6 +1391,9 @@ class CrossfishDev {
             }
             u.decided = (int8_t)decided_state;
             if (decided_state >= 0) {
+                const int occupied = board.mini_boards[mb].markers[0]
+                                   | board.mini_boards[mb].markers[1];
+                board.live_empties -= (uint8_t)(9 - __builtin_popcount((unsigned)occupied));
                 add_out_of_play(board, mb_bit);
                 xor_marker_hashes(board, mb);
                 set_macro_key_mb(board, mb, decided_state);
@@ -1393,6 +1417,9 @@ class CrossfishDev {
                 hce_tiar_maps[0] = (hce_tiar_maps[0] & ~nn_bit) | ((nn_flags & 1) << mb);
                 hce_tiar_maps[1] = (hce_tiar_maps[1] & ~nn_bit) | (((nn_flags >> 1) & 1) << mb);
             }
+#ifdef CROSSFISH_VERIFY_LIVE_EMPTIES
+            verify_live_empties(board);
+#endif
         }
 
         void unmake_move_fast(FastBoard &board) {
@@ -1410,10 +1437,14 @@ class CrossfishDev {
             board.mini_boards[mb].markers[board.n_moves & 1] &=
                 ~(1 << move.square);
             board.tt_hash = u.tt_hash;
+            board.live_empties = u.live_empties;
             board.active_board = u.active;
             board.terminal = u.terminal;
             hce_tiar_maps[0] = u.tiar_maps[0];
             hce_tiar_maps[1] = u.tiar_maps[1];
+#ifdef CROSSFISH_VERIFY_LIVE_EMPTIES
+            verify_live_empties(board);
+#endif
         }
 
         template <typename Board>
@@ -1716,14 +1747,11 @@ class CrossfishDev {
         static __attribute__((always_inline)) int fp_pawns(const FastBoard &board) {
             const int base = board.n_moves < EARLY_MARGIN_MOVES ? FP_EARLY_PAWNS : FP_PAWNS;
             const int us = board.n_moves & 1;
-            const int blockers = board.mini_board_states[us ^ 1] | board.mini_board_states[2];
-            if (global_threat(board.mini_board_states[us], blockers)) return base;
-            int empties = 0;
-            for (int live = (~board.out_of_play) & 511; live; live &= live - 1) {
-                const int mb = __builtin_ctz(live);
-                empties += __builtin_popcount(
-                    ~(board.mini_boards[mb].markers[0] | board.mini_boards[mb].markers[1]) & 511);
-            }
+            const int mine = board.mini_board_states[us];
+            const int blockers = board.mini_board_states[us ^ 1]
+                               | board.mini_board_states[2];
+            if (fast_win_moves_open[mine] & ~blockers) return base;
+            const int empties = board.live_empties;
             const int open = empties >= 60 ? 15 : empties >= 45 ? 20 : empties >= 30 ? 50 : base;
             return open < base ? open : base;
         }
