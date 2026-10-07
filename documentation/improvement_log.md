@@ -4239,6 +4239,20 @@ lower or exact). When a node ProbCut cut is revisited at the same depth and the
 cut does not repeat, the ProbCut move gets the singular extension. Both SPRTs
 include this behaviour.
 
+### Ladder
+
+Two submissions of the native file (sha256 `3f3267f6…`) on 6 October:
+agent 6783120 placed **#6, 32.27** and agent 6783154 **#5, 33.30**. Against
+the mean of six reference bots whose agents did not change, that is +0.05 and
++0.98, where the two r14 native agents (6781812, 6781837) placed +0.08 and
+-0.10. The field moved between the two days (Apostolique and sZoom up, zasmu
+down), so the ladder is a sanity check, not a measurement. Pooled over the 550
+placement games: 0 timeouts on our side (the r14 native agents had 3 in 518),
+no crashes, bare or illegal moves; first player against the fixed top 7,
+125-0-1 (0.996 +/- 0.004, r14 native 0.948 +/- 0.017); second player against
+them 0.063 +/- 0.019 (0.040 +/- 0.016); against the 26 opponent agents both
+builds met, +0.014 +/- 0.035 per game over both seats.
+
 ### Freeze
 
 Prev = Dev renamed. `codingame_nnue.cpp` carries the same block; it stores raw
