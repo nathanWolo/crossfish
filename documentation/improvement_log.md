@@ -333,6 +333,8 @@ This section is the other half of the history. Retrying these without a new hypo
 - NMP, TT-replace, qsearch TT, TT `1<<20`, aspiration 200, razoring
 - Exact killers, IID depth 2, scaled free-move, futility 600
 - Send-to-threat ordering: −45
+- Move-ordering trials on the 7 October 2026 ProbCut freeze: no [0, +5]
+  acceptance; see section 68 for the measured screens and the 90 ms run.
 - Parallel SPRTs on one machine: do not; they steal NPS and lie
 - Ply-relative TT mate scores (`value_to_tt`/`value_from_tt`): **+1.9 ± 10.6** at N=3000 on
   the #10 baseline, i.e. below a null control run the same day. The pairing is correct
@@ -4268,3 +4270,49 @@ GLIBC_2.34; `cg_input_native.py` 73,189 units, sha256
 `cg-native-check` OK (IDENTICAL at 5, 7, 9; 40/40 protocol games with the
 exact book check).
 
+---
+
+## 68. Move-ordering trials after ProbCut (7 October 2026)
+
+The baseline was the section 67 ProbCut freeze. Each trial changed only
+`crossfish_dev.hpp` in an isolated worktree, passed `make test`, and was
+restored to the freeze when the evidence did not support an Elo gain. The
+screens below used the shipped paired opening book, seven workers, and
+`SPRT_ELO0=0 SPRT_ELO1=5`. A capped or manually stopped screen is **not** an
+SPRT pass or fail.
+
+| Trial | 20 ms offset | 20 ms games | Elo ± 95% interval | Observation |
+| --- | ---: | ---: | ---: | --- |
+| Separate free-choice cutoff history | 10000 | 1200 | +1.74 ± 12.23 | Marginal; restored |
+| Extra bonus for blocking an opponent global win locally | 12000 | 1200 | −3.47 ± 12.28 | Marginal; restored |
+| Reward quiet exact-node best moves in butterfly history | 14000 | 1600 | +4.13 ± 10.40 | 90 ms follow-up below |
+| Continuation history for our move two plies earlier | 16000 | 1600 | +3.04 ± 10.48 | No timed-depth gain |
+| Reward captures that create macro threats or block macro targets | 18000 | 1600 | −2.61 ± 10.67 | Fixed-depth time +5% |
+| NNUE evaluation of each child at selected TT misses | 22000 | 910, stopped | +1.15 ± 13.91 | Startup NPS about 10% lower |
+| One-ply move discovery on wide free-choice TT misses | 24000 | 1148, stopped | −1.51 ± 11.79 | Timed walk +0.10 ply did not transfer |
+| NNUE local PSQT delta as a move bonus | 26000 | 1600 | −5.86 ± 10.60 | Fixed-depth nodes +6.3% |
+| Order known immediate global-loss replies last | 28000 | 2000 | +6.25 ± 9.59 | 90 ms follow-up below |
+| Dedicated quiescence capture history | 32000 | 1600 | +0.87 ± 10.74 | Timed walk flat |
+
+The two fresh-opening 90 ms follow-ups used the official H0=0/H1=+5
+contract. They were stopped as marginal under the experiment rule, before an
+SPRT boundary:
+
+| Trial | Offset | Games | Elo ± 95% interval | LLR | Timeouts |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Exact-node best-move history | 20000 | 2086 | +0.83 ± 7.96 | −0.51 | Prev 0, Dev 1 |
+| Immediate global-loss reply ordering | 30000 | 1708 | −4.07 ± 9.04 | −1.54 | Prev 0, Dev 0 |
+
+Other isolated changes did not earn a strength screen. Reordering ProbCut's
+failed probes changed only 4 of 120 fixed-depth positions and gained 0.00
+ply in the timed walk. Giving ProbCut cutoffs regular history feedback
+raised fixed-depth nodes 1.0% and lost 0.03 ply. Quiet-only cutoff history
+cut fixed-depth nodes 2.2% but lost 0.21 ply. Sorting only after the first
+move, or using `std::sort` for lists of at least 16, reproduced the exact
+tree but lost about 1% fixed-depth NPS. The NNUE destination-constraint term
+raised fixed-depth nodes 9.5%. At TT misses, raising the countermove bonus
+from 40 to 200 raised nodes 21.5% and lost 0.13 ply; removing the bonus
+raised nodes 5.0%. None of these changes was frozen or ported.
+
+The two 90 ms follow-ups are why a positive 20 ms screen was not treated as
+a gain. The accepted engine remains the section 67 freeze.
