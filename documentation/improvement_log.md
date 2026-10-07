@@ -4212,6 +4212,33 @@ pawns; -9% nodes at d13, both cut kinds under 0.7% wrong) failed: N 1944,
 321-1248-375, -9.7 +/- 8.7, LLR -3.05. The flat 90 ms budget gives this VM
 about 1.05-1.2x CodinGame's nodes (section 60).
 
+### Confirmation at CodinGame compute
+
+A second SPRT, at CodinGame-equivalent compute, against main's
+`crossfish_prev.hpp` (the r14 freeze), pooled over the desktop and the ThinkPad
+with `tools/sprt_cluster.py` (6 October, openings from 10000 and 35000):
+
+```text
+CG compute: N 2534 W 563 D 1527 L 444
+Penta: 26 / 255 / 614 / 318 / 54
+Elo diff: +16.3 +/- 8.0
+LLR: +4.15 (H0=0, H1=+5) - PASS
+Timeouts: Prev=0 Dev=0
+```
+
+The budgets are the section 60 calibration (desktop 49 ms, ThinkPad 63 ms,
+7 threads each) scaled by 1.075 for the native build's cycle gain (section
+66): desktop 53 ms, ThinkPad 68 ms. By machine: desktop N 1414, +13.5 +/-
+10.7; ThinkPad N 1120, +19.9 +/- 12.0. Both runs stopped at their first
+crossing, so both estimates lean high, but they agree: two independent
+openings ranges, two hardware setups, about +16 each.
+
+One interaction worth knowing: the ProbCut entry is a lower bound at depth - 3,
+which is exactly the pseudo-singular threshold (`entry.depth >= depth - 3`,
+lower or exact). When a node ProbCut cut is revisited at the same depth and the
+cut does not repeat, the ProbCut move gets the singular extension. Both SPRTs
+include this behaviour.
+
 ### Freeze
 
 Prev = Dev renamed. `codingame_nnue.cpp` carries the same block; it stores raw
