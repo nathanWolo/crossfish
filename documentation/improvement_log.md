@@ -4770,3 +4770,26 @@ With the pinned LLVM 23.1.2 `-march=haswell -mtune=haswell` native flags,
 make/unmake work outweighed the saved table lookups. This does not
 measure CodinGame's Haswell directly. No SPRT was run, and Dev, Prev
 and the shipped CodinGame sources stayed at the accepted freeze.
+
+---
+
+## 87. Narrow the pseudo-singular extension threshold (7 October 2026)
+
+Dev required `entry.depth >= depth - 2` instead of `depth - 3` for the
+existing pseudo-singular extension. No other search rule changed.
+`make test` passed. In a fresh depth-10 bench Dev searched 7.0% fewer
+nodes and took 8.4% less time; a ten-game persistent depth-10 walk
+searched 19.8% fewer nodes and took 21.3% less time. At equal time,
+Dev completed 0.502 more ply per search over 492 paired 20 ms searches
+and 0.474 more ply over 249 paired 90 ms searches.
+
+The 20 ms H0=0/H1=+5 screen from opening offset 26000 reached its
+2,000-game cap inconclusive: 475-1083-442 W-D-L, penta
+32/226/463/235/44, +5.73 ±9.42 Elo, LLR +0.70, no timeouts.
+The official 90 ms run from separate opening offset 28000 was stopped
+as unpromising at N=1358: 246-854-258 W-D-L, penta
+13/162/341/150/13, −3.07 ±10.23 Elo, LLR −1.02, no timeouts.
+It reached neither SPRT boundary, so this is an early stop rather than
+a formal failure. Greater completed depth did not establish a strength
+gain at the official time control. Dev was restored to Prev; the
+CodinGame sources were unchanged.
