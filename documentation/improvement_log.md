@@ -5118,3 +5118,30 @@ and instructions are under
 This prepares a direct comparison on CodinGame's Haswell; it is not
 itself a measurement on that CPU or a +5 Elo strength result. Dev,
 Prev, and the shipped submission remain unchanged.
+
+---
+
+## 102. Prepare an on-target test of the exact speed bundle (7 October 2026)
+
+The isolated exact-tree bundle from section 96 was built as two private
+CodinGame-protocol executables with pinned LLVM 23.1.2 Haswell flags and
+no AVX-512. A small binary delta lets one Python launcher carry both
+under the source cap: 90,947 UTF-16 units. On its first turn it times
+the same 30-position, depth-9 script once per variant in randomized
+order, then plays the normal game after the fixed center opening.
+
+Both variants matched scores and nodes at depths 5, 7 and 9 and
+matched the opening-book checksum. The packed launcher reported
+440,179 nodes and checksum 130570488813610140 for each timing block,
+passed a local two-turn protocol check, and met the documented
+CodinGame ABI limits. Its first turn took 0.673 seconds in the local
+Ubuntu 22.04 container. Sixteen paired, pinned-core timings of that
+short script measured **+2.99%** speed on this host's Xeon
+(time-ratio interval 0.9594–0.9826). This is stronger local speed
+evidence than the longer section 96 screen, but it still does not
+measure CodinGame's Haswell or pass the +5 Elo strength gate.
+
+The private launcher, run instructions, source copies and build
+scripts are in
+`/local/home/nathwolo/crossfish_speed_bench_artifacts/`. Dev, Prev,
+and the shipped submission were unchanged.
