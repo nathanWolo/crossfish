@@ -4398,3 +4398,24 @@ The paired 20 ms screen from offset 43000 reached N=812, 161-456-195,
 clearly unpromising. The saturated set apparently carries useful square
 patterns before it fills, or replacing it loses value elsewhere. Dev
 was restored to the section 67 freeze.
+
+---
+
+## 72. Demote refuted upper-bound TT moves (7 October 2026)
+
+When a transposition-table entry has an upper bound below the search's
+current alpha, Dev scored its move with the other legal moves instead
+of automatically searching it first. The stored entry still served all
+other purposes. The change passed `make test`, reduced d10 nodes by
+3.2% over 120 fixed positions, and improved the 20 ms persistent-engine
+walk by 0.115 ply over 400 searches.
+
+The paired 20 ms screen from offset 44000 capped at N=1600,
+366-874-360, +1.30 ± 10.60 Elo, LLR −0.20, with no timeouts.
+Because the fixed-depth and timed-depth probes agreed on a gain, a
+fresh 90 ms H0=0/H1=+5 SPRT was run from offset 5000. It was stopped
+as marginal at N=1708, 307-1073-328, penta 14/194/457/177/12,
+−4.27 ± 8.69 Elo, LLR −1.72. Neither engine timed out.
+
+The sequential test did not pass; the apparent search efficiency gain
+did not become Elo. Dev was restored to the section 67 freeze.
