@@ -4870,3 +4870,45 @@ as marginal at N=1204: 223-743-238 W-D-L, penta
 Prev timeout and no Dev timeouts. It reached neither SPRT boundary.
 The fixed-depth savings did not establish a +5 Elo gain. Dev was
 restored to Prev; the CodinGame sources were unchanged.
+
+---
+
+## 91. Middle-game aspiration window and failed-score profile (7 October 2026)
+
+An instrumented copy of the frozen Dev ran ten scripted 90 ms games
+(492 paired positions). Completed root searches took 26.9 seconds;
+1,271 fail-low and 1,593 fail-high attempts together took 6.5 seconds.
+An additional 453 attempts stopped at the time limit. Most retry cost
+was in the middle game (moves 28–44).
+
+A Dev trial doubled the initial aspiration half-width from 40 to 80
+pawns only during moves 28–44. `make test` passed. At 90 ms, a ten-game
+paired walk gained just **0.089 ply** per search over 492 searches.
+This small depth gain did not warrant a +5 Elo match. Dev was restored.
+
+A separate five-game baseline profile checked whether the score
+returned by a failed search could guide the next window. Nearly all
+fail-low and fail-high searches returned exactly the failed bound.
+The few large out-of-window scores had low node counts and are
+consistent with mate scores. Those bound scores carry too little
+information to improve the
+re-search window by recentering it.
+
+---
+
+## 92. Skip the forced-board NNUE row on free moves (7 October 2026)
+
+Two isolated CG trials avoided loading and adding the zero forced-board
+row during a free move's NNUE activation setup. One duplicated the
+whole forward pass for forced and free moves; the other kept one dense
+kernel with a branch in activation setup. Each matched the frozen
+CG source's depth-5, 7 and 9 nodes, checksums and book integrity,
+and all depth-12 timing runs searched identical trees.
+
+With the pinned LLVM 23.1.2 `-march=haswell -mtune=haswell` native flags,
+16 paired depth-12 runs on this host's Xeon Platinum 8259CL measured
+**−0.68%** speed ([−1.14%, −0.23%]) for the duplicated kernel and
+**−0.19%** ([−0.44%, +0.05%]) for the compact kernel. Neither measured
+CodinGame's Haswell CPU, and neither showed a host gain. No SPRT was
+run. Dev, Prev and the shipped CodinGame sources stayed at the
+accepted freeze.
