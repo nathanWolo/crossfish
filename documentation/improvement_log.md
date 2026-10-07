@@ -4591,7 +4591,11 @@ A separate, unshipped CodinGame source copy matched Dev's fixed-depth
 fingerprints at depths 5, 7 and 9 over 120 positions, both at `-O3`
 and with CodinGame's no-`-O` flags. GCC 11.2 with those flags also
 matched the frozen CodinGame source's nodes and fingerprints at those
-depths. The minified candidate is 73,594 characters, below the
+depths. Separate baseline and candidate selfchecks matched at depths
+5, 7 and 9 when compiled with the documented LLVM 23.1.2
+`-march=haswell` native flags. The LLVM archive matched its pinned
+SHA-256 and release signature, and ran in the documented Ubuntu 22.04
+toolchain container. The minified candidate is 73,594 characters, below the
 100,000-character cap. This host is a Xeon Platinum 8259CL; these
 speed timings do **not** measure CodinGame's Haswell CPU. A GCC 11
 timing attempt while the match used seven workers was too noisy to
