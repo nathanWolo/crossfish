@@ -4601,10 +4601,14 @@ speed timings do **not** measure CodinGame's Haswell CPU. A GCC 11
 timing attempt while the match used seven workers was too noisy to
 interpret and was discarded.
 
-The official 90 ms H0=0/H1=+5 Dev-vs-Prev match started on fresh book
-positions at offset 12000 and is pending. No Elo pass or freeze is
-claimed. The accepted Prev and shipped CodinGame source remain
-unchanged while this trial runs.
+The 90 ms H0=0/H1=+5 Dev-vs-Prev match on fresh book positions
+at offset 12000 was stopped as marginal at N=6020:
+1174-3698-1148 W-D-L, penta 59/672/1523/696/60, +1.50 ±4.86 Elo,
+LLR −0.81, with no timeouts. It reached neither SPRT boundary, so this
+is neither a pass nor a formal rejection. The host speed gain did not
+establish the required +5 Elo, and the speed on CodinGame's Haswell
+remains unmeasured. Dev was restored to the accepted Prev freeze;
+the shipped CodinGame sources were unchanged.
 
 Other speed probes on this host were not kept. Removing all NNUE
 move-path prefetches slowed fixed-depth search 1.91%
