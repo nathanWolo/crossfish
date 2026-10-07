@@ -5037,3 +5037,25 @@ did not turn into a strength gain. The earlier section 67 run of the same
 margin was likewise inconclusive, so the 60-pawn freeze remains the
 baseline. Dev was restored; Prev and the CodinGame submission were
 unchanged.
+
+---
+
+## 98. Compact the NNUE pattern tables (7 October 2026)
+
+An isolated CodinGame source trial stored rows for the 11,093 live
+miniboard patterns consecutively and translated each ternary pattern
+through a 16-bit rank table. The activation tables fell from about
+25.2 MB to 14.2 MB. One extra zero row preserved the old evaluations
+for impossible patterns: the opening book's net fingerprint deliberately
+contains synthetic positions with such patterns.
+
+The pinned LLVM 23.1.2 native build used `-march=haswell -mtune=haswell`
+and no AVX-512. Baseline and trial matched search nodes and checksums
+at depths 5, 7 and 9 and matched the opening-book table checksum.
+Eight paired, pinned-core depth-12 runs searched identical trees.
+The compact layout measured **−1.38%** host speed
+([−2.34%, −0.41%]) on the Xeon Platinum 8259CL. The added rank lookup
+cost more than the smaller footprint saved on this host. This does not
+establish the result on CodinGame's Haswell, whose cache behavior can
+differ. The candidate remains isolated in `/tmp/crossfish_compact_table`;
+Dev, Prev, and the shipped submission were unchanged.
