@@ -4964,3 +4964,37 @@ A five-game 90 ms paired walk gained only 0.012 completed ply
 over 249 searches. The timed-depth gain was too small for a
 +5 Elo SPRT. Dev was restored; the shipped CodinGame sources
 were unchanged.
+
+---
+
+## 95. Prepare an on-target cache-capacity check (7 October 2026)
+
+The native CodinGame build uses a 256 KiB direct-mapped NNUE eval
+cache. CodinGame's measured Haswell CPU has a 256 KiB per-core L2,
+while this host's Xeon has a larger L2. A 128 KiB cache could
+improve locality on Haswell despite its lower hit rate.
+
+An isolated 128 KiB CG build matched the frozen native source's
+depth-5, 7 and 9 nodes, checksums, and book integrity. Sixteen
+paired depth-12 runs with LLVM 23.1.2
+`-march=haswell -mtune=haswell` searched identical trees and
+measured **+0.11%** speed (interval [−0.56%, +0.79%]) on this
+host's Xeon Platinum 8259CL.
+
+For target measurement, two private-test Python launchers were built:
+the 256 KiB baseline and the 128 KiB trial. On the first turn each
+prints timing of the same 120-position depth-9 script to stderr,
+using one persistent engine so the cache saturates, then plays the
+normal opening. They produced identical nodes (1,897,708) and
+checksums (9478982506970456761), passed the opening-book check,
+played legal first and second moves in the local protocol check,
+met the documented CodinGame ABI limits, and fit under the
+100,000-unit source cap. Thirty-two paired persistent timings on
+the host measured **−0.05%** speed for the 128 KiB cache
+(interval [−0.96%, +0.88%]).
+
+These host results are effectively tied. A private test on
+CodinGame's Haswell is needed to decide this target-specific
+question. The launchers and run instructions are in
+`/local/home/nathwolo/crossfish_cache_bench_artifacts/`.
+Dev, Prev and the shipped submission remain unchanged.
