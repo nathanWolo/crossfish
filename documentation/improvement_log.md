@@ -5059,3 +5059,20 @@ cost more than the smaller footprint saved on this host. This does not
 establish the result on CodinGame's Haswell, whose cache behavior can
 differ. The candidate remains isolated in `/tmp/crossfish_compact_table`;
 Dev, Prev, and the shipped submission were unchanged.
+
+---
+
+## 99. Skip shallow duplicate null-window retries (7 October 2026)
+
+At a sibling with no LMR reduction, the move loop normally repeats the
+same full-depth null-window search whenever its first result exceeds
+alpha. A Dev trial skipped that retry only when the child depth was
+below four, so the child could not have triggered the existing
+internal iterative reduction. A subsequent full-window PV re-search
+still ran when needed.
+
+`make test` passed. A 20-game, depth-10 persistent `sat` screen searched
+4.7% fewer nodes and took 1.2% less time on this host. In a five-game
+90 ms walk, Dev completed **0.108 fewer ply** per search across 249 paired
+positions. The equal-time result did not support an official strength
+match. Dev was restored; Prev and the CodinGame submission were unchanged.
