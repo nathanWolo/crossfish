@@ -5093,3 +5093,28 @@ on this host. Deferring the prefetches likely cost more than skipping
 them on tactical returns saved. The change did not reach a Haswell
 build or strength match. Dev was restored; Prev and the CodinGame
 submission were unchanged.
+
+---
+
+## 101. Prepare a paired Haswell cache measurement (7 October 2026)
+
+To reduce run-to-run noise in the section 95 target test, an isolated
+private CodinGame launcher now measures 128 and 256 KiB active NNUE
+eval-cache sizes on the **same first turn**, in randomized order. It
+uses one Haswell-targeted native executable with a runtime cache mask,
+so the timed code is identical for both sizes. Each block searches the
+same 60 positions at depth 9 with one persistent engine.
+
+Both paired modes matched their separately compiled counterparts'
+scores, nodes, and book checksum at depths 5, 7 and 9. The packed
+launcher fits the 100,000 UTF-16-unit source cap (73,931 units), passed
+a local two-turn protocol check with a legal center opening, and meets
+the documented CodinGame symbol-version limits. Its two first-turn
+blocks each reported 920,836 nodes and checksum
+11826216567631842755 in the Ubuntu 22.04 container. The private file
+and instructions are under
+`/local/home/nathwolo/crossfish_cache_bench_artifacts/`.
+
+This prepares a direct comparison on CodinGame's Haswell; it is not
+itself a measurement on that CPU or a +5 Elo strength result. Dev,
+Prev, and the shipped submission remain unchanged.
