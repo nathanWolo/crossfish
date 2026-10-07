@@ -4751,3 +4751,22 @@ removing AVX/SSE transition handling helps Haswell. No SPRT was run for
 these trials, and the +5 Elo shipping gate remains unmet. All candidates
 remained temporary copies; Dev, Prev and the shipped CodinGame sources
 remain at the accepted freeze.
+
+---
+
+## 86. Cache both miniboard pattern indices during search (7 October 2026)
+
+An isolated CG trial stored the two perspective-relative ternary indices
+for each miniboard in `FastBoard`, initialized them at the root, and
+updated them by powers of three on make and unmake. Move scoring,
+local correction history, NNUE evaluation, accumulator refresh and
+move-path row prefetch reused the cached indices. The trial matched
+the frozen CG source's depth-5, 7 and 9 nodes, checksums and book
+integrity, and searched identical depth-12 trees on every timing run.
+
+With the pinned LLVM 23.1.2 `-march=haswell -mtune=haswell` native flags,
+16 paired depth-12 runs measured **−2.50%** speed
+([−3.00%, −1.99%]) on this host's Xeon Platinum 8259CL. The extra
+make/unmake work outweighed the saved table lookups. This does not
+measure CodinGame's Haswell directly. No SPRT was run, and Dev, Prev
+and the shipped CodinGame sources stayed at the accepted freeze.
