@@ -5076,3 +5076,20 @@ still ran when needed.
 90 ms walk, Dev completed **0.108 fewer ply** per search across 249 paired
 positions. The equal-time result did not support an official strength
 match. Dev was restored; Prev and the CodinGame submission were unchanged.
+
+---
+
+## 100. Defer NNUE preparation past immediate tactical answers (7 October 2026)
+
+An exact-tree Dev trial delayed `fnnue_stack.on_make` in the ordinary
+search and ProbCut loops until after their immediate global win/loss
+checks. Moves answered tactically then skipped the accumulator dirty
+record and row prefetches. Quiescence kept the original preparation.
+
+`make test` passed. Scores and nodes were identical on 120 fresh
+depth-8 positions, and a 20-game persistent depth-10 `sat` walk
+searched the same 24.3 million nodes. The walk took **3.5% longer**
+on this host. Deferring the prefetches likely cost more than skipping
+them on tactical returns saved. The change did not reach a Haswell
+build or strength match. Dev was restored; Prev and the CodinGame
+submission were unchanged.
