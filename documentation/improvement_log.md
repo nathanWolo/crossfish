@@ -4530,3 +4530,29 @@ prompted a fresh 90 ms H0=0/H1=+5 run from offset 6000.
 It was stopped as marginal at N=1260, 224-788-248,
 −6.62 ± 10.86 Elo, LLR −1.49, with no timeouts. It did not pass the
 official gate. Dev was restored to the section 67 freeze.
+
+---
+
+## 79. Profile the search before changing it again (7 October 2026)
+
+The full phase-split counter and runtime report is
+[`search_profile_2026-10-07.md`](search_profile_2026-10-07.md).
+On ten engine-play scripts, 498 persistent 90 ms Dev searches visited
+192.1M nodes. The NNUE forward pass used about 26% of sampled
+instrumented CPU time, while move-key sorting used about 3%.
+The first searched move produced 82.8% of ordinary beta cutoffs.
+Opening ProbCut cut only 2.9% of eligible nodes before ply 12,
+versus 25.9% at plies 28–44. The shipped 256 KiB eval cache hit
+about 32% of requests in a separate sample.
+
+Four profiling-led variants did not earn a strength gate. Removing
+ProbCut before ply 12 reduced fixed-depth-10 nodes 1.5% but lost
+0.053 ply in a 400-search 20 ms walk. Recognizing a subset of
+inevitable global-loss moves before make/unmake kept the search tree
+identical, but took 2.5% longer at fixed depth and lost 0.344 ply
+in a 250-search 90 ms engine-play walk. A two-level 1 MiB NNUE
+cache was 5.9% slower at fixed depth. A direct 1 MiB cache gave
+mixed timed-depth readings; its best prefetch variant ran 2.2%
+more nodes per second but lost 0.146 ply over 500 fresh 90 ms
+searches. None was frozen. Dev was restored to the section 67
+freeze and Prev and the CodinGame submission were not changed.
