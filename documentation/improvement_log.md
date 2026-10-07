@@ -4498,3 +4498,35 @@ but lost 0.018 ply in the 20 ms persistent-engine walk. The paired
 20 ms screen from offset 47000 was stopped as unpromising at N=812,
 153-478-181, −11.99 ± 14.46 Elo, LLR −1.36, with no timeouts.
 Dev was restored to the section 67 freeze.
+
+---
+
+## 78. Allocate ProbCut probes around the TT move (7 October 2026)
+
+An instrumented copy of the frozen search counted successful ProbCut
+probes over 3,000 random roots at fixed depth 10:
+
+| Legal TT move | First cut | Second cut | Third cut | No cut |
+| --- | ---: | ---: | ---: | ---: |
+| No | 9,731 | 2,090 | 666 | 47,608 |
+| Yes | 3,178 | 474 | 192 | 93,108 |
+
+The legal-TT group tries nearly 97,000 first probes, but the second
+and third combined add only 666 cuts. Dev tried only the TT move at
+these nodes, leaving sibling scoring until the ordinary move loop.
+`make test` passed; on 120 d10 positions the change used 4.1% fewer
+nodes, and a 20 ms persistent-engine walk gained 0.053 ply over 400
+searches. The paired 20 ms match from offset 48000 was inconclusive
+at its N=1600 cap, 340-898-362, −4.78 ± 10.55 Elo, LLR −1.26,
+with no timeouts. The node gain did not establish a strength gain.
+
+A narrower trial retained the normal sibling scoring and the second
+ProbCut probe when a legal TT move was available, skipping only the
+third. It passed `make test`, used 2.9% fewer nodes at d10 over 120
+positions, and changed the 20 ms walk depth by −0.003 ply. A paired
+20 ms screen from offset 49000 ended inconclusive at N=1600,
+375-869-356, +4.13 ± 11.06 Elo, LLR +0.26, with no timeouts. This
+prompted a fresh 90 ms H0=0/H1=+5 run from offset 6000.
+It was stopped as marginal at N=1260, 224-788-248,
+−6.62 ± 10.86 Elo, LLR −1.49, with no timeouts. It did not pass the
+official gate. Dev was restored to the section 67 freeze.
