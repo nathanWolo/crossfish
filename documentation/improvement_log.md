@@ -4817,3 +4817,32 @@ stopped as marginal at N=1442: 252-943-247 W-D-L, penta
 It reached neither SPRT boundary. The speed and depth gains did not
 establish the +5 Elo shipping requirement. Dev was restored to Prev;
 the CodinGame sources were unchanged.
+
+---
+
+## 89. Avoid duplicate checks at the quiescence entry (7 October 2026)
+
+`search_leaf` checks the clock and cached terminal state before probing the
+TT. On a TT miss it then calls `qsearch`, which repeats both checks. A Dev
+trial used a specialized quiescence entry for that path, retaining the
+existing node count and all other quiescence behavior. `make test` passed;
+Dev and Prev had identical scores and nodes over 120 fresh depth-8
+positions and 991 persistent depth-10 searches. The persistent fixed-depth
+walk took 1.5% less time.
+
+An isolated CG source trial compiled with LLVM 23.1.2
+`-march=haswell -mtune=haswell` matched the frozen native source's
+depth-5, 7 and 9 checksums, nodes, and book integrity. Sixteen paired
+depth-12 runs searched identical trees and measured **+0.99%** speed
+([+0.58%, +1.41%]) on this host's Xeon Platinum 8259CL. This does not
+measure CodinGame's Haswell. A five-game 90 ms engine-play walk lost
+0.121 completed ply over 249 paired searches. There was no clear
+equal-time improvement to justify a +5 Elo SPRT. Dev was restored to
+Prev, and the shipped CodinGame sources were unchanged.
+
+During the extension follow-up, a ten-game fixed-depth profile counted
+23,689 shallow exact-entry pseudo-singular extensions. Of these, 22,778
+followed a PV internal-iterative-deepening probe. Refreshing the local
+TT score in the temporary profile showed that all those probe scores
+were exact values inside the search window, so their scores do not
+separate useful extensions from wasted ones.
