@@ -4268,3 +4268,68 @@ GLIBC_2.34; `cg_input_native.py` 73,189 units, sha256
 `cg-native-check` OK (IDENTICAL at 5, 7, 9; 40/40 protocol games with the
 exact book check).
 
+---
+
+## 68. History-aware LMR (7 October 2026)
+
+### The change
+
+In the move loop, before make, `move_hist = history_table[stm][mb][sq] +
+cont_hist[stm][previous move][mb][sq]` (both in history's units, +/-10000).
+After the LMR table lookup and the PV adjustment, a move with `move_hist >=
+HLMR_STEP` (2000) is reduced one ply less, and one with `move_hist <=
+-HLMR_STEP` one ply more. Round ten's linear version (`r -= (h - 1500) /
+3000`, history only) lost on the HCE engine (section 33 list, -10.9 +/- 15.3);
+continuation history did not exist then.
+
+### The survey said there was little lever
+
+An instrumented copy logged every reduced late move at depth 14 over the 120
+self-check positions (3.5M moves); each reduced fail-low was re-searched at
+full depth to count misses (a full-depth search would have raised alpha).
+
+| Signal | Miss rate across its range |
+| --- | --- |
+| Move index | 2.77% (moves 1-2) to 0.12% (moves 21+) |
+| History bucket | 1.1% - 1.9% |
+| Continuation history bucket | 1.25% - 2.2% (extremes rare) |
+
+Within an index bucket, misses rise only about 1.35x from -1000 to +1000
+history, and both extremes miss less than the middle: ordering already
+absorbs history. A miss-rate survey cannot see what the change does, though.
+
+### Result
+
+90 ms, 3 threads on the cloud VM, against the ProbCut freeze, openings from
+20000. The 2,000-game screen ended inconclusive at +9.4 +/- 8.4 (LLR +1.90)
+and was continued as an SPRT from the same counts:
+
+```text
+90 ms: N 3482 W 701 D 2170 L 611
+Penta: 31 / 347 / 912 / 403 / 48
+Elo diff: +9.0 +/- 6.4
+LLR: +3.06 (H0=0, H1=+5) - PASS
+```
+
+Depth at 90 ms along the 214 replayed games of section 67 (7,174 positions):
+**-0.68 +/- 0.04 ply** (opening -0.37, 50-59 open squares -0.88, 40-49
+-1.01, 30-39 -1.57), with 4.4% fewer nodes per move and no measurable change
+in raw speed. Clearly good histories are far more common than clearly bad
+ones, so the net effect is less reduction: moves that earned it are searched
+closer to full depth, at the price of nominal depth. The gain is search
+quality, not depth; ProbCut (section 67) was the opposite.
+
+### Freeze
+
+Prev = Dev renamed; `codingame_nnue.cpp` ported. At depths 5-9 the
+self-check's fresh tables rarely reach +/-2000, so `port-check` and
+`cg-min-check` (both legs) are IDENTICAL with the same checksums as section
+67; at depth 13 Dev, the CodinGame port and the native launcher all give
+10,798,819 nodes, checksum 16947436971597913361 (the ProbCut freeze:
+10,745,348). 31/31 unit tests. `cg_input.cpp` 73,634 characters. Native
+submission rebuilt in the `ubuntu:22.04` container: binary 288,288 B, sha256
+`207e657136d082c9ac1845351bae5cd33a0db6845ef98f052f8612cd9bd32081`, needs
+GLIBC_2.34; `cg_input_native.py` 73,265 units, sha256
+`5592507946d7f63223198061a678291e00fecb134002154e382b0c4b4690b4a7`;
+`cg-native-check` OK (40/40 protocol games with the exact book check).
+

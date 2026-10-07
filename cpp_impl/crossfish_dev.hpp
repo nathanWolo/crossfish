@@ -10,7 +10,7 @@
 #include <mutex>
 #include <vector>
 
-// Experiment base, frozen 2026-10-07 (ProbCut): identical to crossfish_prev.hpp apart
+// Experiment base, frozen 2026-10-07 (history-aware LMR): identical to crossfish_prev.hpp apart
 // from this comment and the class name. Edit only this file while testing.
 // Frozen 2026-09-30 (section 62): continuation history in move ordering,
 // cont_hist[stm][previous move][move] with history's bonus / malus /
@@ -787,6 +787,14 @@ class CrossfishDev {
         static constexpr int PC_REDUCTION = CROSSFISH_PC_REDUCTION_VALUE;
 #else
         static constexpr int PC_REDUCTION = 4;
+#endif
+        // History-aware LMR: history + continuation history at or beyond
+        // +/- HLMR_STEP (history_table's units, +/-10000 range) reduces one
+        // ply less / more.
+#ifdef CROSSFISH_HLMR_STEP_VALUE
+        static constexpr int HLMR_STEP = CROSSFISH_HLMR_STEP_VALUE;
+#else
+        static constexpr int HLMR_STEP = 2000;
 #endif
 #ifdef CROSSFISH_OPP_LATENT_CAPTURE_BONUS_VALUE
         static constexpr int OPP_LATENT_CAPTURE_BONUS =
@@ -2145,6 +2153,13 @@ class CrossfishDev {
                 }
 #endif
 
+                // Combined history of this move (history + continuation), read
+                // before make while the previous move is still on top.
+                const int move_hist = history_table[stm][fast_move >> 4][fast_move & 15]
+                    + (board.n_moves > 0
+                       ? (int)cont_hist[stm][board.move_history.top().mini_board * 9
+                                             + board.move_history.top().square][fast_move >> 4][fast_move & 15]
+                       : 0);
                 make_move_fast(board, move);
                 if (opponent_global_targets
                     && has_immediate_global_win(board, opponent_global_targets)) {
@@ -2169,6 +2184,10 @@ class CrossfishDev {
                     if (do_lmr) {
                         reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
                         if (pv_node && reduction > 0) reduction--;
+                        // A clearly good or bad combined history moves the
+                        // reduction by one ply (improvement log section 68).
+                        if (move_hist >= HLMR_STEP && reduction > 0) reduction--;
+                        else if (move_hist <= -HLMR_STEP) reduction++;
                     }
                     if (reduction > depth - 1) reduction = std::max(0, depth - 1);
                     val = -search_child(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha);

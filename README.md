@@ -514,6 +514,22 @@ procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
+On 2026-10-07 **history-aware LMR** joined the search (improvement log
+section 68): a reduced late move whose history plus continuation history is
++2000 or more is reduced one ply less, and one at -2000 or less one ply more.
+Against the ProbCut freeze at 90 ms (openings from 20000):
+
+```text
+90 ms: N 3482 W 701 D 2170 L 611
+Penta: 31 / 347 / 912 / 403 / 48
+Elo diff: +9.0 +/- 6.4
+LLR: +3.06 (H0=0, H1=+5) - PASS
+```
+
+It completes 0.68 ply *less* at 90 ms: good histories are far more common than
+bad ones, so the net effect is less reduction of the moves that earned it.
+The gain is search quality, not depth.
+
 On 2026-10-07 **ProbCut** joined the search (improvement log section 67): at a
 null-window node of depth 5 or more, the first three ordered moves get a
 qsearch and then a (depth - 4) search against beta + 60 pawns, and a move that
@@ -689,6 +705,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-10-07 | History-aware LMR (history + continuation history beyond ±2000 moves the reduction one ply) | N=3482, 701-2170-611, +9.0 ± 6.4, LLR +3.06 PASS; -0.68 ply at 90 ms | §68 |
 | 2026-10-07 | ProbCut (depth >= 5, first 3 moves, depth - 4 against beta + 60 pawns) | N=1584, 328-1001-255, +16.0 ± 9.2, LLR +3.03 PASS; +0.42 ply at 90 ms; at CG compute N=2534, +16.3 ± 8.0, LLR +4.15 PASS | §67 |
 | 2026-10-04 | NNUE net r14_d5_final_s2_rs: r13w_20 fine-tuned for 600M rows on round thirteen's data and labels with a WDL filter and a power loss, rescaled to r13w_20's eval spread | booked paste builds vs r13w_20, 90 ms: GSPRT [0, 6] accepts H1 at N=4200 (LLR +3.32); fresh openings N=4000, 777-2551-672, +9.1 ± 5.9; Dell at CodinGame compute +12.9 ± 6.4 (N=4000); ladder: no measurable change (#4 33.19, #3 33.30) | §65 |
 | 2026-10-01 | NNUE net r13w_20: r12_M2 fine-tuned for 2.4G rows on round thirteen's 80M depth-13 self-play and relabelled data | paste files, 90 ms, N=1000, 321-404-275, +16.0 ± 10.9; 20 ms round robin +16.6 ± 5.3 (N=13000); Dell at CodinGame compute +20.2 ± 12.4 (N=1000); r13w_11 (1.2G rows) +11.8 ± 11.0 / +11.0 / +9.4 the same ways | §64 |

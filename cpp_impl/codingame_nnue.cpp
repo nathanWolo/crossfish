@@ -997,6 +997,9 @@ class CrossfishDev {
         static constexpr int PC_PAWNS = 60;
         static constexpr int PC_MOVES = 3;
         static constexpr int PC_REDUCTION = 4;
+        // History-aware LMR (crossfish_dev.hpp): history + continuation
+        // history at or beyond +/-2000 reduces one ply less / more.
+        static constexpr int HLMR_STEP = 2000;
         // Random-play MiniNet residuals reached ~4500; slack for search positions.
         static constexpr int MINI_MAX = 8000;
         CrossfishDev() {
@@ -1940,6 +1943,11 @@ class CrossfishDev {
                     extension = 1;
                 }
 
+                const int move_hist = history_table[stm][fast_move >> 4][fast_move & 15]
+                    + (board.n_moves > 0
+                       ? (int)cont_hist[stm][board.move_history.top().mini_board * 9
+                                             + board.move_history.top().square][fast_move >> 4][fast_move & 15]
+                       : 0);
                 make_move_fast(board, move);
                 if (opponent_global_targets
                     && has_immediate_global_win(board, opponent_global_targets)) {
@@ -1964,6 +1972,8 @@ class CrossfishDev {
                     if (do_lmr) {
                         reduction = lmr_table[cf_min(depth, LMR_MAX_DEPTH - 1)][cf_min(i, LMR_MAX_MOVES - 1)];
                         if (pv_node && reduction > 0) reduction--;
+                        if (move_hist >= HLMR_STEP && reduction > 0) reduction--;
+                        else if (move_hist <= -HLMR_STEP) reduction++;
                     }
                     if (reduction > depth - 1) reduction = cf_max(0, depth - 1);
                     val = -search_child(board, depth - 1 - reduction + extension, ply + 1, -alpha - 1, -alpha);
