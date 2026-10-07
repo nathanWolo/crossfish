@@ -4998,3 +4998,22 @@ CodinGame's Haswell is needed to decide this target-specific
 question. The launchers and run instructions are in
 `/local/home/nathwolo/crossfish_cache_bench_artifacts/`.
 Dev, Prev and the shipped submission remain unchanged.
+
+---
+
+## 96. Combine the exact-tree speed screens (7 October 2026)
+
+An isolated CG build combined the section 85 futility-input,
+deferred-generation and NNUE output trials with the section 89
+quiescence-entry check removal and the section 94 parent-threat
+guard. All changes preserve the search tree. The combined source
+matched the frozen native build's depth-5, 7 and 9 nodes,
+checksums, and book integrity.
+
+Sixteen paired depth-12 timings with LLVM 23.1.2
+`-march=haswell -mtune=haswell` searched identical trees and
+measured **+1.67%** speed ([+1.10%, +2.25%]) on this host's
+Xeon Platinum 8259CL. This is a host screen, not a
+CodinGame Haswell measurement or a +5 Elo result. The candidate
+remained isolated; Dev, Prev and the shipped CodinGame sources
+were unchanged.
