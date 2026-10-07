@@ -514,6 +514,28 @@ procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
 
+On 2026-10-07 **ProbCut** joined the search (improvement log section 67): at a
+null-window node of depth 5 or more, the first three ordered moves get a
+qsearch and then a (depth - 4) search against beta + 60 pawns, and a move that
+holds that raised bound cuts the node. A full-depth re-search finds 0.5% of
+those cuts wrong. Against the r14 freeze at 90 ms (openings from 31000):
+
+```text
+90 ms: N 1584 W 328 D 1001 L 255
+Penta: 13 / 138 / 421 / 203 / 17
+Elo diff: +16.0 +/- 9.2
+LLR: +3.03 (H0=0, H1=+5) - PASS
+Timeouts: Prev=7 Dev=2
+```
+
+Along 214 replayed games at 90 ms it completes +0.42 ply more on average,
++0.8 to +1.1 ply in the middlegame (40-59 open squares), at the same node
+rate. A 30-pawn margin passed too (+16.5 +/- 9.4) and tied 60 head to head
+(0.0 +/- 13.0, N=744); 60 cuts a third as often wrongly. Multi-ProbCut on top
+(an extra depth - 6 check, a fail-low cut) failed, -9.7 +/- 8.7. A second SPRT at
+CodinGame compute (desktop and ThinkPad, other openings) passed too: N 2534,
+563-1527-444, +16.3 +/- 8.0, LLR +4.15.
+
 On 2026-10-04 the net **r14_d5_final_s2_rs** replaced r13w_20 as the
 evaluation (improvement log section 65): r13w_20's own weights fine-tuned
 for 600M rows on round thirteen's data and labels with the two trainer
@@ -667,6 +689,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-10-07 | ProbCut (depth >= 5, first 3 moves, depth - 4 against beta + 60 pawns) | N=1584, 328-1001-255, +16.0 ± 9.2, LLR +3.03 PASS; +0.42 ply at 90 ms; at CG compute N=2534, +16.3 ± 8.0, LLR +4.15 PASS | §67 |
 | 2026-10-04 | NNUE net r14_d5_final_s2_rs: r13w_20 fine-tuned for 600M rows on round thirteen's data and labels with a WDL filter and a power loss, rescaled to r13w_20's eval spread | booked paste builds vs r13w_20, 90 ms: GSPRT [0, 6] accepts H1 at N=4200 (LLR +3.32); fresh openings N=4000, 777-2551-672, +9.1 ± 5.9; Dell at CodinGame compute +12.9 ± 6.4 (N=4000); ladder: no measurable change (#4 33.19, #3 33.30) | §65 |
 | 2026-10-01 | NNUE net r13w_20: r12_M2 fine-tuned for 2.4G rows on round thirteen's 80M depth-13 self-play and relabelled data | paste files, 90 ms, N=1000, 321-404-275, +16.0 ± 10.9; 20 ms round robin +16.6 ± 5.3 (N=13000); Dell at CodinGame compute +20.2 ± 12.4 (N=1000); r13w_11 (1.2G rows) +11.8 ± 11.0 / +11.0 / +9.4 the same ways | §64 |
 | 2026-09-30 | Futility margins tighten by open squares (no own global threat) | N=3062, 610-1930-522, +9.99 ± 6.79, LLR +3.13 PASS | §59 |

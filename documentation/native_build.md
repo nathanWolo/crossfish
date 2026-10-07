@@ -128,6 +128,18 @@ mkdir -p ~/llvm-23.1.2 && tar --zstd -xf LLVM-23.1.2-Linux-X64.tar.zst -C ~/llvm
 Never commit the toolchain or a binary. The binary exists in the repository
 only inside the launcher.
 
+**On a newer distribution, build in a container.** An `ubuntu:22.04` Docker
+container supplies glibc 2.35 and g++ 11.4.0, which is the shipped build's
+host exactly. Mount the repository and the unpacked LLVM tarball into it,
+`apt install g++-11 python3 xz-utils binutils make git libicu70 libxml2`
+(`ld.lld` from the release tarball needs ICU 70), then run `build.sh` with
+`CF_CLANG` pointing at the mounted clang++. The tarball decompresses only
+with zstd's long window (`tar -I "zstd -d --long=31" -xf ...`). The packer
+writes inside the repository, so leave `CF_NATIVE_OUT` at its default. The
+ProbCut build (improvement log section 67) came from such a container on a
+glibc 2.39 cloud VM: it needs only GLIBC_2.34, and two builds a day apart gave
+the same binary.
+
 ### Commands
 
 ```bash

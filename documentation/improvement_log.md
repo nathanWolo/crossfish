@@ -4137,3 +4137,134 @@ rebuilt the live binary bit for bit (sha256 `68381d0c...cba61e58`) and the live
 file byte for byte (`aaf96195...0848260`). `tools/cg_native/manifest.json`
 records both hashes and the hashes of the sources. `tools/test_cg_native.py`
 fails in CI if the bot changes without a native rebuild.
+
+---
+
+## 67. ProbCut (6-7 October 2026)
+
+### The change
+
+`search()`, after move ordering and before the move loop, at a null-window
+node with depth >= `PC_MIN_DEPTH` (5) and beta outside mate range:
+`pc_beta = beta + PC_PAWNS * eval_weights[PAWN_IDX]` with `PC_PAWNS = 60`.
+Unless the table already holds a result of depth >= depth - 3 below `pc_beta`,
+the first `PC_MOVES` (3) ordered moves are each tried (the deferred ordering
+is completed first): the usual global-win shortcuts, then a qsearch at
+`pc_beta`, and if it holds, a `depth - PC_REDUCTION` (4) null-window search at
+`pc_beta`. The first move that holds stores a lower bound at depth - 3 (keeping
+a deeper entry for the same position) and the node returns the shallow score
+less the margin. Stockfish's ProbCut has the same shape; it restricts the
+tried moves to captures with a good exchange, which UTTT has no analogue for,
+so the ordering's first three moves stand in.
+
+### Measurements (instrumented copy, not shipped)
+
+Fixed depth, 120 positions, against the r14 freeze (d11 4.575M nodes, d13
+11.004M):
+
+| Margin (pawns) | d11 nodes | d13 nodes | Wrong cuts (d12) |
+| ---: | ---: | ---: | ---: |
+| 150 | 4.583M | | fires 602 times |
+| 60 | 4.381M | 10.745M | 0.48% |
+| 30 | 4.006M | 9.604M | 1.33% |
+| 15 | 4.160M | | 2.17% |
+
+A cut is wrong when a full-depth null-window search at beta, with ProbCut off
+in its subtree, fails low. The rate is flat in depth. About a third of
+eligible nodes try at all; the table check skips the rest. Depth 4 /
+reduction 3 and depth 6 / reduction 4 were no better at 30 pawns.
+
+Search depth at 90 ms along 214 replayed self-play games (7,174 positions,
+persistent engines as in a game, both engines on the same position):
+
+| Open squares | Freeze | ProbCut | Gain |
+| --- | ---: | ---: | ---: |
+| 70-81 | 13.37 | 13.36 | -0.01 +/- 0.04 |
+| 60-69 | 15.24 | 15.59 | +0.35 +/- 0.06 |
+| 50-59 | 16.41 | 17.24 | +0.83 +/- 0.09 |
+| 40-49 | 17.88 | 19.01 | +1.13 +/- 0.12 |
+| 30-39 | 23.84 | 24.50 | +0.66 +/- 0.27 |
+| all | 17.60 | 18.02 | +0.42 +/- 0.04 |
+
+Below 30 open squares both engines solve and reach the depth cap. The node
+rate is unchanged (ratio 1.02).
+
+### Result
+
+90 ms, 3 threads on the 4-core cloud VM, openings from 31000, against the
+r14 freeze:
+
+```text
+90 ms: N 1584 W 328 D 1001 L 255
+Penta: 13 / 138 / 421 / 203 / 17
+Elo diff: +16.0 +/- 9.2
+LLR: +3.03 (H0=0, H1=+5) - PASS
+Timeouts: Prev=7 Dev=2
+```
+
+The 30-pawn margin also passed (openings from 31000, N 1788, 386-1101-301,
++16.5 +/- 9.4, LLR +3.02). Head to head, 30 against 60 (openings from 41000)
+stood at 0.0 +/- 13.0 after 744 games (134-476-134); 60 ships, with a third
+of the wrong cuts. Multi-ProbCut on top of the 60-pawn version (first a
+depth - 6 check against +90 pawns at depth >= 9, and a fail-low cut when the
+static eval is below alpha and a depth - 4 search stays below alpha - 120
+pawns; -9% nodes at d13, both cut kinds under 0.7% wrong) failed: N 1944,
+321-1248-375, -9.7 +/- 8.7, LLR -3.05. The flat 90 ms budget gives this VM
+about 1.05-1.2x CodinGame's nodes (section 60).
+
+### Confirmation at CodinGame compute
+
+A second SPRT, at CodinGame-equivalent compute, against main's
+`crossfish_prev.hpp` (the r14 freeze), pooled over the desktop and the ThinkPad
+with `tools/sprt_cluster.py` (6 October, openings from 10000 and 35000):
+
+```text
+CG compute: N 2534 W 563 D 1527 L 444
+Penta: 26 / 255 / 614 / 318 / 54
+Elo diff: +16.3 +/- 8.0
+LLR: +4.15 (H0=0, H1=+5) - PASS
+Timeouts: Prev=0 Dev=0
+```
+
+The budgets are the section 60 calibration (desktop 49 ms, ThinkPad 63 ms,
+7 threads each) scaled by 1.075 for the native build's cycle gain (section
+66): desktop 53 ms, ThinkPad 68 ms. By machine: desktop N 1414, +13.5 +/-
+10.7; ThinkPad N 1120, +19.9 +/- 12.0. Both runs stopped at their first
+crossing, so both estimates lean high, but they agree: two independent
+openings ranges, two hardware setups, about +16 each.
+
+One interaction worth knowing: the ProbCut entry is a lower bound at depth - 3,
+which is exactly the pseudo-singular threshold (`entry.depth >= depth - 3`,
+lower or exact). When a node ProbCut cut is revisited at the same depth and the
+cut does not repeat, the ProbCut move gets the singular extension. Both SPRTs
+include this behaviour.
+
+### Ladder
+
+Two submissions of the native file (sha256 `3f3267f6…`) on 6 October:
+agent 6783120 placed **#6, 32.27** and agent 6783154 **#5, 33.30**. Against
+the mean of six reference bots whose agents did not change, that is +0.05 and
++0.98, where the two r14 native agents (6781812, 6781837) placed +0.08 and
+-0.10. The field moved between the two days (Apostolique and sZoom up, zasmu
+down), so the ladder is a sanity check, not a measurement. Pooled over the 550
+placement games: 0 timeouts on our side (the r14 native agents had 3 in 518),
+no crashes, bare or illegal moves; first player against the fixed top 7,
+125-0-1 (0.996 +/- 0.004, r14 native 0.948 +/- 0.017); second player against
+them 0.063 +/- 0.019 (0.040 +/- 0.016); against the 26 opponent agents both
+builds met, +0.014 +/- 0.035 per game over both seats.
+
+### Freeze
+
+Prev = Dev renamed. `codingame_nnue.cpp` carries the same block; it stores raw
+table scores, which equal Dev's `tt_score_to_store` without
+`CROSSFISH_NORMALIZE_TT_MATES`. `port-check` and `cg-min-check` (both legs)
+IDENTICAL at depths 5, 7 and 9; 31/31 unit tests. The book is unchanged (same
+net). `cg_input.cpp` is 73,510 characters. The native submission was rebuilt
+in an `ubuntu:22.04` container (glibc 2.35, g++ 11.4.0 headers, LLVM 23.1.2;
+`documentation/native_build.md`): binary 288,224 B, sha256
+`d3850f74a4e821bf3312f08607df39684aa4f6dd52b96cb866c5c37e441cbd82`, needs
+GLIBC_2.34; `cg_input_native.py` 73,189 units, sha256
+`3f3267f6e56f49d833f7eeb378fd91c53b7abeefbe421f9530eb86da26cba860`;
+`cg-native-check` OK (IDENTICAL at 5, 7, 9; 40/40 protocol games with the
+exact book check).
+
