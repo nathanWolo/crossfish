@@ -4846,3 +4846,27 @@ followed a PV internal-iterative-deepening probe. Refreshing the local
 TT score in the temporary profile showed that all those probe scores
 were exact values inside the search window, so their scores do not
 separate useful extensions from wasted ones.
+
+---
+
+## 90. Guarded late move pruning (7 October 2026)
+
+An instrumented copy of Dev profiled 20 persistent depth-10 games (991
+searches). At non-PV depths 1–3, quiet moves with a negative ordering
+score from slot 4 onward consumed 960,408 descendant nodes across
+533,619 searched moves; 1,412 of those moves caused a beta cutoff.
+The profile is a fixed-depth description, not proof that skipping those
+moves improves play.
+
+A Dev trial skipped those moves after at least one non-mate result, while
+retaining captures and mate-range nodes. `make test` passed. In the
+20-game persistent fixed-depth walk, Dev searched 9.8% fewer nodes and
+took 6.9% less time. A ten-game 90 ms walk completed 0.161 more ply per
+search over 492 paired searches.
+
+The official 90 ms H0=0/H1=+5 match from opening offset 32000 was stopped
+as marginal at N=1204: 223-743-238 W-D-L, penta
+19/135/306/126/16, −4.33 ±11.33 Elo, LLR −1.02. There was one
+Prev timeout and no Dev timeouts. It reached neither SPRT boundary.
+The fixed-depth savings did not establish a +5 Elo gain. Dev was
+restored to Prev; the CodinGame sources were unchanged.
