@@ -4793,3 +4793,27 @@ It reached neither SPRT boundary, so this is an early stop rather than
 a formal failure. Greater completed depth did not establish a strength
 gain at the official time control. Dev was restored to Prev; the
 CodinGame sources were unchanged.
+
+---
+
+## 88. Preserve lower-bound singular extensions (7 October 2026)
+
+An instrumented copy of the accepted search counted actual pseudo-singular
+extensions on searched moves over 20 persistent, fixed-depth-10 games
+(991 searches). Of 82,339 extensions at the `entry.depth == depth - 3`
+boundary, 35,667 used a lower-bound TT entry and 46,672 used an exact
+entry. Exact entries at depth 4 accounted for 45,331. ProbCut stores a
+lower bound at this boundary, so a follow-up Dev trial kept lower-bound
+extensions and required `entry.depth >= depth - 2` only for exact entries.
+
+`make test` passed. The trial searched 12.6% fewer nodes and took 13.3%
+less time in a ten-game persistent depth-10 walk. At equal time it
+completed 0.185 more ply per search over 492 paired 20 ms searches and
+0.357 more ply over 249 paired 90 ms searches.
+
+The official 90 ms H0=0/H1=+5 match from opening offset 30000 was
+stopped as marginal at N=1442: 252-943-247 W-D-L, penta
+17/141/393/160/10, +1.20 ±9.55 Elo, LLR −0.27, no timeouts.
+It reached neither SPRT boundary. The speed and depth gains did not
+establish the +5 Elo shipping requirement. Dev was restored to Prev;
+the CodinGame sources were unchanged.
