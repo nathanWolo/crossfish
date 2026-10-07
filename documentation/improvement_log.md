@@ -4724,3 +4724,30 @@ selfcheck. It measured **−2.34%** speed
 ([−3.07%, −1.59%], 16 pairs), consistent with the earlier PGO finding
 in `native_build.md`. Neither trial was shipped or run through an SPRT.
 Dev, Prev and the CodinGame submissions remain at the accepted freeze.
+
+---
+
+## 85. Search-frame and deferred-generation speed screens (7 October 2026)
+
+These isolated CG trials were compiled with LLVM 23.1.2
+`-march=haswell -mtune=haswell`, without AVX-512. All matched the frozen
+CG source's depth-5, 7 and 9 nodes, checksums and book integrity, and
+each timing pair searched an identical depth-12 tree. Timings are on
+this host's Xeon Platinum 8259CL, not CodinGame's Haswell; intervals
+are 95%.
+
+| Change | Paired runs | Host speed |
+| --- | ---: | ---: |
+| Put ordinary-search and qsearch move lists in per-ply engine buffers instead of recursive stack frames | 16 | −1.91% [−3.17%, −0.62%] |
+| For a legal TT move on a forced miniboard, count legal moves immediately but generate the move list only when ProbCut or a later sibling needs it | 16 | +0.88% [+0.32%, +1.44%] |
+| Duplicate `search` as a depth-one specialization so the compiler sees a constant depth | 16 | −1.57% [−2.18%, −0.95%] |
+
+A combined native trial of the section 80 futility-input rewrite,
+deferred move generation, and the section 84 NNUE output arithmetic
+measured only **+0.85%** speed ([+0.41%, +1.29%], 32 pairs) against the
+frozen CG source. The gains did not add. The combined trial deliberately
+omitted `-mno-vzeroupper`, whose host gain does not establish that
+removing AVX/SSE transition handling helps Haswell. No SPRT was run for
+these trials, and the +5 Elo shipping gate remains unmet. All candidates
+remained temporary copies; Dev, Prev and the shipped CodinGame sources
+remain at the accepted freeze.
