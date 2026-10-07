@@ -4912,3 +4912,28 @@ With the pinned LLVM 23.1.2 `-march=haswell -mtune=haswell` native flags,
 CodinGame's Haswell CPU, and neither showed a host gain. No SPRT was
 run. Dev, Prev and the shipped CodinGame sources stayed at the
 accepted freeze.
+
+---
+
+## 93. ProbCut cost by static evaluation (7 October 2026)
+
+An instrumented copy of the frozen Dev searched five scripted games at
+90 ms (249 searches, 115.2 million nodes). ProbCut ran at 2.65 million
+nodes, made 5.59 million move probes, and cut 1.21 million times. Its
+probe subtrees used 25.6 million descendant nodes, so the mechanism
+has meaningful cost as well as meaningful savings. These counts come
+from a slowed instrumented build and do not measure production wall time.
+
+The already-computed static evaluation separates early and middle-game
+ProbCut yield. When static eval was at least 400 score units
+(40 pawn units) below beta,
+the opening group made 50,333 runs and 52 cuts (155,450 probe nodes);
+the middle group made 200,185 runs and 7,137 cuts (763,866 probe nodes).
+Skipping both groups could avoid at most about 0.8% of this workload's
+nodes before counting the full searches required by lost cuts. In the
+late group the same condition still cut 94,272 times across 370,050
+runs, so it is a poor exclusion rule there.
+
+The low-eval guard did not offer enough potential to justify another
+tree-changing trial, especially after the section 78 probe-count
+screens. Dev, Prev and the CodinGame sources remain unchanged.
