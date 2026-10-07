@@ -4670,3 +4670,32 @@ intervals; none measures CodinGame's Haswell directly.
 None showed a speed gain in the native-style screen. No SPRTs were
 run, and Dev, Prev and the shipped CodinGame sources stayed at the
 accepted freeze.
+
+---
+
+## 83. More native Haswell-codegen speed screens (7 October 2026)
+
+All trials in this section used the pinned LLVM 23.1.2 native build with
+`-march=haswell -mtune=haswell`. They ran on this host's Xeon Platinum
+8259CL, **not** on CodinGame's Haswell CPU. Each candidate matched the
+frozen CG source's depth-5, 7 and 9 nodes, checksums and book integrity.
+The timings are 32 paired depth-12 fixed-tree runs on the host; speed
+intervals are 95%.
+
+| Isolated change | Speed against its stated baseline |
+| --- | ---: |
+| Skip save, update and restore of the futility live-empty count inside qsearch; compared with the section 80 futility candidate | +0.11% [−0.33%, +0.55%] |
+| Select the first move key and sort the rest only after its search fails high; preserve eager sorting for ProbCut | −1.54% [−1.98%, −1.10%] |
+| Pack valid NNUE pattern rows, with one zero row for invalid patterns required by the book check | −1.88% [−2.50%, −1.26%] |
+| Add `-mno-vzeroupper` to the frozen source's native build | +0.97% [+0.45%, +1.50%] |
+| Combine the section 80 futility candidate with `-mno-vzeroupper` | +1.04% [+0.70%, +1.38%] |
+
+The flag trial reduced the binary's `vzeroupper` instructions from 75
+to one. Its benefit on the host does not establish a benefit on Haswell:
+the cost of transitions between AVX and legacy SSE code is
+processor-dependent. The combined trial's measured gain was smaller
+than the sum of the isolated gains. It does not change the section 80
+match result: the futility candidate did not pass the +5 Elo gate after
+6,020 games. No new SPRTs were run. All candidates remained temporary
+copies; Dev, Prev, the native build flags and the shipped CodinGame
+sources stayed at the accepted freeze.
