@@ -4447,3 +4447,20 @@ bonus, leaving the rest of the history rule unchanged. Both passed
 | 3 | +1.1% | −0.025 |
 
 The accepted two-times malus was retained. Dev was restored to the freeze.
+
+---
+
+## 75. Score a single deferred sibling (7 October 2026)
+
+At a node with two legal moves and a TT move first, the remaining move
+is scored on demand. The frozen `get_fast_move_scores` returns a zero
+score for a one-move list, although the search later uses the key's sign
+to decide whether to reduce that second move. Dev tried calculating the
+real score in this deferred one-sibling case. It passed `make test`,
+reduced d10 nodes by 2.2% over 120 positions, and improved the 20 ms
+walk depth by 0.033 ply over 400 searches.
+
+The paired 20 ms screen from offset 45000 was stopped as marginal at
+N=812, 168-460-184, −6.85 ± 15.19 Elo, LLR −0.78, with no timeouts.
+The altered LMR decision was not a strength gain. Dev was restored to
+the section 67 freeze.
