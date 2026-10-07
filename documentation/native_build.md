@@ -191,8 +191,8 @@ same file.
 2. **Identity.** `python3 cg_input_native.py selfcheck 120 d` must equal the
    readable C++ build's `bin/cg_selfcheck 120 d` at d = 5, 7 and 9: node
    counts, search checksum, `book=ok` and the book table checksum. The current
-   values are 568,480 / 14701287764179133873, 897,652 / 253444004976430199
-   and 1,900,326 / 5993005870751148654, with book=ok, 34,066 entries and table
+   values are 568,480 / 14701287764179133873, 884,055 / 7700840096549893098
+   and 1,891,725 / 2284235251857539044, with book=ok, 34,066 entries and table
    checksum 17441813851168678777. These are the numbers `port-check`,
    `cg-min-check` and the CG-flags build give.
 3. **Protocol.** It plays 40 CodinGame-protocol games through the launcher

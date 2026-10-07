@@ -4601,6 +4601,13 @@ speed timings do **not** measure CodinGame's Haswell CPU. A GCC 11
 timing attempt while the match used seven workers was too noisy to
 interpret and was discarded.
 
+After the match released the host, 32 paired depth-12 CG selfcheck
+timings with the pinned LLVM 23.1.2 `-march=haswell` native flags
+measured +0.73% speed ([+0.33%, +1.14%]). Baseline and the unshipped
+candidate matched nodes, checksums and book integrity at depths 5,
+7 and 9. This is a host measurement of Haswell-targeted code, not a
+runtime measurement on CodinGame's Haswell.
+
 The 90 ms H0=0/H1=+5 Dev-vs-Prev match on fresh book positions
 at offset 12000 was stopped as marginal at N=6020:
 1174-3698-1148 W-D-L, penta 59/672/1523/696/60, +1.50 ±4.86 Elo,
@@ -4620,3 +4627,46 @@ A one-move accumulator-sync shortcut slowed it 0.45%
 with more accumulation chains or a shuffle-based second layer were
 slower in a kernel bench. An AVX-512 kernel sped up the host's forward
 pass but was discarded because CodinGame's Haswell lacks AVX-512.
+
+---
+
+## 81. Replace the per-move tactical-flag lookup (7 October 2026)
+
+`make_move_fast` read `fast_tiar_flags`, a 256 KiB table, after each
+move to update the two live tactical-threat maps. On a live miniboard,
+its two flags equal `fast_win_moves[player]` intersected with the empty
+squares. Exhaustive enumeration of all 11,125 disjoint nonterminal
+miniboard states found no differences. An isolated Dev trial replaced
+the large-table lookup with two small-table lookups.
+
+`make test` passed. Dev and Prev had identical scores and nodes over
+200 fresh depth-9 positions and 249 persistent depth-10 searches.
+The paired host Dev benchmark measured +0.51% speed
+([+0.24%, +0.79%], 32 runs). In contrast, standalone CG baseline and
+trial selfchecks compiled with the pinned LLVM 23.1.2 Haswell target
+flags matched nodes, checksums and book integrity at depths 5, 7
+and 9, but 32 paired depth-12 timings on this host measured
+**−0.24%** speed (interval [−0.62%, +0.15%]). This is not evidence
+of a speed gain in the native submission, and neither timing measures
+CodinGame's Haswell hardware. No SPRT was run. Dev was restored to Prev;
+the CodinGame sources were unchanged.
+
+---
+
+## 82. Three more exact speed probes in the native build (7 October 2026)
+
+Three isolated CG source trials were compiled with the pinned LLVM
+23.1.2 `-march=haswell` flags. Each matched the frozen CG source's
+depth-5, 7 and 9 nodes, checksums and book integrity. The timings
+below are 32 paired depth-12 fixed-tree runs on this host, with 95%
+intervals; none measures CodinGame's Haswell directly.
+
+| Change | Native-style speed on this host |
+| --- | ---: |
+| Store the two nine-bit tactical maps in `uint16_t` fields, shrinking CG's `MoveUndo` from 24 to 16 bytes | −0.51% [−1.03%, +0.01%] |
+| Store the two ternary miniboard indices already computed during make in NNUE `Dirty`, avoiding their lookup during accumulator replay | −2.21% [−2.71%, −1.71%] |
+| Score two- and three-move lists directly instead of setting up the AVX2 group scorer | −0.07% [−0.50%, +0.37%] |
+
+None showed a speed gain in the native-style screen. No SPRTs were
+run, and Dev, Prev and the shipped CodinGame sources stayed at the
+accepted freeze.
