@@ -4699,3 +4699,28 @@ match result: the futility candidate did not pass the +5 Elo gate after
 6,020 games. No new SPRTs were run. All candidates remained temporary
 copies; Dev, Prev, the native build flags and the shipped CodinGame
 sources stayed at the accepted freeze.
+
+---
+
+## 84. NNUE output arithmetic and profile-guided compilation (7 October 2026)
+
+Two more isolated CG trials used the pinned LLVM 23.1.2 native build
+with `-march=haswell -mtune=haswell`. Each matched the frozen CG source's
+depth-5, 7 and 9 nodes, checksums and book integrity. The measurements
+are paired depth-12 fixed-tree searches on the Xeon Platinum 8259CL host,
+**not** runtime measurements on CodinGame's Haswell.
+
+The NNUE output layer's 32 quantized weights fit in signed 16 bits
+(range −4318 to 5325). Subtracting 16384 from each post-shift activation
+puts it in signed 16-bit range too; adding the matching constant to the
+output bias preserves the integer result. An isolated trial used two
+AVX2 `vpmaddwd` operations in place of four vectors of 32-bit products.
+It measured **+0.70%** speed ([+0.17%, +1.23%], 16 pairs). This is a
+small host gain and has not passed a strength gate.
+
+A separate Clang instrumented PGO build trained on 200 different-seed
+positions at depth 11, then measured on the frozen 120-position depth-12
+selfcheck. It measured **−2.34%** speed
+([−3.07%, −1.59%], 16 pairs), consistent with the earlier PGO finding
+in `native_build.md`. Neither trial was shipped or run through an SPRT.
+Dev, Prev and the CodinGame submissions remain at the accepted freeze.
