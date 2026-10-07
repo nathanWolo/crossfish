@@ -4937,3 +4937,30 @@ runs, so it is a poor exclusion rule there.
 The low-eval guard did not offer enough potential to justify another
 tree-changing trial, especially after the section 78 probe-count
 screens. Dev, Prev and the CodinGame sources remain unchanged.
+
+---
+
+## 94. Hoist the opponent-threat impossibility check (7 October 2026)
+
+At each search node, the opponent's locally winning miniboard
+threats can only disappear after our move, since their stones do
+not change. A Dev trial intersected the opponent's global winning
+targets with the existing live tactical-threat map at the parent.
+When that intersection was empty, it skipped the post-move
+immediate-global-loss check for every candidate move, including
+ProbCut probes.
+
+`make test` passed. Dev and Prev had identical scores and nodes over
+200 fresh depth-9 positions and identical nodes over 991 persistent
+depth-10 searches. The latter took 1.5% less time on this host.
+An isolated CG source trial compiled with LLVM 23.1.2
+`-march=haswell -mtune=haswell` matched depths 5, 7 and 9 and
+book integrity. Sixteen paired native depth-12 runs searched
+identical trees and measured **+0.67%** speed
+([+0.21%, +1.14%]) on this host's Xeon Platinum 8259CL, not on
+CodinGame's Haswell.
+
+A five-game 90 ms paired walk gained only 0.012 completed ply
+over 249 searches. The timed-depth gain was too small for a
++5 Elo SPRT. Dev was restored; the shipped CodinGame sources
+were unchanged.
