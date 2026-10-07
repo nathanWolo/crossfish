@@ -4353,3 +4353,14 @@ held-out positions and placed it in the top three on 72.1%, versus 23.2% and
 All screens were stopped as marginal, with no timeout forfeits. Their
 positive offline rankings were insufficient evidence for an Elo gain. Dev
 was restored to the freeze; Prev and the CodinGame bot were untouched.
+
+A separate cutoff-label probe of 13,088 early, forced, non-PV TT-miss nodes
+found that the frozen ordering's first move already caused 81.0% of beta
+cutoffs. A linear model using only the position and candidate move reached
+about 51% on held-out roots; it lacks the engine's live history and
+continuation signals, so it was not promoted to a strength trial.
+
+An eight-lane bitonic network for sorting lists of at most eight moves passed
+`make test` and reproduced the exact search tree at depth 10 on 120
+positions. Across 1,200 fixed-depth positions it gained only 0.4% node
+rate, too small to justify an Elo screen. Dev was restored to the freeze.
