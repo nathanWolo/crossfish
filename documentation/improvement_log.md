@@ -5017,3 +5017,23 @@ Xeon Platinum 8259CL. This is a host screen, not a
 CodinGame Haswell measurement or a +5 Elo result. The candidate
 remained isolated; Dev, Prev and the shipped CodinGame sources
 were unchanged.
+
+---
+
+## 97. Recheck the 30-pawn ProbCut margin at 90 ms (7 October 2026)
+
+Dev alone lowered the accepted ProbCut margin from 60 to 30 pawns. `make
+test` passed. A fixed-depth-20, 50-position `sat` screen searched 6.4%
+fewer nodes and took 6.9% less time. A ten-game persistent 90 ms walk
+completed 0.500 more ply per search over 492 paired positions, though
+it searched 0.9% more nodes at equal time. The official match's
+start-position NPS probe was also higher for Dev (6.26M versus 5.73M).
+
+The independent 90 ms H0=0/H1=+5 match from opening offset 34000 was
+stopped as clearly marginal at N=1218: 224-754-240 W-D-L, penta
+10/148/314/122/15, **−4.56 ±10.75 Elo**, LLR −1.16, no timeouts. This
+was an early stop, not a formal SPRT failure. The extra completed depth
+did not turn into a strength gain. The earlier section 67 run of the same
+margin was likewise inconclusive, so the 60-pawn freeze remains the
+baseline. Dev was restored; Prev and the CodinGame submission were
+unchanged.
