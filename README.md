@@ -110,6 +110,12 @@ enforced 100 ms deadline. A change is not shipped until it passes that gate
 without timeout forfeits. 20 ms is an optional cheap screen, not a ship. The
 submission cap is **100,000 characters**.
 
+The performance target is CodinGame's **Haswell CPU: AVX2 and BMI2, no
+AVX-512** ([measured runtime](documentation/native_build.md)). Compile native
+speed candidates with the pinned `-march=haswell -mtune=haswell` flags. Timing
+Haswell-targeted code on a different CPU is a useful screen, but does not
+verify a speed gain on CodinGame's CPU. Host-only AVX-512 gains do not count.
+
 ### The three copies of the engine, and the files around them
 
 | File | Role | Who may edit it |
