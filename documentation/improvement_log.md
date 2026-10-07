@@ -4381,3 +4381,20 @@ divisor was changed alone from 20 to 30 or 15. Both variants passed
 
 The screens were stopped as marginal, with no timeout forfeits. Dev was
 restored to the freeze.
+
+---
+
+## 71. Bounded killer-square history (7 October 2026)
+
+The baseline sets a killer bit at each search ply on every cutoff and
+does not evict it until the next move's search. After 90 ms searches on
+80 sampled random positions, all nine squares were marked at plies
+15–23 in every sample. A trial kept only the two most recent distinct
+cutoff squares at each ply. It passed `make test`, changed d10 nodes by
++1.2% and the 20 ms walk depth by −0.008 ply.
+
+The paired 20 ms screen from offset 43000 reached N=812, 161-456-195,
+−14.56 ± 15.11 Elo, LLR −1.43, with no timeouts. It was stopped as
+clearly unpromising. The saturated set apparently carries useful square
+patterns before it fills, or replacing it loses value elsewhere. Dev
+was restored to the section 67 freeze.
