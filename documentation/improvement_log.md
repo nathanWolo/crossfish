@@ -5145,3 +5145,24 @@ The private launcher, run instructions, source copies and build
 scripts are in
 `/local/home/nathwolo/crossfish_speed_bench_artifacts/`. Dev, Prev,
 and the shipped submission were unchanged.
+
+---
+
+## 103. Remove the second child-TT prefetch (7 October 2026)
+
+An isolated CG trial removed the transposition-table prefetch immediately
+after `make_move_fast` in both ordinary move-loop search paths. The loop
+already prefetches the predicted child table line before make, so the
+second prefetch usually targets the same line. The trial kept the early
+hash-move and next-sibling prefetches.
+
+With pinned LLVM 23.1.2 Haswell code generation, baseline and trial
+matched scores and nodes at depths 5, 7 and 9 and matched the opening
+book. Eight paired depth-12 timings on this host estimated +0.87% speed
+with an interval crossing zero. A fresh 24-pair measurement estimated
+only **+0.52%** (interval [−0.03%, +1.08%]); all timing pairs searched
+identical trees. This is too small and uncertain a host signal to stack
+onto the section 96 bundle, and it says nothing conclusive about
+CodinGame's Haswell. The trial stayed isolated in
+`/tmp/crossfish_tt_prefetch_dupe`; Dev, Prev and the shipped submission
+were unchanged.
