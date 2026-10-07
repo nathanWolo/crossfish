@@ -4431,3 +4431,19 @@ both kinds of move received balanced history feedback. It passed
 `make test` and had nearly equal fixed-depth search size (−0.3% nodes),
 but lost 0.095 ply in a 20 ms persistent-engine walk over 400 searches.
 It did not earn a strength screen. Dev was restored to the freeze.
+
+---
+
+## 74. Quiet-history malus scale (7 October 2026)
+
+The frozen search gives each earlier quiet move a negative history update
+of twice the cutoff move's bonus. Dev tried one times or three times the
+bonus, leaving the rest of the history rule unchanged. Both passed
+`make test`; neither earned a strength screen.
+
+| Malus multiple | d10 nodes vs Prev | 20 ms walk depth |
+| ---: | ---: | ---: |
+| 1 | +14.3% | −0.013 |
+| 3 | +1.1% | −0.025 |
+
+The accepted two-times malus was retained. Dev was restored to the freeze.
