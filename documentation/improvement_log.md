@@ -4364,3 +4364,20 @@ An eight-lane bitonic network for sorting lists of at most eight moves passed
 `make test` and reproduced the exact search tree at depth 10 on 120
 positions. Across 1,200 fixed-depth positions it gained only 0.4% node
 rate, too small to justify an Elo screen. Dev was restored to the freeze.
+
+---
+
+## 70. Butterfly history weight (7 October 2026)
+
+With continuation history held at about 1/20, the butterfly history
+divisor was changed alone from 20 to 30 or 15. Both variants passed
+`make test` and were compared with the section 67 freeze using the paired
+20 ms opening screen. Neither earned the 90 ms gate.
+
+| Divisor | Offset | Games | Elo ± 95% interval | d10 nodes vs Prev | 20 ms walk depth |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 30 | 40000 | 798 | −17.43 ± 15.27 | +6.2% | +0.035 |
+| 15 | 42000 | 784 | −5.76 ± 15.57 | +12.1% | +0.003 |
+
+The screens were stopped as marginal, with no timeout forfeits. Dev was
+restored to the freeze.
