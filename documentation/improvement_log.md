@@ -4480,3 +4480,21 @@ walk and was not screened for strength. One-quarter carryover gained
 was inconclusive at N=1600, 357-874-369, −2.61 ± 10.72 Elo,
 LLR −0.85, with no timeouts. The original halving rule was retained.
 Dev was restored to the freeze.
+
+---
+
+## 77. Exact child-TT scores for root sibling ordering (7 October 2026)
+
+After a 90 ms search on 100 random roots, 695 of 833 legal children
+had matching TT entries. A small offline comparison on 200 roots
+found 33 whose 90 ms choice differed from their 20 ms choice; among
+those, exact child-TT scores improved top-three ranking of the later
+choice from 19 to 24. Dev tried adding a capped, scaled exact child
+score to non-hash root siblings when the child entry was at least
+`depth - 3` deep. Only root ordering changed.
+
+The trial passed `make test` and kept the fixed-depth tree identical,
+but lost 0.018 ply in the 20 ms persistent-engine walk. The paired
+20 ms screen from offset 47000 was stopped as unpromising at N=812,
+153-478-181, −11.99 ± 14.46 Elo, LLR −1.36, with no timeouts.
+Dev was restored to the section 67 freeze.
