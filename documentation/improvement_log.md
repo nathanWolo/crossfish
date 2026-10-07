@@ -4316,3 +4316,40 @@ raised nodes 5.0%. None of these changes was frozen or ported.
 
 The two 90 ms follow-ups are why a positive 20 ms screen was not treated as
 a gain. The accepted engine remains the section 67 freeze.
+
+---
+
+## 69. Learned move-ordering probes (7 October 2026)
+
+The section 67 engine remained the freeze. These trials used an integer
+linear policy as an additive move-ordering score on forced boards through
+ply 20. Each candidate passed `make test`; none earned a 90 ms SPRT.
+
+The first training target was the NNUE evaluation of every legal child at
+34,066 gameplay-book positions. The corrected student matched the NNUE's
+top move on about 42% of 10,000 independent random forced positions, versus
+25% for the static score. A 313-feature ridge model used the played square,
+local and destination marks, tactical flags, and phase. Features were
+quantized into int8 weights, with lookup tables for mark masks. A C++/Python
+check on 1,000 positions found every relative feature score within two
+integer points after rounding. The initial version had a Python
+two-in-a-row feature that disagreed with the engine on capturing moves; it
+was corrected and retrained before the follow-up.
+
+The second target was the baseline search's chosen move after 250 ms on
+5,000 random legal non-book positions, with 985 held out by their first four
+moves. A cheap quantized policy matched the search's first move on 38.0% of
+held-out positions and placed it in the top three on 72.1%, versus 23.2% and
+52.4% for the static score. That offline gain did not transfer to self-play.
+
+| Policy | 20 ms offset | Games | Elo ± 95% interval | d10 nodes vs Prev | 20 ms walk depth |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| NNUE, initial mismatched feature | 34000 | 868 | −1.20 ± 14.02 | +8.6% | not measured |
+| NNUE, corrected and pruned | 35000 | 770 | +0.45 ± 14.83 | +4.1% | −0.01 |
+| Search labels, all forced nodes | 37000 | 756 | −2.30 ± 15.89 | +10.4% | −0.078 |
+| Search labels, PV nodes only | 38000 | 784 | −7.53 ± 14.92 | +8.7% | +0.045 |
+| Search labels, TT misses only | 39000 | 868 | −8.81 ± 15.13 | +2.1% | −0.003 |
+
+All screens were stopped as marginal, with no timeout forfeits. Their
+positive offline rankings were insufficient evidence for an Elo gain. Dev
+was restored to the freeze; Prev and the CodinGame bot were untouched.
