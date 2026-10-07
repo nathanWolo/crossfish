@@ -4419,3 +4419,15 @@ as marginal at N=1708, 307-1073-328, penta 14/194/457/177/12,
 
 The sequential test did not pass; the apparent search efficiency gain
 did not become Elo. Dev was restored to the section 67 freeze.
+
+---
+
+## 73. Capture maluses in unified history (7 October 2026)
+
+The frozen search rewards a capture that causes a beta cutoff in its
+butterfly and continuation history tables, but skips earlier captures
+when applying the failed-move malus. A Dev trial removed that skip, so
+both kinds of move received balanced history feedback. It passed
+`make test` and had nearly equal fixed-depth search size (−0.3% nodes),
+but lost 0.095 ply in a 20 ms persistent-engine walk over 400 searches.
+It did not earn a strength screen. Dev was restored to the freeze.
