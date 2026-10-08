@@ -19,8 +19,8 @@ SRC_DIR := $(abspath .)
 ROOT := $(abspath ..)
 PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,python3)
 BIN := $(SRC_DIR)/bin
-# Opening book (documentation/play_book.md). The text book is a build artifact;
-# only the packed play_book_data.hpp is committed.
+# Opening book (documentation/play_book.md). Both the text book play_book.txt
+# and its packed payload play_book_data.hpp (payload format 2) are committed.
 PLAY_BOOK_TXT ?= $(SRC_DIR)/play_book.txt
 PLAY_BOOK_FIRST ?= 5
 PLAY_BOOK_SECOND ?= 4
@@ -43,7 +43,7 @@ all: test
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) play_book.hpp play_book_data.hpp | $(BIN)
+$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) play_book.hpp play_book_data.hpp play_book_text.hpp play_book_pack.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ unit_tests.cpp
 
 $(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
@@ -97,7 +97,7 @@ datagen: $(BIN)/datagen
 $(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_gen.cpp
 
-$(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
+$(BIN)/play_book_pack: play_book_pack.cpp play_book_pack.hpp play_book.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_pack.cpp
 
 $(BIN)/play_book_check: play_book_check.cpp play_book.hpp play_book_data.hpp play_book_text.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
@@ -160,18 +160,23 @@ book-inspect: $(BIN)/test_bots
 
 test: test-cpp test-python compile-cg compile-legend book-inspect
 
-# Opening book (documentation/play_book.md). The shipped book's text comes from
-# the uttt.ai fork (cg/book/uttt_book_gen.py); copy it to $(PLAY_BOOK_TXT).
-# play-book-gen instead writes a full-coverage book with crossfish's own search
-# (the previous method, ~1.7 h on 7 threads). play-book packs the text book
-# into play_book_data.hpp and checks the result against it.
+# Opening book (documentation/play_book.md). The shipped text book is two
+# halves: the first player's from the uttt.ai fork (cg/book/uttt_book_gen.py),
+# the second player's from the deep-search P2 book builder, with up to 3 moves
+# per position (several "S" lines of a position). play-book-gen instead writes
+# a full-coverage book with crossfish's own search (an older method, ~1.7 h on
+# 7 threads). play-book packs the text book into play_book_data.hpp (payload
+# format 2) and checks the result against it (every stored move, and the
+# runtime's uniform choice between a position's moves).
 play-book-gen: $(BIN)/play_book_gen
 	$(BIN)/play_book_gen $(PLAY_BOOK_TXT) $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND) $(PLAY_BOOK_SEARCH_MS)
 
 $(BIN)/play_book_text_dump: play_book_text_dump.cpp play_book.hpp play_book_data.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_text_dump.cpp
 
-# The shipped payload back as a text book, for re-packing after a coder change.
+# The shipped payload back as a text book (one line per stored move, a
+# position's primary first), for re-packing after a coder change; packing it
+# again gives the same payload.
 play-book-text: $(BIN)/play_book_text_dump
 	$(BIN)/play_book_text_dump > $(PLAY_BOOK_TXT).tmp && mv $(PLAY_BOOK_TXT).tmp $(PLAY_BOOK_TXT) || { rm -f $(PLAY_BOOK_TXT).tmp; exit 1; }
 

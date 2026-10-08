@@ -2,6 +2,9 @@
 // protocol: the first player opens center-center and every other move gets
 // 90 ms. In book, the book side still runs its normal search (warming its
 // tables, exactly as the CodinGame bot does) and then plays the book move.
+// At a position with several book moves it picks one uniformly at random, as
+// pb_lookup does, but from a generator seeded per game: pb_lookup's
+// per-process generator would be shared, unsynchronized, by all the threads.
 //
 //   play_book_match <games> <mode> [threads=7] [seed=1]
 //     mode 0: book side vs the plain engine (a direct head-to-head).
@@ -75,10 +78,26 @@ static Move diverse_pick(GlobalBoard &b, std::mt19937 &rng, CrossfishDev &eng) {
     return (rng() % 2) ? ok[rng() % ok.size()] : m;
 }
 
+// pb_lookup with the choice between a position's book moves drawn from `rng`.
+static bool book_move(GlobalBoard &b, std::mt19937 &rng, Move &out) {
+    if (!PB_READY) return false;
+    int t;
+    auto it = PB_TABLE.find(pb_canonical(b, t));
+    if (it == PB_TABLE.end()) return false;
+    uint32_t e = it->second, count = e >> 24;
+    int packed = pb_map_move(t, (int)(e >> (8 * (count > 1 ? rng() % count : 0)) & 255), true);
+    Move legal[81];
+    int n = b.fillLegalMoves(legal);
+    for (int i = 0; i < n; i++)
+        if (legal[i].mini_board * 9 + legal[i].square == packed) { out = legal[i]; return true; }
+    return false;
+}
+
 // +1 book side wins, 0 draw, -1 loss.
 template <class Opp>
 static int play(bool book_first, bool use_book, int mode, uint32_t seed, Tally &t) {
     std::mt19937 rng(seed);
+    std::mt19937 book_rng(seed ^ 0x9E3779B9u);  // its own stream: the opponent's draws stay paired
     auto me = std::make_unique<CrossfishDev>();
     auto opp = std::make_unique<Opp>();
     GlobalBoard b;
@@ -91,7 +110,7 @@ static int play(bool book_first, bool use_book, int mode, uint32_t seed, Tally &
         } else if (mine) {
             m = me->getMove(b, std::chrono::milliseconds(MOVE_MS));
             Move bm;
-            if (exit_ply < 0 && use_book && pb_lookup(b, bm)) { m = bm; in_book++; }
+            if (exit_ply < 0 && use_book && book_move(b, book_rng, bm)) { m = bm; in_book++; }
             else if (exit_ply < 0) exit_ply = b.n_moves;
         } else if (mode == 1 && opp_early < 3) {
             opp_early++;

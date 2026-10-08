@@ -1,15 +1,35 @@
 #pragma once
-// Shared by the pilot book generator and match harness: symmetry-canonical
-// position keys and a plain-text book file.
+// Shared by the book tools (packer, checker, generator, text dump):
+// symmetry-canonical position keys and a plain-text book file.
+//
+// Several "S <seq> <move>" lines with the same seq list that position's book
+// moves in file order, the first being the primary (payload format 2,
+// play_book.hpp). A move that is the same as an earlier one of the position,
+// or leads to the same canonical position (a symmetric twin at a symmetric
+// position), is ignored. A line that reaches an already listed position by
+// another seq (a transposition, or a symmetric image of the position) is
+// merged into it as in format 1: the first line's moves stand, and a
+// different move on such a line is counted in `transposed` (the packer warns)
+// and never becomes an alternative. The loader keeps every distinct move of a
+// position's seq; the packer refuses a position with more than PB_MAX_MOVES
+// (3) moves, any illegal move and any line past the 25-ply cap. A book with
+// one line per position is a single-move book, as before.
 #include <array>
 #include <cstdio>
 #include <fstream>
+#include <istream>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "global_board.hpp"
+
+// The 25-ply cap: no stored move deeper than half-move index 24, the number of
+// moves in its line's seq. Our moves are at even indices moving first and at
+// odd ones moving second, so that is index 24 moving first and 23 moving second.
+static constexpr int PB_TEXT_MAX_INDEX = 24;
 
 // The 8 symmetries of the 9x9 cell grid. Applying one to the grid moves
 // miniboards and squares coherently, so it maps legal UTTT states to legal ones.
@@ -80,21 +100,45 @@ inline std::string canonical_key(GlobalBoard &b, int &t) {
 }
 
 struct BookEntry {
-    Move move;         // in the canonical orientation
+    Move move;         // the primary move, in the canonical orientation
     int score = 0;     // deep-search score for the side to move
     int ply = 0;
     double prob = 0;   // estimated probability of reaching this position
+    std::vector<Move> moves;              // all book moves, primary first, canonical orientation
+    std::vector<std::string> child_keys;  // canonical key after each of `moves` ("S" lines only)
+    std::vector<std::string> lines;       // the "S" line of each of `moves`, for messages
+    std::vector<int> seq;                 // the cells of the position's first "S" line
+    bool has_seq = false;                 // false for the key form
 };
 
 struct Book {
     std::unordered_map<std::string, BookEntry> entries;
+    int illegal = 0;     // "S" lines whose move is not legal in their position (skipped)
+    std::string first_illegal;
+    int too_deep = 0;    // "S" lines past the 25-ply cap: seq longer than PB_TEXT_MAX_INDEX (kept)
+    std::string first_too_deep;
+    int transposed = 0;  // lines for a listed position by another seq, with another move (ignored)
+    std::string first_transposed;
 
+    // The primary move, in the real orientation of b.
     bool lookup(GlobalBoard &b, Move &out) const {
         int t;
         std::string k = canonical_key(b, t);
         auto it = entries.find(k);
         if (it == entries.end()) return false;
         out = sym_move(sym_inverse(t), it->second.move);
+        return true;
+    }
+    // All book moves of b's position, primary first, in the real orientation of b.
+    bool lookup_all(GlobalBoard &b, std::vector<Move> &out) const {
+        int t;
+        std::string k = canonical_key(b, t);
+        auto it = entries.find(k);
+        out.clear();
+        if (it == entries.end()) return false;
+        const std::vector<Move> &ms = it->second.moves;
+        if (ms.empty()) out.push_back(sym_move(sym_inverse(t), it->second.move));
+        for (const Move &m : ms) out.push_back(sym_move(sym_inverse(t), m));
         return true;
     }
     bool save(const std::string &path) const {
@@ -112,12 +156,19 @@ struct Book {
     // the position reached from the empty board by seq (comma-separated cell
     // indices mb * 9 + sq, or "-" for none) and our move there as a cell index,
     // in real orientation; it is replayed and keyed here, so an external
-    // generator never has to reproduce the canonical key.
+    // generator never has to reproduce the canonical key. Several "S" lines of
+    // one position with the same seq list its book moves in file order (see the
+    // top of the file). An "S" line with an illegal move is counted in `illegal`
+    // and skipped; one past the 25-ply cap is counted in `too_deep` and kept.
     bool load(const std::string &path) {
         std::ifstream f(path);
         if (!f) return false;
+        return read(f);
+    }
+    bool read(std::istream &f) {
         std::string line;
         while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             std::istringstream in(line);
             std::string k;
             if (!(in >> k)) continue;
@@ -126,24 +177,70 @@ struct Book {
                 int move;
                 if (!(in >> seq >> move)) continue;
                 GlobalBoard b;
+                std::vector<int> cells;
                 if (seq != "-") {
                     std::istringstream ms(seq);
                     std::string cell;
                     while (std::getline(ms, cell, ',')) {
                         int c = std::stoi(cell);
+                        cells.push_back(c);
                         b.makeMove(Move{c / 9, c % 9});
                     }
                 }
-                int t;
+                Move real{move / 9, move % 9}, legal[81];
+                bool ok = false;
+                int n_legal = b.fillLegalMoves(legal);
+                for (int i = 0; i < n_legal; i++)
+                    ok |= legal[i].mini_board == real.mini_board && legal[i].square == real.square;
+                if (!ok) {
+                    if (!illegal++) first_illegal = line;
+                    continue;
+                }
+                if (b.n_moves > PB_TEXT_MAX_INDEX && !too_deep++) first_too_deep = line;
+                int t, tc;
                 std::string key = canonical_key(b, t);
-                BookEntry e;
-                e.move = sym_move(t, Move{move / 9, move % 9});
-                e.ply = b.n_moves;
-                entries.emplace(key, e);  // a symmetric duplicate keeps the first
+                b.makeMove(real);
+                std::string child = canonical_key(b, tc);
+                b.unmakeMove();
+                Move cm = sym_move(t, real);
+                auto it = entries.find(key);
+                if (it == entries.end()) {
+                    BookEntry e;
+                    e.move = cm;
+                    e.ply = b.n_moves;
+                    e.moves.push_back(cm);
+                    e.child_keys.push_back(child);
+                    e.lines.push_back(line);
+                    e.seq = cells;
+                    e.has_seq = true;
+                    entries.emplace(key, e);
+                    continue;
+                }
+                // Another line for a known position. A repeat of one of its moves (the same
+                // canonical move, or a move to the same canonical position) is ignored; any
+                // other move is a further book move when the line has the position's seq.
+                // By another seq the first line's moves stand (format 1's merge).
+                BookEntry &e = it->second;
+                bool dup = false;
+                for (const Move &m : e.moves) dup |= m.mini_board == cm.mini_board && m.square == cm.square;
+                for (const std::string &ck : e.child_keys) dup |= ck == child;
+                if (dup) continue;
+                if (!e.has_seq || cells != e.seq) {
+                    if (!transposed++)
+                        first_transposed = "\"" + line + "\" (the position's first line: \"" +
+                                           (e.lines.empty() ? key : e.lines[0]) + "\")";
+                    continue;
+                }
+                e.moves.push_back(cm);
+                e.child_keys.push_back(child);
+                e.lines.push_back(line);
                 continue;
             }
             BookEntry e;
-            if (in >> e.move.mini_board >> e.move.square >> e.score >> e.ply >> e.prob) entries[k] = e;
+            if (in >> e.move.mini_board >> e.move.square >> e.score >> e.ply >> e.prob) {
+                e.moves.push_back(e.move);
+                entries[k] = e;
+            }
         }
         return true;
     }
