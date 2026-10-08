@@ -1,11 +1,11 @@
 {
   "submission": "cpp_impl/cg_input_native.py",
-  "submission_sha256": "3f3267f6e56f49d833f7eeb378fd91c53b7abeefbe421f9530eb86da26cba860",
-  "submission_utf16_units": 73189,
-  "binary_sha256": "d3850f74a4e821bf3312f08607df39684aa4f6dd52b96cb866c5c37e441cbd82",
-  "binary_bytes": 288224,
-  "xz_bytes": 135244,
-  "xz_sha256": "4f1fc01d317a64d8254711954dc57e012f78bba2412ad0c0de169eba8740f7dd",
+  "submission_sha256": "775c3208388ba42a9d479a57294fd82ac87b7bfda62aefb10c52d472ef65637e",
+  "submission_utf16_units": 68860,
+  "binary_sha256": "bb86689d867edca931ef2c5e47823393ae2b6fd016f0928b48eb35591c28a2be",
+  "binary_bytes": 278720,
+  "xz_bytes": 127128,
+  "xz_sha256": "37d06d8eb613197ef81e8476018d90c82b24d50b8efd24981dec394a4c12e311",
   "toolchain": "clang version 23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb)",
   "libstdcxx": "g++ 11.4.0 headers (/usr/lib/gcc/x86_64-linux-gnu/11)",
   "compile_flags": "-std=gnu++17 -O3 -march=haswell -mtune=haswell -ffp-contract=off -pthread -fno-pie -fno-plt -fno-semantic-interposition -ffunction-sections -fdata-sections -flto=thin -Wno-unknown-pragmas -Wno-ignored-attributes -Wno-ignored-pragmas -Wno-gcc-compat",
@@ -18,9 +18,9 @@
     "cpp_impl/macro_eval.hpp": "6a9a3f573ce63d1cbe4b0994c11009d370cd6b7f05e5c5fa22fcd478567e196b",
     "cpp_impl/nnue_b64.hpp": "358bf512c1b0bf180c3acae472f35369caf598e12f1198b0ff096d5ec2f67abd",
     "cpp_impl/nnue_b64_net.hpp": "aa2819fec4ed16d4668211c583e9cdbbb26b33c442a52ce1fc88c9bbd0f12130",
-    "cpp_impl/play_book.hpp": "91ceab2c86d82b7dd5a91612745240ca8d087e144278825ca92e0549d0c753c6",
-    "cpp_impl/play_book_data.hpp": "a805387e911fc521088de6a10bfb4149ae45335540fa26dab3bc913ed66d50a8",
-    "cpp_impl/cg_selfcheck.cpp": "3e24d13a7f564f9a77dbeb42957115755bfaae8164783343c1fd09f46fee15ad",
+    "cpp_impl/play_book.hpp": "50fa1c3a7b9654019c7a6b6c82fea72da7c3f0c9eaf15a11cc2889bc88c803d6",
+    "cpp_impl/play_book_data.hpp": "c90aa1b6e686f07c01f846f7d10522cbaa3c253248252b8ee96abeb157e1f2f9",
+    "cpp_impl/cg_selfcheck.cpp": "113bf4bda1e69012f0cdef0faa08b4e9201bbd303fa41d2050ece8554bad4a21",
     "tools/cg_native/native_main.cpp": "1f42a6063c2503c41771320d448d9120263c74e5fe03df43fefadc64e4a7e990"
   }
 }

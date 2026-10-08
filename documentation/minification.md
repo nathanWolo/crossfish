@@ -597,16 +597,16 @@ translation unit, not with the readable top-level source.
 Sizes are UTF-16 code units, which is what CodinGame counts. Everything
 outside the three payload literals is ASCII, and every payload character is
 one UTF-16 unit, so the unit count equals Python's `len`. It does not equal
-`wc -c`: each payload character is three UTF-8 bytes, and the file is 145,208
+`wc -c`: each payload character is three UTF-8 bytes, and the file is 134,389
 bytes. The CLI exits with failure when output is 100,000 units or larger.
 
 | Part of `cg_input.cpp` | UTF-16 units |
 | --- | ---: |
-| code (minified engine, NNUE runtime, book decoder) | 36,767 |
+| code (minified engine, NNUE runtime, book decoder) | 37,597 |
 | NNUE generator payload | 28,728 |
-| gameplay opening book payload | 5,778 |
+| gameplay opening book payload | 1,895 |
 | macro net payload | 1,641 |
-| **total** | **72,914** (27,086 left) |
+| **total** | **69,861** (30,139 left) |
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
@@ -627,7 +627,12 @@ U15 alphabet (section 4) to 72,317 and dropping `evaluate_macro_fast` from
 the shipped macro header to 72,105; with improvement log sections 61 and 62
 and the book's net fingerprint it is **73,088, with 26,912 left**; round
 thirteen's net r13w_20 (section 64) makes it **72,803, with 27,197 left**, and
-round fourteen's r14_d5_final_s2_rs (section 65) **72,914, with 27,086 left**. A smaller
+round fourteen's r14_d5_final_s2_rs (section 65) **72,914, with 27,086 left**.
+ProbCut (improvement log section 67) added 596 characters of code, for 73,510.
+The deep-search second-player book (section 68) replaced uttt.ai's
+second-player half: its payload is 1,895 characters instead of 5,778, and the
+multi-move runtime (payload format 2) costs 234 characters of code, for
+**69,861, with 30,139 left**. A smaller
 NNUE payload configuration would still free about 1,350 (section 3.1).
 
 ## 11. Reproducible generation procedure

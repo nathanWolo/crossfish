@@ -17,7 +17,7 @@ language set to C++ (see **Switching back**).
 
 | File | |
 | --- | --- |
-| `cpp_impl/cg_input_native.py` | Generated: the submission (72,056 UTF-16 units, 27,944 under the cap). Committed, like `cg_input.cpp`. Never hand-edit it. |
+| `cpp_impl/cg_input_native.py` | Generated: the submission (68,860 UTF-16 units, 31,140 under the cap, since 2026-10-08). Committed, like `cg_input.cpp`. Never hand-edit it. |
 | `tools/cg_native/manifest.json` | Generated: the build record. Holds the binary's and the file's sha256, the toolchain, the flags, the symbol versions, and the hashes of the sources it was built from. |
 | `tools/cg_native/build.sh` | Builds the binary, checks it against CodinGame's runtime, then packs it (`make cg-native`). |
 | `tools/cg_native/pack.py` | xz + U15 packer and the launcher template. |
@@ -175,6 +175,15 @@ live on CodinGame both times:
 | xz stream (133,120 B) | `03aa1697980f67e3ba4b5fda86becaacd37e1abd54e83029a6d0e836f32e911f` |
 | `cg_input_native.py` (72,056 units, 214,052 UTF-8 bytes) | `aaf96195513a17ad9f2b5607e04368167dfd629d274c2c96637e1389c0848260` |
 
+The deep-search book change (2026-10-08, improvement log section 68) was
+built the same way on the ThinkPad from an LF export of the commit and
+reproduced the live file byte for byte: binary 278,720 B
+(`bb86689d867edca931ef2c5e47823393ae2b6fd016f0928b48eb35591c28a2be`),
+`cg_input_native.py` 68,860 units
+(`775c3208388ba42a9d479a57294fd82ac87b7bfda62aefb10c52d472ef65637e`). Its
+sources differ from the live build's only in comments, so the manifest's
+source hashes differ while the binary does not.
+
 A different clang, different libstdc++ headers or a different packer give
 another binary. That is acceptable if `make cg-native-check` passes, but the
 change should be deliberate. The fingerprint is the real gate, not the hash.
@@ -191,15 +200,28 @@ same file.
 2. **Identity.** `python3 cg_input_native.py selfcheck 120 d` must equal the
    readable C++ build's `bin/cg_selfcheck 120 d` at d = 5, 7 and 9: node
    counts, search checksum, `book=ok` and the book table checksum. The current
-   values are 568,480 / 14701287764179133873, 897,652 / 253444004976430199
-   and 1,900,326 / 5993005870751148654, with book=ok, 34,066 entries and table
-   checksum 17441813851168678777. These are the numbers `port-check`,
-   `cg-min-check` and the CG-flags build give.
+   values (main since 2026-10-08: r14 + ProbCut, the deep-search
+   second-player book) are 568,480 / 14701287764179133873, 884,055 /
+   7700840096549893098 and 1,891,725 / 2284235251857539044, with book=ok,
+   10,474 entries and table checksum 10147742875230593747. These are the
+   numbers `port-check`, `cg-min-check` and the CG-flags build give. The table
+   checksum covers the position hashes and the primary moves; the book's other
+   stored moves (payload format 2, [play_book.md](play_book.md)) are checked
+   by `play_book_check` and the unit tests, and by step 3. Outside this
+   check, `selfcheck 30 13` and `selfcheck 20 16` (2,791,649 /
+   15576534853043927231 and 5,250,040 / 18090966638842159638) also depend on
+   the Zobrist keys, so comparing them with the live file also catches a
+   build against other keys (libc++).
 3. **Protocol.** It plays 40 CodinGame-protocol games through the launcher
-   (`tools/play_book_protocol_check.py`). The book check is exact: the bot must
-   play from the book precisely where the text book says. The result at this
-   PR (two runs on a shared laptop): 40/40 both times, later moves 90.1-90.2 ms
-   median and 90.3-90.4 ms max, first turn at most 480 and 412 ms.
+   (`tools/play_book_protocol_check.py`) against the text book that
+   `bin/play_book_text_dump` decodes from the payload. The book check is
+   exact: the bot must play from the book precisely where the text book says,
+   and at a position with several book moves its move must be one of them.
+   The result at the native PR (two runs on a shared laptop): 40/40 both
+   times, later moves 90.1-90.2 ms median and 90.3-90.4 ms max, first turn at
+   most 480 and 412 ms. With the deep-search book (2026-10-08, 60 games, idle
+   ThinkPad): 60/60, later moves median 90.2 ms and at most 90.4 ms, first
+   turn at most 264.5 ms.
 
 **CI** (`make test` runs `tools/test_cg_native.py`, with no clang):
 

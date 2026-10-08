@@ -4268,3 +4268,161 @@ GLIBC_2.34; `cg_input_native.py` 73,189 units, sha256
 `cg-native-check` OK (IDENTICAL at 5, 7, 9; 40/40 protocol games with the
 exact book check).
 
+---
+
+## 68. The deep-search second-player book (1-8 October 2026)
+
+### The change
+
+The second player's half of the opening book is now crossfish's own
+deep-search book: snapshot **s5** of the P2 book builder (run1, 2026-10-01 to
+10-03, desktop and both laptops; `datasets/nnue2/cg/ladder/book/p2book/`,
+outside the repository). It replaces the 25,238 second-player positions of
+uttt.ai's book with 1,646 positions. The first player's half (uttt.ai's 8,828
+positions) and the engine (main adda324: net r14_d5_final_s2_rs + ProbCut)
+are unchanged. [play_book.md](play_book.md) has the method; in short:
+
+- every stored move is the best move of a depth-32 search, with every legal
+  move's child also searched to depth 28, disagreements beyond 300 decided by
+  a second depth-32 search with the bot's table size, and high-reach positions
+  re-searched to depth 34-38. No move is chosen from ladder results: the
+  ladder (the lines earlier snapshots lost, searched deeper or extended) and
+  a population model of first players only decided where the compute went;
+- the covered replies are those the engine's own scores give a probability of
+  0.03 or more (at most 6 per position), plus the positions added on those
+  lost ladder lines;
+- the 25-ply cap: no stored move deeper than half-move index 23;
+- at our first three decisions, moves within 150 of the stored move are stored
+  as well (at most 3 per position) and the bot picks one uniformly at random,
+  so a flawed line is not lost every game against a deterministic opponent.
+  Five positions have them: the root (3 3 / 3 4), 44 33 00 (1 2 / 0 1 / 2 2),
+  44 34 04 (2 3 / 1 3), 44 34 04 13 40 (5 1 / 4 2 / 3 1) and 44 34 04 23 80
+  (7 0 / 7 2).
+
+s5's moves were searched with r13w_20, one net before the shipped one. run2 of
+the builder is re-searching the book with the shipped engine.
+
+Storing several moves needed a new payload format (**format 2**): after a
+position's primary move, up to two adaptive "another move" bits, each followed
+by the next move's rank coded like the primary's; the walk then follows every
+stored move. The runtime table holds a `uint32_t` per position (three move
+bytes and a count), and `pb_lookup` picks among a position's moves with a
+per-process splitmix64 seeded from the clock (CodinGame starts a process per
+game). The runtime reads format 2 only. The packer, `play_book_check` (every
+stored move, plus 3,000 draws per multi-move position within 20% of uniform),
+`play_book_text_dump`, `play_book_match` (a per-game generator, since its
+threads would share `pb_lookup`'s), the unit tests (`test_play_book` pins both
+table checksums; `test_play_book_moves` walks the whole decoded table) and
+`tools/play_book_protocol_check.py` (a BOOK move must be one of the position's
+listed moves; the choices are summarized) were ported from the builder's
+`engine_mb` copies, where the format was written and tested on 2026-10-02.
+
+### Why
+
+As second player against the seven top bots, the old book scored 0.064 with
+r13w_20 (n 78) and **0.063 +/- 0.019** with the current engine (agents 6783120
+and 6783154, n 126), while r13w_20 without any book scored 0.172 +/- 0.023 (n
+198) and earlier snapshots of this book 0.09-0.17. The ladder score tracks
+that cell (fit 31.6 + 10.3 x the score).
+
+### The ladder test
+
+The plan (`book/p2book/plan_work/RESUME_PLAN.md`, Track A) put two candidate
+launchers of the live engine on the ladder, two submissions each, pooled, and
+compared their second player's games against the seven top-bot agents that
+had not changed since the control (MrSubZero 6769549, Daporan 6663486,
+Angecide 6774212, TomAlard 6778713, zasmu 6760040, karliso 3694300, morph
+6759956; all unchanged on 2026-10-08). The arms differ from the control only
+in the book payload:
+
+| Arm | Second player's book | Submissions | Agents | Placements |
+| --- | --- | --- | --- | --- |
+| control (2026-10-06) | uttt.ai's | (section 67) | 6783120, 6783154 | #6 32.27, #5 33.30 |
+| B | none: the old first-player half plus the root line (answer 4 4 with 5 5); format 1 | 41470032, 41470257 | 6785179, 6785224 | #4 32.22, #4 32.73 |
+| **A** | **s5**: the old first-player half plus s5; format 2 | 41470417, 41470575 | 6785305, 6785340 | #4 32.32, #3 32.69 |
+
+Pooled, against the seven fixed top bots (W-L-D, score +/- 1 s.e.):
+
+| | Second player | First player |
+| --- | ---: | ---: |
+| control | 4-114-8, **0.063 +/- 0.019** (n 126) | 125-0-1, 0.996 +/- 0.004 |
+| B, no book | 13-55-10, **0.231 +/- 0.043** (n 78) | 71-2-5, 0.942 +/- 0.022 |
+| A, s5 | 9-53-13, **0.207 +/- 0.040** (n 75) | 72-0-3, 0.980 +/- 0.011 |
+| A - control | **+0.143 +/- 0.044** | -0.016 +/- 0.012 |
+| B - control | +0.167 +/- 0.047 | -0.054 +/- 0.023 |
+| A - B | -0.024 +/- 0.059 | +0.038 +/- 0.025 |
+
+The pre-registered expectation was about 0.17 (0.13-0.21) for either arm.
+Against the same opponent agents (the fixed top seven's agents met by both
+A and the control), A scored 0.207 against 0.094 (n 85), +0.113 +/- 0.049.
+The first player's book is the same in all three builds, so the first
+player's differences are ladder noise; B's -0.054 is the largest.
+
+**The pre-registered rule** (RESUME_PLAN.md A8): an arm pooled at the control
+plus 2 standard errors or more (about 0.13) confirms that the old book's
+second-player half costs points under the current engine; if A and B are
+level, keep A (deep-search moves); if either arm is within 1 standard error
+of the control, stop and analyze the lines before shipping anything to main.
+**Verdict:** both arms clear the bar (0.207 and 0.231 against about 0.13;
+A - control is 3.2 standard errors, B - control 3.6), and A and B are level,
+so A stays. It has been the live submission since its second submission on
+2026-10-08 (41470575). Two placements per arm cannot separate A from B (a
+0.05 difference would need four or more each).
+
+The placements are not comparable with the control's: between 10-06 and
+10-08 new agents of AllanB, Apostolique, Babebibobu, RoboStac and sZoom
+entered the top ten, and the six reference bots' mean fell from 32.2-32.3 to
+about 30.0. Against that mean, A placed +2.34 and +2.69, B +2.07 and +2.64,
+the control +0.05 and +0.98.
+
+**Timeouts** (games ended by a timeout): A, ours 1 in 558 (first player
+against AllanB, after our move 21, eval 0, out of book), opponents' 6; B,
+ours 4 in 520 (three as second player: twice against Apostolique, after our
+moves 16 and 8, once against Babebibobu after move 11; one as first player
+against MrSubZero after move 17), opponents' 14; the control, ours 0 in 550,
+opponents' 6. None was in book. The analyses are
+`datasets/nnue2/cg/ladder/prep/r15/ana_book{A,B}_vs_pc.out` and
+`ana_bookA_vs_B.out`; the test's README is `prep/r15/book_test/README.md`.
+
+### The build
+
+- **Text book** `cpp_impl/play_book.txt`: the old book's 8,828 first-player
+  lines, unchanged and in their order, followed by s5's `book_p2.txt` (1,653
+  lines: 1,646 positions and 7 further moves). It is
+  `book/p2book/plan_work/ladder/oldp1_plus_run1.txt` with its CRLF line ends
+  normalized (sha256 `2c0ab3ce…` in the repository, `54d478c5…` with CRLF).
+  25-ply cap: the deepest stored move is at half-move index 14 moving first
+  and 23 moving second.
+- **Payload** (`make -C cpp_impl play-book`): 10,474 positions, 2,336
+  opponent positions expanded, 3 positions with two moves and 2 with three;
+  60,834 bits as plain digits, 3,552 bytes, **1,895 characters** (the old
+  book: 5,778), fingerprint 9446452298351114632. It is byte for byte the
+  payload of the live build apart from the generator's comment line, and the
+  Linux g++ packer reproduces it. `play_book_check`: 0 mismatches over 10,474
+  positions, 0 bad draws; `table_checksum=10147742875230593747` (hashes and
+  primary moves; the value `cg_selfcheck` prints),
+  `moves_checksum=7272843604574170237`. `play_book_text_dump` writes the
+  payload back as a text book that packs to the identical payload.
+- **Paste** `cpp_impl/cg_input.cpp`: **69,861 characters** (30,139 left; was
+  73,510). The format-2 runtime costs about 234 characters of code. It is
+  byte-identical to the live build's paste fallback (sha256 `fe78e07a…`).
+  g++-11 with CodinGame's command line compiles it with no diagnostics.
+- **Native** `cpp_impl/cg_input_native.py`, rebuilt on the ThinkPad (LLVM
+  23.1.2, g++ 11.4.0 headers, Pop!_OS 22.04) from an LF export of this
+  change: **byte-identical to the live file** (68,860 characters, sha256
+  `775c3208388ba42a9d479a57294fd82ac87b7bfda62aefb10c52d472ef65637e`; binary
+  278,720 B, `bb86689d…`). Its selfcheck equals the live file's at 120x d5 /
+  d7 / d9, 30x d13 and 20x d16 (568,480 / 884,055 / 1,891,725 / 2,791,649 /
+  5,250,040 nodes), with `book=ok entries=10474
+  table_checksum=10147742875230593747`; the book decodes in 9.5 ms (the old
+  book 27.6 ms).
+- **Checks** (ThinkPad, the same export): `make test` passes (32 of 32 unit
+  tests, `test_play_book_moves` new; the Python suites, `test_cg_native`
+  included; the CodinGame-flags build); `port-check` and `cg-min-check` (both
+  legs) IDENTICAL at depths 5, 7 and 9; `make cg-native-check` OK with 60
+  protocol games through the launcher, 60 of 60 from the book exactly where
+  expected, first turn at most 264.5 ms, later moves median 90.2 ms and at
+  most 90.4 ms; a second 60-game run drew every stored move at all five
+  multi-move positions. The g++-11 paste played 20 of 20 the same way (first
+  turn at most 234.7 ms). The book decodes in about 12 ms with CodinGame's
+  flags (the old book: about 90 ms).

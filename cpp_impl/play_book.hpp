@@ -4,8 +4,9 @@
 // The book is a tree. Both roots assume the first player opens center-center:
 // when we move first the bot plays it and the book starts at the opponent's
 // reply; when we move second the book starts at our reply to it. At each of our
-// positions the book stores our move and whether the book goes on after it; at
-// each opponent position it stores which replies it covers. Positions need no
+// positions the book stores our move (up to three, see format 2 below) and
+// whether the book goes on after it; at each opponent position it stores which
+// replies it covers. Positions need no
 // keys: PbWalker visits the book in one fixed order and the payload is one
 // adaptive binary arithmetic-coded stream of its decisions: our move's rank
 // among the legal moves ordered by the NNUE's static evaluation, then a 0/1
@@ -17,8 +18,22 @@
 // See documentation/play_book.md.
 //
 // Positions equivalent under the 8 board symmetries share one entry. The
-// runtime table maps a symmetry-canonical 64-bit hash to the book move in that
+// runtime table maps a symmetry-canonical 64-bit hash to the book moves in that
 // canonical orientation.
+//
+// Payload format 2 (multi-move): one of our positions may store up to
+// PB_MAX_MOVES moves, the first being the primary. After the primary's rank the
+// stream has, for k = 1, 2, an adaptive "another move" bit (context k) and, when
+// it is 1, the next move's rank in the same order, coded like the primary's
+// (same rank models). Then the walk follows each stored move in order (its
+// "continues" bit, then the opponent's covered replies). pb_lookup picks one of
+// a position's moves uniformly at random (a per-process PRNG); with one move it
+// draws nothing. A single-move book costs one "another" bit per position (about
+// 4 bytes in all). The payload carries PLAY_BOOK_FORMAT = 2, and pb_init does
+// not compile with a payload without it: format 1, the single-move stream of
+// the books before 2026-10-08, has no "another" bits and would decode wrongly.
+// The runtime code is kept short on purpose: every character of it counts
+// against the CodinGame paste limit (cg_minify strips the comments).
 //
 // Requires d16_mini_cjk_decode (mini_eval_d16.hpp), the board type's
 // fillLegalMoves / makeMove / unmakeMove / checkWinner, and an evaluator
@@ -26,6 +41,7 @@
 // passes the NNUE's b64::evaluate_board); its values must be identical in the
 // packer and the bot.
 
+#include <chrono>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,13 +50,40 @@
 #include "play_book_data.hpp"
 #endif
 
+static constexpr int PB_MAX_MOVES = 3;
 static uint64_t PB_ZCELL[81][2];
 static uint64_t PB_ZACTIVE[10];
 static uint8_t PB_CELL_MAP[8][81];   // cell index under each symmetry
 static uint8_t PB_BOARD_MAP[8][10];  // miniboard index under each symmetry; 9 = free choice
 static bool PB_TABLES_READY = false;
-static std::unordered_map<uint64_t, uint8_t> PB_TABLE;  // canonical hash -> mb * 9 + sq
+// canonical hash -> the position's moves: bits 8i..8i+7 = move i (mb * 9 + sq,
+// canonical orientation; move 0 is the primary), bits 24..31 = the move count.
+// The low byte is the primary, as in format 1's uint8_t table, so copying an
+// entry into a uint8_t keeps the primary (cg_selfcheck's table_checksum).
+static std::unordered_map<uint64_t, uint32_t> PB_TABLE;
 static bool PB_READY = false;
+
+// splitmix64 step, shared by the Zobrist keys, the evaluator fingerprint and pb_random.
+static uint64_t pb_splitmix(uint64_t &x) {
+    uint64_t z = (x += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+// Per-process random numbers for the choice between a position's book moves:
+// splitmix64 seeded on first use from the clock and a stack address (CodinGame
+// starts a new process per game, so each game draws its own choices).
+static uint64_t PB_RNG = 0;
+static uint64_t pb_random() {
+    if (!PB_RNG) {
+        int local;
+        PB_RNG = (uint64_t)(std::chrono::high_resolution_clock::now() -
+                            std::chrono::high_resolution_clock::time_point()).count() ^
+                 (uint64_t)(uintptr_t)&local << 20;
+    }
+    return pb_splitmix(PB_RNG);
+}
 
 static void pb_sym(int t, int m, int r, int c, int &orow, int &ocol) {
     switch (t) {
@@ -62,17 +105,11 @@ static int pb_cell(int mb, int sq) {
 static void pb_init_tables() {
     if (PB_TABLES_READY) return;
     uint64_t x = 0x9E3779B97F4A7C15ull;
-    auto next = [&x]() {  // splitmix64
-        uint64_t z = (x += 0x9E3779B97F4A7C15ull);
-        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-        return z ^ (z >> 31);
-    };
     for (int c = 0; c < 81; c++) {
-        PB_ZCELL[c][0] = next();
-        PB_ZCELL[c][1] = next();
+        PB_ZCELL[c][0] = pb_splitmix(x);
+        PB_ZCELL[c][1] = pb_splitmix(x);
     }
-    for (int b = 0; b < 10; b++) PB_ZACTIVE[b] = next();
+    for (int b = 0; b < 10; b++) PB_ZACTIVE[b] = pb_splitmix(x);
     for (int t = 0; t < 8; t++) {
         for (int c = 0; c < 81; c++) {
             int orow, ocol;
@@ -188,6 +225,7 @@ struct PbModels {
     uint16_t cont[32];      // "the book continues", by ply
     uint16_t cover[32][8];  // "this reply is covered", by ply and the reply's rank
     uint16_t rank[16][8];   // "our move ranks below k", by legal-move count bucket and k
+    uint16_t another[PB_MAX_MOVES - 1] = {2048, 2048};  // "another book move", by moves stored so far - 1
     PbModels() {
         for (auto &p : cont) p = 2048;
         for (auto &r : cover) for (auto &p : r) p = 2048;
@@ -208,21 +246,15 @@ static inline void pb_adapt(uint16_t &p, int bit) {
 template <typename Eval>
 static uint64_t pb_eval_fingerprint(Eval &eval) {
     uint64_t x = 0x243F6A8885A308D3ull, h = 1469598103934665603ull;
-    auto next = [&x]() {  // splitmix64
-        uint64_t z = (x += 0x9E3779B97F4A7C15ull);
-        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-        return z ^ (z >> 31);
-    };
     for (int i = 0; i < 64; i++) {
         PbView v{};
         for (int mb = 0; mb < 9; mb++) {
-            uint64_t r = next();
+            uint64_t r = pb_splitmix(x);
             int a = (int)(r & 511), b = (int)(r >> 9 & 511) & ~a;  // disjoint markers
             v.mini_boards[mb].markers[0] = a;
             v.mini_boards[mb].markers[1] = b;
         }
-        uint64_t r = next();
+        uint64_t r = pb_splitmix(x);
         v.mini_board_states[0] = (int)(r & 511);
         v.mini_board_states[1] = (int)(r >> 9 & 511) & ~v.mini_board_states[0];
         v.mini_board_states[2] = (int)(r >> 18 & 511) & ~(v.mini_board_states[0] | v.mini_board_states[1]);
@@ -248,7 +280,10 @@ static int pb_code_rank(Code &&code, PbModels &m, int n, int rank) {
 // The hooks supply the decisions (the runtime reads them from the payload, the
 // packer from the text book) and the evaluator:
 //   eval(view, constraint)       static evaluation of a PbView for its side to move
-//   choose(b, legal, order, n)   rank of our book move in `order`
+//   choose(b, legal, order, n)   rank of our primary book move in `order`
+//   another(b, k)                with k moves stored: does the position have another book move?
+//   choose_alt(b, legal, order, n, k)
+//                                rank in `order` of the next (k-th, 0-based) book move
 //   more(b)                      after our move (opponent to move in b): does the book go on?
 //   covers(b, rank)              is this non-terminal opponent reply (of that rank) in the book?
 template <typename Board, typename MoveT, typename Hooks>
@@ -263,16 +298,23 @@ struct PbWalker {
         if (entries > limit) return;
         uint64_t h = pb_canonical(b, t);
         if (PB_TABLE.count(h)) return;
-        MoveT legal[81];
+        MoveT legal[81], ms[PB_MAX_MOVES];
         int order[81];
-        int n = b.fillLegalMoves(legal);
+        int n = b.fillLegalMoves(legal), k = 0;
         pb_order(b, legal, n, hooks.eval, order);
-        MoveT m = legal[order[hooks.choose(b, legal, order, n)]];
-        PB_TABLE[h] = (uint8_t)pb_map_move(t, m.mini_board * 9 + m.square, false);
+        uint32_t e = 0;
+        do {  // the primary, then up to PB_MAX_MOVES - 1 more while the payload says so
+            MoveT m = ms[k] = legal[order[k ? hooks.choose_alt(b, legal, order, n, k) : hooks.choose(b, legal, order, n)]];
+            e |= (uint32_t)pb_map_move(t, m.mini_board * 9 + m.square, false) << (8 * k);
+            k++;
+        } while (k < PB_MAX_MOVES && hooks.another(b, k));
+        PB_TABLE[h] = e | (uint32_t)k << 24;
         entries++;
-        b.makeMove(m);
-        if (b.checkWinner() == -1 && hooks.more(b)) opponent(b);
-        b.unmakeMove();
+        for (int i = 0; i < k; i++) {
+            b.makeMove(ms[i]);
+            if (b.checkWinner() == -1 && hooks.more(b)) opponent(b);
+            b.unmakeMove();
+        }
     }
 
     void opponent(Board &b) {
@@ -327,6 +369,7 @@ struct PbDecoder {
 // `eval` must be the evaluator the book was packed with.
 template <typename Board, typename MoveT, typename Eval>
 static bool pb_init(Eval eval) {
+    static_assert(PLAY_BOOK_FORMAT == 2);  // fails on a format-1 payload: repack with play_book_pack
     if (PB_READY) return true;
     if (pb_eval_fingerprint(eval) != PLAY_BOOK_EVAL_FINGERPRINT) return false;  // packed with another net
     static unsigned char buf[PLAY_BOOK_BYTES + 16];
@@ -339,6 +382,8 @@ static bool pb_init(Eval eval) {
         int choose(Board &b, MoveT *, const int *, int n_legal) {
             return pb_code_rank([&](uint16_t &p, int) { return dec.bit(p); }, m, n_legal, 0);
         }
+        bool another(Board &, int k) { return dec.bit(m.another[k - 1]); }
+        int choose_alt(Board &b, MoveT *l, const int *o, int n_legal, int) { return choose(b, l, o, n_legal); }
         bool more(Board &b) { return dec.bit(m.cont[PbModels::ply_ctx(b.n_moves)]) != 0; }
         bool covers(Board &b, int rank) {
             return dec.bit(m.cover[PbModels::ply_ctx(b.n_moves)][rank < 7 ? rank : 7]) != 0;
@@ -355,14 +400,17 @@ static bool pb_init(Eval eval) {
 #endif
 
 // Book move for the side to move, or false when out of book. The returned move
-// is always one of the position's legal moves.
+// is always one of the position's legal moves. A position with several book
+// moves returns one of them uniformly at random; with one move no random
+// number is drawn.
 template <typename Board, typename MoveT>
 static bool pb_lookup(Board &b, MoveT &out) {
     if (!PB_READY) return false;
     int t;
     auto it = PB_TABLE.find(pb_canonical(b, t));
     if (it == PB_TABLE.end()) return false;
-    int packed = pb_map_move(t, it->second, true);
+    uint32_t e = it->second, count = e >> 24;
+    int packed = pb_map_move(t, e >> (8 * (count > 1 ? pb_random() % count : 0)) & 255, true);
     MoveT legal[81];
     int n = b.fillLegalMoves(legal);
     for (int i = 0; i < n; i++) {

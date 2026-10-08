@@ -9,6 +9,7 @@
 #include <random>
 #include <stack>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "global_board.hpp"
@@ -924,6 +925,44 @@ static uint64_t play_book_child_hash(GlobalBoard b, Move m) {
     return pb_canonical(b, t);
 }
 
+// The stored book moves of b's position in b's own orientation, primary first
+// (empty when b is out of book).
+static std::vector<Move> play_book_moves(GlobalBoard &b) {
+    std::vector<Move> out;
+    int t;
+    auto it = PB_TABLE.find(pb_canonical(b, t));
+    if (it == PB_TABLE.end()) return out;
+    for (uint32_t k = 0; k < (it->second >> 24); k++) {
+        int packed = pb_map_move(t, (int)(it->second >> (8 * k) & 255), true);
+        out.push_back(Move{packed / 9, packed % 9});
+    }
+    return out;
+}
+
+// The canonical positions after each of b's stored book moves, sorted: the
+// same set in every orientation of a position.
+static std::vector<uint64_t> play_book_children(GlobalBoard &b) {
+    std::vector<uint64_t> out;
+    for (const Move &m : play_book_moves(b)) out.push_back(play_book_child_hash(b, m));
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// FNV-1a over the decoded table in key order: the hash, then the entry's low
+// byte only (the primary move: cg_selfcheck's and play_book_check's
+// table_checksum) or all 4 bytes (every stored move and the count:
+// play_book_check's moves_checksum).
+static uint64_t play_book_table_hash(bool every_move) {
+    std::vector<std::pair<uint64_t, uint32_t>> rows(PB_TABLE.begin(), PB_TABLE.end());
+    std::sort(rows.begin(), rows.end());
+    uint64_t h = 1469598103934665603ull;
+    for (auto &r : rows) {
+        for (int i = 0; i < 8; i++) { h ^= (r.first >> (8 * i)) & 0xff; h *= 1099511628211ull; }
+        for (int i = 0; i < (every_move ? 4 : 1); i++) { h ^= (r.second >> (8 * i)) & 0xff; h *= 1099511628211ull; }
+    }
+    return h;
+}
+
 static void test_play_book(TestCtx &ctx) {
     crossfish_nnue_load_once();
     // The payload is coded with this net's move ordering: its fingerprint must
@@ -932,18 +971,21 @@ static void test_play_book(TestCtx &ctx) {
     auto other = [](const PbView &v, int c) { return b64::evaluate_board(v, c) + (v.n_moves & 1 ? 1 : -1); };
     CHECK_EQ(pb_eval_fingerprint(nnue), PLAY_BOOK_EVAL_FINGERPRINT);
     CHECK(pb_eval_fingerprint(other) != PLAY_BOOK_EVAL_FINGERPRINT);
+    CHECK_EQ(PLAY_BOOK_FORMAT, 2);
     CHECK((pb_init<GlobalBoard, Move>(nnue)));
     CHECK_EQ((int)PB_TABLE.size(), PLAY_BOOK_ENTRIES);
-    // Pinned like the network payload hashes: regenerating the book changes it.
-    std::vector<std::pair<uint64_t, uint8_t>> rows(PB_TABLE.begin(), PB_TABLE.end());
-    std::sort(rows.begin(), rows.end());
-    uint64_t h = 1469598103934665603ull;
-    for (auto &r : rows) {
-        for (int i = 0; i < 8; i++) { h ^= (r.first >> (8 * i)) & 0xff; h *= 1099511628211ull; }
-        h ^= r.second;
-        h *= 1099511628211ull;
+    // Pinned like the network payload hashes: regenerating the book changes
+    // them. The first is the value cg_selfcheck prints (hashes and primaries).
+    CHECK_EQ(play_book_table_hash(false), 10147742875230593747ull);
+    CHECK_EQ(play_book_table_hash(true), 7272843604574170237ull);
+    // Every entry holds 1 to PB_MAX_MOVES moves, nothing above them.
+    for (auto &kv : PB_TABLE) {
+        uint32_t k = kv.second >> 24;
+        CHECK(k >= 1 && k <= (uint32_t)PB_MAX_MOVES);
+        if (k < 3) CHECK_EQ(kv.second & ~((1u << (8 * k)) - 1) & 0xFFFFFFu, 0u);
+        for (uint32_t i = 0; i < k; i++) CHECK((kv.second >> (8 * i) & 255) < 81);
     }
-    CHECK_EQ(h, 17441813851168678777ull);
+    PB_RNG = 20260923;  // pb_lookup's choices below are reproducible
 
     // Both roots assume the first player's center-center; moving second, the
     // book always has our reply to it.
@@ -954,7 +996,8 @@ static void test_play_book(TestCtx &ctx) {
         CHECK(pb_lookup(root, bm));
     }
     // The book covers only some replies, so random games leave it early; every
-    // move it does supply is legal and agrees across all 8 orientations.
+    // move it does supply is legal and one of the position's stored moves, and
+    // the position's stored moves agree across all 8 orientations.
     std::mt19937 rng(20260923);
     Move buf[81];
     for (int g = 0; g < 400; g++) {
@@ -973,7 +1016,9 @@ static void test_play_book(TestCtx &ctx) {
                 bool legal = false;
                 for (int i = 0; i < n; i++) legal |= buf[i].mini_board == bm.mini_board && buf[i].square == bm.square;
                 CHECK(legal);
-                uint64_t want = play_book_child_hash(b, bm);
+                std::vector<uint64_t> want = play_book_children(b);
+                uint64_t got = play_book_child_hash(b, bm);
+                CHECK(std::find(want.begin(), want.end(), got) != want.end());
                 for (int t = 1; t < 8; t++) {
                     GlobalBoard tb;
                     for (int packed : hist) {
@@ -982,7 +1027,9 @@ static void test_play_book(TestCtx &ctx) {
                     }
                     Move tm;
                     CHECK(pb_lookup(tb, tm));
-                    CHECK_EQ(play_book_child_hash(tb, tm), want);
+                    CHECK(play_book_children(tb) == want);
+                    uint64_t tgot = play_book_child_hash(tb, tm);
+                    CHECK(std::find(want.begin(), want.end(), tgot) != want.end());
                 }
                 m = bm;
                 used++;
@@ -992,6 +1039,93 @@ static void test_play_book(TestCtx &ctx) {
         }
         CHECK(used <= 40);
     }
+}
+
+// The whole book as the runtime holds it, without the text book: from both
+// roots, follow every stored move at our positions and every reply that
+// reaches a book position at the opponent's (the replies the book covers).
+// Every table entry must be reached, every stored move must be legal, the
+// moves of a position must lead to distinct positions, and pb_lookup must
+// return each of a position's moves about equally often.
+struct PlayBookTree {
+    TestCtx &ctx;
+    std::unordered_set<uint64_t> ours, theirs;
+    int multi = 0, further = 0;
+
+    void our(GlobalBoard &b) {
+        int t;
+        if (!ours.insert(pb_canonical(b, t)).second) return;
+        std::vector<Move> ms = play_book_moves(b);
+        CHECK(!ms.empty());
+        Move legal[81];
+        int n = b.fillLegalMoves(legal);
+        for (const Move &m : ms) {
+            bool ok = false;
+            for (int i = 0; i < n; i++) ok |= legal[i].mini_board == m.mini_board && legal[i].square == m.square;
+            CHECK(ok);
+            if (!ok) return;
+        }
+        std::vector<uint64_t> kids = play_book_children(b);
+        CHECK(std::adjacent_find(kids.begin(), kids.end()) == kids.end());
+        if (ms.size() > 1) {
+            multi++;
+            further += (int)ms.size() - 1;
+            const int draws = 2000;
+            std::vector<int> hits(ms.size(), 0);
+            for (int d = 0; d < draws; d++) {
+                Move m;
+                CHECK(pb_lookup(b, m));
+                for (size_t i = 0; i < ms.size(); i++)
+                    if (ms[i].mini_board == m.mini_board && ms[i].square == m.square) hits[i]++;
+            }
+            int sum = 0;
+            for (size_t i = 0; i < ms.size(); i++) {  // within 20% of a uniform share (over 5 sigma)
+                double share = hits[i] * (double)ms.size() / draws;
+                CHECK(share > 0.8 && share < 1.2);
+                sum += hits[i];
+            }
+            CHECK_EQ(sum, draws);
+        }
+        for (const Move &m : ms) {
+            b.makeMove(m);
+            if (b.checkWinner() == -1) their(b);
+            b.unmakeMove();
+        }
+    }
+
+    void their(GlobalBoard &b) {
+        int t;
+        if (!theirs.insert(pb_canonical(b, t)).second) return;
+        Move legal[81];
+        int n = b.fillLegalMoves(legal);
+        for (int i = 0; i < n; i++) {
+            b.makeMove(legal[i]);
+            if (b.checkWinner() == -1 && PB_TABLE.count(pb_canonical(b, t))) our(b);
+            b.unmakeMove();
+        }
+    }
+};
+
+static void test_play_book_moves(TestCtx &ctx) {
+    crossfish_nnue_load_once();
+    CHECK((pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); })));
+    PB_RNG = 20261008;
+    PlayBookTree tree{ctx};
+    GlobalBoard first;
+    first.makeMove(Move{4, 4});
+    tree.their(first);
+    GlobalBoard second;
+    second.makeMove(Move{4, 4});
+    tree.our(second);
+    CHECK_EQ(tree.ours.size(), PB_TABLE.size());
+    size_t stored = 0;
+    int several = 0;
+    for (auto &kv : PB_TABLE) {
+        stored += kv.second >> 24;
+        several += (kv.second >> 24) > 1;
+    }
+    CHECK_EQ(tree.multi, several);
+    CHECK_EQ((size_t)tree.further, stored - PB_TABLE.size());
 }
 
 static void test_cjk14_decoder(TestCtx &ctx) {
@@ -1450,6 +1584,7 @@ int main() {
         {"d16_fast_matches_scalar", test_d16_fast_matches_scalar},
         {"cjk14_decoder", test_cjk14_decoder},
         {"play_book", test_play_book},
+        {"play_book_moves", test_play_book_moves},
         {"lut_capture_block_tiar", test_lut_capture_block_tiar},
         {"nnue_tables_match_verified_build", test_nnue_tables_match_verified_build},
         {"nnue_fixed_positions", test_nnue_fixed_positions},

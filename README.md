@@ -241,7 +241,7 @@ faster.
 | Search (LMR, TT, move order, pruning) | optional 20 ms | **90 ms** | Official 90 ms pass. Equal-depth can lie: more nodes at a fixed depth is not the CG game. |
 | Bug fix (the old behaviour is wrong, not just weaker) | `make test` plus a test or trace that shows the bug | **90 ms** with `SPRT_ELO0=-5 SPRT_ELO1=0` | Non-regression pass. Say in the PR that it is a bug fix; a strength claim still needs H0=0, H1=+5. |
 | CodinGame port only (no Dev change) | `make -C cpp_impl port-check` (tree-changing) or `cg_selfcheck` before/after (tree-identical) | the CodinGame performance gate in CI | Gate passes; for a speed claim, a new-vs-old match with both paste files built with CodinGame's flags. |
-| Gameplay opening book (`play_book_data.hpp`) | `make -C cpp_impl play-book` (pack + check against the text book) | `play-book-match` from the start position, plus a paired run against a different engine, same seed for old and new book | The official SPRT starts from its own 50,000 openings and never reaches the book; see `documentation/play_book.md`. |
+| Gameplay opening book (`play_book_data.hpp`) | `make -C cpp_impl play-book` (pack + check against the text book, every stored move) | `play-book-match` from the start position, plus a paired run against a different engine, same seed for old and new book; a second-player book on the ladder (two submissions, second player against the top bots whose agents did not change) | The official SPRT starts from its own 50,000 openings and never reaches the book, and self-play against our own engine does not resolve a second-player book; see `documentation/play_book.md`. |
 
 Do not skip `make test` because a gate passed.
 
@@ -452,16 +452,16 @@ enable FMA in MiniNet; it will disagree with the scalar reference.
 
 CodinGame's source cap is **100,000 characters**, counted as UTF-16 code
 units. The NNUE generator (28,728 characters), the macro net (1,641) and the
-opening book (5,778) are packed at 15 bits per character on the U15 alphabet
+opening book (1,895) are packed at 15 bits per character on the U15 alphabet
 (CJK ideographs plus a private-use range, see
 `documentation/minification.md`), so the file is larger in bytes than in
 counted characters; trust the minifier's count, not `wc -c`.
 `cpp_impl/cg_input.cpp` is the C++ submission; the readable source and generated
-headers are intentionally kept separate for review. The file is **72,914
-characters** (27,086 left).
+headers are intentionally kept separate for review. The file is **69,861
+characters** (30,139 left).
 
 **The live submission is `cpp_impl/cg_input_native.py`** (language: Python 3,
-72,056 characters): the same bot as `cg_input.cpp`, built by clang 23 with
+68,860 characters): the same bot as `cg_input.cpp`, built by clang 23 with
 `-O3 -march=haswell`, xz-compressed and U15-encoded into a launcher that execs
 it. It searches the identical tree about 7.5% faster than CodinGame's g++
 build of the paste (GSPRT [0, 5] H1 at 5,400 games at 62 ms, about +6 to +8
@@ -491,28 +491,70 @@ implementation, and validation procedure.
 
 ## Opening book
 
-The CodinGame bot plays its first moves from an opening book chosen by
-uttt.ai, `cpp_impl/play_book_data.hpp`: a tree after the first player's
-center-center (moving second, the book assumes the opponent opened there) that
-covers the replies uttt.ai's policy rates at 0.03 or more, grown deepest along
-the likeliest lines (to ply 18). Our moves are uttt.ai's after a
-3,200-simulation search, with a crossfish veto. It is 34,066 positions in 5,778
-characters, stored without keys: the decisions along a fixed walk of the book,
-arithmetic-coded with the NNUE's move ordering as the model. A new net needs
-the book re-packed (`make -C cpp_impl play-book`, from `cpp_impl/play_book.txt`).
+The CodinGame bot plays its first moves from an opening book,
+`cpp_impl/play_book_data.hpp`: a tree after the first player's center-center
+(moving second, the book assumes the opponent opened there) in two halves.
 
-Against the previous full-coverage book (same engine, 90 ms): **+99.4 ± 11.2**
-vs +18.7 ± 11.1 head-to-head against the plain engine over 3,000 games. The
-transfer test against the round-six engine, which the book was not built
-from, gave a paired book value of +50.1 vs +12.2 in the author's run and
-**+72.0 vs +26.3** in an independent review on a new seed (500 openings each):
-about 2.7 times the old book. uttt.ai's reasonable replies hold 98-99% of what
-three unrelated engines play, which is why this selective book transfers where
-earlier ones did not. Moving second against anything but a center-center
-opening, the bot has no book. Design, measurements and the regeneration
-procedure are in `documentation/play_book.md`.
+- **Moving first**, the book is uttt.ai's (8,828 positions): it covers the
+  replies uttt.ai's policy rates at 0.03 or more, grown deepest along the
+  likeliest lines, and our moves are uttt.ai's after a 3,200-simulation
+  search, with a crossfish veto.
+- **Moving second**, since 2026-10-08, it is crossfish's own deep-search book
+  (1,646 positions, snapshot s5 of the P2 book builder). Each stored move is
+  the best move of a depth-32 search, with every legal move also searched to
+  depth 28 and close calls re-searched deeper; the replies it covers come from
+  the engine's own scores, and the ladder only decided where to search deeper;
+  no stored move is deeper than ply 24 (the 25-ply cap). At five positions,
+  the root among them, two or three near-tied moves are stored and the bot
+  picks one at random in each game.
+
+That is 10,474 positions in 1,895 characters, stored without keys: the
+decisions along a fixed walk of the book, arithmetic-coded with the NNUE's
+move ordering as the model (payload format 2, which stores up to three moves
+per position). A new net needs the book re-packed (`make -C cpp_impl
+play-book`, from `cpp_impl/play_book.txt`).
+
+On the ladder (2026-10-08, improvement log section 68), with the live engine
+and only the second player's book changed, the bot scored **0.207 ± 0.040**
+as second player against the seven top bots with the deep-search book, 0.063
+± 0.019 with uttt.ai's second-player half and 0.231 ± 0.043 with none. In
+September, with the pre-NNUE engine, the uttt.ai book was worth **+99.4 ±
+11.2** head-to-head against the plain engine (3,000 games, 90 ms; the
+full-coverage book before it +18.7 ± 11.1) and a paired book value of **+72.0
+vs +26.3** against the round-six engine; with the NNUE engine the self-play
+value was gone (+8.6 ± 12.1). Moving second against anything but a
+center-center opening, the bot has no book. Design, measurements and the
+regeneration procedure are in `documentation/play_book.md`.
 
 ## Latest strength result
+
+On 2026-10-08 the **second player's opening book** became crossfish's own
+deep-search book (improvement log section 68): snapshot s5 of the P2 book
+builder, 1,646 positions whose moves are the best moves of depth-32 searches,
+capped at ply 24, with two or three near-tied moves at five positions that
+the bot picks between at random (payload format 2). The engine and the first
+player's book are unchanged. Self-play cannot judge a second-player book
+(against our own engine, book and no-book builds come out even), so the test
+was the ladder: the live engine (main adda324, native) with three
+second-player books, two submissions each, as second player against the
+seven top bots whose agents did not change:
+
+| Second player's book | W-L-D vs the top 7 | Score | Placements |
+| --- | ---: | ---: | --- |
+| uttt.ai's (the control, 2026-10-06) | 4-114-8 | 0.063 ± 0.019 (n 126) | #6 32.27, #5 33.30 |
+| none (only the root reply) | 13-55-10 | 0.231 ± 0.043 (n 78) | #4 32.22, #4 32.73 |
+| **deep search (s5)** | **9-53-13** | **0.207 ± 0.040 (n 75)** | **#4 32.32, #3 32.69** |
+
+Against the control, s5 is **+0.143 ± 0.044** and no book +0.167 ± 0.047
+(1 s.e.): both clear the pre-registered bar of the control plus two standard
+errors, so the old second-player half was costing points. s5 and no book
+are level (-0.024 ± 0.059), and by the pre-registered rule the deep-search
+book stays. Our side timed out once in 558 games (first player, move 21, out
+of book). The field changed between the control's day and the test's (new
+agents of AllanB, Apostolique, Babebibobu, RoboStac and sZoom), so the
+placements are not comparable across the two days. On `main` the native
+submission is the live file byte for byte (sha256 `775c3208…`, 68,860
+characters) and the paste file is **69,861 characters** (30,139 left).
 
 On 2026-10-07 **ProbCut** joined the search (improvement log section 67): at a
 null-window node of depth 5 or more, the first three ordered moves get a
@@ -635,7 +677,9 @@ See section 58 of the improvement log.
 The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
 search with the mate-window pruning fix, the pattern-generator NNUE as its
 whole evaluation (net r14_d5_final_s2_rs since 2026-10-04, r13w_20 before it), the CodinGame-compiler
-inlining work and the uttt.ai opening book. It is **72,914 characters**, 27,086
+inlining work and the uttt.ai opening book (since 2026-10-08 only its
+first-player half; the second player's book is the deep-search one). It was
+**72,914 characters**, 27,086
 under the cap (the minifier's count; `wc -c` reports UTF-8 bytes); this exact
 file was submitted twice on 2026-10-04 and placed #4 (33.19) and #3 (33.30). The 2026-09-27 submission (94,922 characters,
 net B64_d5M_57ep) finished placement at **rank 1** of CodinGame's Ultimate
@@ -689,6 +733,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-10-08 | Deep-search second-player opening book (snapshot s5 of the P2 book builder; payload format 2, up to three moves per position) | ladder, second player vs the fixed top 7: 0.207 ± 0.040 (n 75) against 0.063 ± 0.019 with the old book (+0.143 ± 0.044); no second-player book 0.231 ± 0.043; placements #4 32.32, #3 32.69 | §68 |
 | 2026-10-07 | ProbCut (depth >= 5, first 3 moves, depth - 4 against beta + 60 pawns) | N=1584, 328-1001-255, +16.0 ± 9.2, LLR +3.03 PASS; +0.42 ply at 90 ms; at CG compute N=2534, +16.3 ± 8.0, LLR +4.15 PASS | §67 |
 | 2026-10-04 | NNUE net r14_d5_final_s2_rs: r13w_20 fine-tuned for 600M rows on round thirteen's data and labels with a WDL filter and a power loss, rescaled to r13w_20's eval spread | booked paste builds vs r13w_20, 90 ms: GSPRT [0, 6] accepts H1 at N=4200 (LLR +3.32); fresh openings N=4000, 777-2551-672, +9.1 ± 5.9; Dell at CodinGame compute +12.9 ± 6.4 (N=4000); ladder: no measurable change (#4 33.19, #3 33.30) | §65 |
 | 2026-10-01 | NNUE net r13w_20: r12_M2 fine-tuned for 2.4G rows on round thirteen's 80M depth-13 self-play and relabelled data | paste files, 90 ms, N=1000, 321-404-275, +16.0 ± 10.9; 20 ms round robin +16.6 ± 5.3 (N=13000); Dell at CodinGame compute +20.2 ± 12.4 (N=1000); r13w_11 (1.2G rows) +11.8 ± 11.0 / +11.0 / +9.4 the same ways | §64 |

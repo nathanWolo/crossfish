@@ -1,14 +1,19 @@
 // Packs a text book (play_book_gen, or tools that write "S" lines) into
-// play_book_data.hpp.
+// play_book_data.hpp, payload format 2 (several moves per position; see
+// play_book.hpp and play_book_text.hpp).
 //
 // Walks the book with the same PbWalker the CodinGame bot uses to decode it,
 // so the stored order cannot drift from the runtime order, and codes each
 // decision with the same adaptive binary models and the same NNUE evaluator
 // (play_book.hpp), so the probabilities cannot drift either. The text book only
 // lists our positions: an opponent reply is covered when it leads to one of
-// them, and the book goes on after our move when any reply is covered. Fails if
-// the walk reaches a position the text book lacks, or if any text-book entry is
-// never reached (for example a line that does not start from center-center).
+// them, and the book goes on after one of our moves when any reply is covered.
+// A position listed on several "S" lines stores each listed move (at most
+// PB_MAX_MOVES; the first is the primary) and the walk follows each of them.
+// Fails if a position lists more than PB_MAX_MOVES moves, if a line's move is
+// illegal, if the walk reaches a position the text book lacks, or if any
+// text-book entry is never reached (for example a line that does not start
+// from center-center).
 //
 //   play_book_pack <book.txt> <out.hpp>
 #include <cmath>
@@ -83,18 +88,41 @@ struct PackHooks {
     PbEncoder enc;
     PbModels m;
     int missing = 0, expanded = 0, positions = 0, covered_bits = 0;
-    double uniform_bits = 0;  // what the plain digits would have cost
+    int not_legal = 0;   // book moves that are not among the walk's legal moves
+    int alt_coded = 0;   // further (non-primary) moves coded
+    int by_count[PB_MAX_MOVES + 1] = {};  // positions by number of stored moves
+    double uniform_bits = 0;  // what the plain digits would have cost (the "another" bits are not counted)
+    std::vector<Move> cur;    // the current position's book moves, real orientation, primary first
+
+    static int position_in(const Move &bm, const Move *legal, const int *order, int n) {
+        for (int r = 0; r < n; r++)
+            if (legal[order[r]].mini_board == bm.mini_board && legal[order[r]].square == bm.square) return r;
+        return -1;
+    }
 
     int choose(GlobalBoard &b, Move *legal, const int *order, int n) {
-        Move bm;
         int rank = 0;
-        if (book.lookup(b, bm)) {
-            for (int r = 0; r < n; r++)
-                if (legal[order[r]].mini_board == bm.mini_board && legal[order[r]].square == bm.square) rank = r;
+        if (book.lookup_all(b, cur)) {
+            int r = position_in(cur[0], legal, order, n);
+            if (r >= 0) rank = r; else not_legal++;
+            by_count[(int)cur.size() < PB_MAX_MOVES ? (int)cur.size() : PB_MAX_MOVES]++;
         } else {
+            cur.clear();
             missing++;
         }
         positions++;
+        uniform_bits += std::log2((double)n);
+        return pb_code_rank([&](uint16_t &p, int bit) { return enc.bit(p, bit); }, m, n, rank);
+    }
+    bool another(GlobalBoard &, int k) {  // k moves stored so far
+        bool yes = (int)cur.size() > k;
+        return enc.bit(m.another[k - 1], yes) != 0;
+    }
+    // Rank in `order` of the k-th (0-based) book move, coded like the primary's.
+    int choose_alt(GlobalBoard &, Move *legal, const int *order, int n, int k) {
+        int rank = position_in(cur[k], legal, order, n);
+        if (rank < 0) { not_legal++; rank = 0; }
+        alt_coded++;
         uniform_bits += std::log2((double)n);
         return pb_code_rank([&](uint16_t &p, int bit) { return enc.bit(p, bit); }, m, n, rank);
     }
@@ -126,6 +154,27 @@ int main(int argc, char **argv) {
     }
     Book book;
     if (!book.load(argv[1])) { std::fprintf(stderr, "cannot load %s\n", argv[1]); return 1; }
+    if (book.illegal) {
+        std::fprintf(stderr, "%d book line(s) with an illegal move; the first: %s\n", book.illegal,
+                     book.first_illegal.c_str());
+        return 1;
+    }
+    // At most PB_MAX_MOVES distinct moves per position; a position is reported by its lines.
+    int too_many = 0, alt_total = 0;
+    for (auto &kv : book.entries) {
+        int k = (int)kv.second.moves.size();
+        alt_total += k > 1 ? k - 1 : 0;
+        if (k > PB_MAX_MOVES && too_many++ < 5) {
+            std::string ls;
+            for (const std::string &l : kv.second.lines) ls += (ls.empty() ? "\"" : "\", \"") + l;
+            std::fprintf(stderr, "one position has %d distinct moves, on the lines %s\"\n", k, ls.c_str());
+        }
+    }
+    if (too_many) {
+        std::fprintf(stderr, "%d position(s) list more than %d moves; a position may store at most %d. Not packed.\n",
+                     too_many, PB_MAX_MOVES, PB_MAX_MOVES);
+        return 1;
+    }
     crossfish_nnue_load_once();
 
     PackHooks hooks{book};
@@ -134,6 +183,11 @@ int main(int argc, char **argv) {
     if (hooks.missing || walker.entries != (int)book.entries.size()) {
         std::fprintf(stderr, "walk/book mismatch: walk visited %d positions, text book has %zu, %d missing\n",
                      walker.entries, book.entries.size(), hooks.missing);
+        return 1;
+    }
+    if (hooks.not_legal || hooks.alt_coded != alt_total) {
+        std::fprintf(stderr, "move mismatch: %d book move(s) not legal in the walk; %d of %d further moves coded\n",
+                     hooks.not_legal, hooks.alt_coded, alt_total);
         return 1;
     }
 
@@ -148,19 +202,21 @@ int main(int argc, char **argv) {
     if (!f) { std::fprintf(stderr, "cannot write %s\n", argv[2]); return 1; }
     std::fprintf(f,
         "#pragma once\n"
-        "// Generated by cpp_impl/play_book_pack.cpp. Do not edit; see documentation/play_book.md.\n"
-        "// %d of our positions and %d opponent positions whose replies it covers,\n"
-        "// after the first player's center-center.\n\n"
+        "// Generated by cpp_impl/play_book_pack.cpp (payload format 2). Do not edit; see documentation/play_book.md.\n"
+        "// %d of our positions (%d with 2 moves, %d with 3 moves) and %d opponent positions whose\n"
+        "// replies it covers, after the first player's center-center.\n\n"
+        "static constexpr int PLAY_BOOK_FORMAT = 2;\n"
         "static constexpr int PLAY_BOOK_ENTRIES = %d;\n"
         "static constexpr int PLAY_BOOK_BYTES = %zu;\n"
         "// pb_eval_fingerprint of the net the moves were ordered with; pb_init refuses the payload under another.\n"
         "static constexpr uint64_t PLAY_BOOK_EVAL_FINGERPRINT = %lluull;\n\n"
         "static const char PLAY_BOOK_CJK[] = R\"~(\n%s\n)~\";\n",
-        walker.entries, hooks.expanded + 1, walker.entries, bytes.size(),
+        walker.entries, hooks.by_count[2], hooks.by_count[3], hooks.expanded + 1, walker.entries, bytes.size(),
         (unsigned long long)pb_eval_fingerprint(hooks.eval), text.c_str());
     std::fclose(f);
-    std::printf("packed %d positions (%d expanded opponent positions): %.0f bits as plain digits, coded to "
-                "%zu bytes, %zu payload characters -> %s\n",
-                walker.entries, hooks.expanded + 1, info_bits, bytes.size(), chars, argv[2]);
+    std::printf("packed %d positions (%d expanded opponent positions; %d with 2 moves, %d with 3 moves): %.0f bits "
+                "as plain digits, coded to %zu bytes, %zu payload characters -> %s\n",
+                walker.entries, hooks.expanded + 1, hooks.by_count[2], hooks.by_count[3], info_bits, bytes.size(),
+                chars, argv[2]);
     return 0;
 }
