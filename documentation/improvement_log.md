@@ -4282,11 +4282,17 @@ uttt.ai's book with 1,646 positions. The first player's half (uttt.ai's 8,828
 positions) and the engine (main adda324: net r14_d5_final_s2_rs + ProbCut)
 are unchanged. [play_book.md](play_book.md) has the method; in short:
 
-- every stored move is the best move of a depth-32 search, with every legal
-  move's child also searched to depth 28, disagreements beyond 300 decided by
-  a second depth-32 search with the bot's table size, and high-reach positions
-  re-searched to depth 34-38. No move is chosen from ladder results: the
-  ladder (the lines earlier snapshots lost, searched deeper or extended) and
+- a depth-32 search gives each position's move, and every legal move's child
+  is also searched to depth 28 (the every-move scan). When the search's move
+  scores more than 300 below the scan's best, a second depth-32 search with
+  the bot's table size runs: if it agrees with either move, that move is
+  stored; if it names a third, the scan's best is stored, a move no depth-32
+  search chose. In s5: 1,120 positions store the search's move without a
+  second search, 113 the search's move confirmed, 185 the scan's best
+  confirmed, and 228 (14%) the scan's best after three different answers.
+  High-reach positions were re-searched to depth 34-38. No move is chosen
+  from ladder results: the ladder (the lines earlier snapshots lost, searched
+  deeper or extended) and
   a population model of first players only decided where the compute went;
 - the covered replies are those the engine's own scores give a probability of
   0.03 or more (at most 6 per position), plus the positions added on those

@@ -148,12 +148,20 @@ r13w_20 without any book scored 0.172 +/- 0.023 (n 198).
 laptops; the builder, its README and the run live under
 `datasets/nnue2/cg/ladder/book/p2book/`, outside the repository). The rules:
 
-- **The stored move is the deepest search's best move.** At each position a
-  depth-32 search (64 MB table) gives the engine's move, and every legal move's
-  child is searched to depth 28. When the two disagree by more than 300, a
-  second depth-32 search with the bot's 4 MB table decides. Positions with a
-  high chance of being reached were re-searched deeper (depth 34-38). No move
-  is stored because a ladder bot happens to lose to it.
+- **The stored move is a deep search's best move, except at 14% of the
+  positions.** At each position a depth-32 search (64 MB table) gives the
+  engine's move, and every legal move's child is searched to depth 28 (the
+  every-move scan). When the engine's move scores more than 300 below the
+  scan's best, a second depth-32 search with the bot's 4 MB table runs. If it
+  agrees with either move, that move is stored. If it gives a third move, the
+  scan's best is stored, a move that neither depth-32 search chose. Of s5's
+  1,646 positions, 1,120 store the engine's move without a second search, 113
+  the engine's move confirmed by it, 185 the scan's best confirmed by it, and
+  **228 the scan's best after three different answers** (its child searched
+  to depth 28, 30-32 where re-searched). Those 228 are the first candidates for
+  a deeper re-search. Positions with a high chance of being reached were
+  re-searched deeper (depth 34-38). No move is stored because a ladder bot
+  happens to lose to it.
 - **Covered replies come from the engine's own scores**, each reply covered
   when its probability under them is 0.03 or more (at most 6 per position).
   Two things only decide where the compute goes, never which move is stored:

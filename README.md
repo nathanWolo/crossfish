@@ -500,11 +500,15 @@ The CodinGame bot plays its first moves from an opening book,
   likeliest lines, and our moves are uttt.ai's after a 3,200-simulation
   search, with a crossfish veto.
 - **Moving second**, since 2026-10-08, it is crossfish's own deep-search book
-  (1,646 positions, snapshot s5 of the P2 book builder). Each stored move is
-  the best move of a depth-32 search, with every legal move also searched to
-  depth 28 and close calls re-searched deeper; the replies it covers come from
-  the engine's own scores, and the ladder only decided where to search deeper;
-  no stored move is deeper than ply 24 (the 25-ply cap). At five positions,
+  (1,646 positions, snapshot s5 of the P2 book builder). A depth-32 search
+  gives each position's move and every legal move is also searched to depth
+  28; where the two disagree by more than 300, a second depth-32 search
+  decides between them, and where it names a third move (228 positions, 14%)
+  the every-move scan's best is stored. The replies it covers come from the
+  engine's own scores, plus positions added on lines that earlier snapshots
+  lost on the ladder: the ladder decided where to search and what to add,
+  never which move is stored. No stored move is deeper than ply 24 (the 25-ply
+  cap). At five positions,
   the root among them, two or three near-tied moves are stored and the bot
   picks one at random in each game.
 
@@ -530,9 +534,11 @@ regeneration procedure are in `documentation/play_book.md`.
 
 On 2026-10-08 the **second player's opening book** became crossfish's own
 deep-search book (improvement log section 68): snapshot s5 of the P2 book
-builder, 1,646 positions whose moves are the best moves of depth-32 searches,
-capped at ply 24, with two or three near-tied moves at five positions that
-the bot picks between at random (payload format 2). The engine and the first
+builder, 1,646 positions whose moves come from depth-32 searches (at 228,
+where two such searches and the depth-28 every-move scan gave three different
+moves, the scan's best), capped at ply 24, with two or three near-tied moves
+at five positions that the bot picks between at random (payload format 2).
+The engine and the first
 player's book are unchanged. Self-play cannot judge a second-player book
 (against our own engine, book and no-book builds come out even), so the test
 was the ladder: the live engine (main adda324, native) with three
