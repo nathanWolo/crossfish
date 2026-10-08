@@ -27,6 +27,7 @@ Detailed project documentation:
   machine and round-robin ratings
 - The NNUE experiments' own tools and results: [trainers](tools/experiments/nnue2/README.md) and
   [fast inference, candidate builds, checks and two-net matches](tools/experiments/fast_nnue/README.md)
+- [NNUE research reports](documentation/reports/README.md): the full pre-registered write-ups of round 14 and the scaling study
 - [CodinGame submission and minifier](documentation/minification.md)
 - [Native submission](documentation/native_build.md): the clang build in a Python 3 launcher that is live on CodinGame
 - [Gameplay opening book](documentation/play_book.md): the book the CodinGame bot plays from
