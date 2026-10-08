@@ -283,8 +283,10 @@ has `static_assert(PLAY_BOOK_FORMAT == 2)`, so a format-1 payload does not
 compile. Nothing in the repository needs to read one: the only format-1
 payload was main's own `play_book_data.hpp`, which this change replaced; any
 book is re-packed from its text (`cpp_impl/play_book.txt` is committed, and
-any single-move text book packs to format 2 with the same positions and
-moves, for a few bytes more); and the CI performance gate builds its base from
+a text book written for format 1 packs to format 2 with the same positions and
+moves, for a few bytes more, unless it repeats one `seq` with different moves:
+lines by other seqs merge into the first as they did; see the text book
+below); and the CI performance gate builds its base from
 the base revision's own self-contained paste file (`git show
 <base>:cpp_impl/cg_input.cpp`). Keeping a second decoder would only cost
 paste characters.
@@ -319,10 +321,9 @@ are no separate coverage records. Two line forms are accepted:
   move there, in real orientation. The packer replays and keys it, so an
   external generator never has to reproduce the canonical key.
 
-**Several moves per position.** Several lines may give the same position (the
-same canonical key, so a line for a symmetric twin of the position counts as
-the same position). Their moves, in file order, are the position's book
-moves; the first is the primary. For example, the shipped book's root:
+**Several moves per position.** Several lines with the same `seq` list that
+position's book moves, in file order; the first is the primary. For example,
+the shipped book's root:
 
 ```text
 S 40 36        after 4 4, play 3 3 (the primary)
@@ -332,11 +333,24 @@ S 40 37        after 4 4, play 3 4 (the alternative)
 - A move that repeats one of the position's moves is ignored: the same
   canonical move, or any move that leads to the same canonical position (at a
   symmetric position, a mirror image of a stored move).
+- A line that reaches an already listed position by **another** `seq` (a
+  transposition, or a symmetric image of the position) adds nothing: the
+  position keeps its first line's moves, as format 1 merged such lines. When
+  its move differs, the packer prints a warning with the first such line and
+  packs anyway; the move never becomes an alternative. So a generator that
+  relies on the packer to merge transpositions (uttt.ai's `uttt_book_gen.py`
+  dedupes with its own key only) gets the same book as before.
 - A position may have at most 3 distinct moves. With more, the packer prints
   the position's lines and fails.
-- A line whose move is illegal in its position makes the packer fail.
+- A line whose move is illegal in its position makes the packer fail, and so
+  does a line past the 25-ply cap: a `seq` of more than 24 moves (the stored
+  move's half-move index is the length of its `seq`; moving second our moves
+  are at odd indices, so the deepest is 23). `play_book_check` fails on such a
+  line too, and `test_play_book_moves` checks every decoded entry.
 - A book with one line per position is a single-move book. CRLF line ends are
   accepted.
+- `test_play_book_text` (unit tests) checks these rules on a small book in
+  memory and packs it, then decodes the bytes with the runtime's walk.
 
 ## Regenerating the book
 
@@ -368,10 +382,9 @@ make -C cpp_impl play-book-protocol # exact book use through the real protocol
 ```
 
 and the native submission (`make cg-native`, `make cg-native-check`;
-[native_build.md](native_build.md)). Check the 25-ply cap before packing: the
-deepest stored move must be at half-move index 24 or less moving first and 23
-or less moving second (a line's half-move index is the number of moves in its
-`seq`).
+[native_build.md](native_build.md)). The packer enforces the 25-ply cap: it
+refuses a line whose stored move is past half-move index 24 moving first or 23
+moving second (a line's half-move index is the number of moves in its `seq`).
 
 Re-packing the shipped book (after a net change, or a change to the coder)
 needs no generator: `cpp_impl/play_book.txt` is that book, and

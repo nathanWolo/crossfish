@@ -13,7 +13,7 @@ opponent plays uniformly at random, and the bot moving second must still play
 from the book at its first move (after center-center).
 
 Positions with several book moves (payload format 2: several "S" lines of one
-position list its moves, in file order, the primary first):
+position with the same seq list its moves, in file order, the primary first):
   - a game fails if a BOOK move leads to none of the positions after the
     position's listed moves (canonical keys, so a symmetric twin counts);
   - the bot's choices at such positions are counted and summarized before the
@@ -79,8 +79,10 @@ def rc_of(cell):
 
 def load_book(path):
     """From "S <seq> <move>" lines: the canonical keys of the book's positions; per position, the
-    canonical keys after each listed move (file order, distinct); and labels for the summary."""
-    keys, children, labels = set(), {}, {}
+    canonical keys after each listed move (file order, distinct); and labels for the summary.
+    As in the packer (play_book_text.hpp), only lines with the seq of a position's first line add
+    moves; a line reaching the position by another seq leaves its moves as they are."""
+    keys, children, labels, first_seq = set(), {}, {}, {}
     for line in open(path, encoding="utf-8"):
         parts = line.split()
         if len(parts) != 3 or parts[0] != "S":
@@ -98,12 +100,12 @@ def load_book(path):
         ops.make_move(board, (r, c))
         child = key_of(cells, active_board(ops.get_valid_moves(board)))
         kids = children.setdefault(key, [])
-        if child in kids:
-            continue  # the same move again, or a symmetric twin: ignored, as by the packer
+        if child in kids or first_seq.setdefault(key, seq) != seq:
+            continue  # the same move again, a symmetric twin, or another seq: ignored, as by the packer
         kids.append(child)
         seq_label = ", ".join("%d %d" % rc_of(cell) for cell in seq) or "the empty board"
         lab = labels.setdefault(key, {"seq": seq_label, "ply": len(seq), "moves": []})
-        lab["moves"].append(f"{r} {c}" if seq_label == lab["seq"] else f"{r} {c} (on the line after {seq_label})")
+        lab["moves"].append(f"{r} {c}")
     return keys, children, labels
 
 

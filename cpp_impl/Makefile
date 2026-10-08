@@ -43,7 +43,7 @@ all: test
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) play_book.hpp play_book_data.hpp | $(BIN)
+$(BIN)/unit_tests: unit_tests.cpp global_board.hpp crossfish_dev.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) play_book.hpp play_book_data.hpp play_book_text.hpp play_book_pack.hpp | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ unit_tests.cpp
 
 $(BIN)/test_bots: test_bots.cpp global_board.hpp crossfish_dev.hpp crossfish_prev.hpp nnue.hpp mini_eval.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
@@ -97,7 +97,7 @@ datagen: $(BIN)/datagen
 $(BIN)/play_book_gen: play_book_gen.cpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_gen.cpp
 
-$(BIN)/play_book_pack: play_book_pack.cpp play_book.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
+$(BIN)/play_book_pack: play_book_pack.cpp play_book_pack.hpp play_book.hpp play_book_text.hpp global_board.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -o $@ play_book_pack.cpp
 
 $(BIN)/play_book_check: play_book_check.cpp play_book.hpp play_book_data.hpp play_book_text.hpp crossfish_dev.hpp mini_eval_d16.hpp macro_eval.hpp $(NNUE_HDRS) | $(BIN)

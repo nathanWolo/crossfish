@@ -8,7 +8,8 @@
 // same canonical position as the text move; the walk then follows every move.
 // At positions with several moves it also draws pb_lookup 3,000 times and
 // prints how often each move came out; a move more than 20% off its uniform
-// share is a failure ("bad draws").
+// share is a failure ("bad draws"). A text book with a line past the 25-ply
+// cap fails before the walk (the packer refuses one).
 //
 // It prints two checksums of the decoded table: table_checksum over the hashes
 // and the primary moves (the value cg_selfcheck prints, and the value a
@@ -144,6 +145,11 @@ static void opp(GlobalBoard &b) {
 int main(int argc, char **argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: play_book_check <book.txt>\n"); return 2; }
     if (!g_text.load(argv[1])) { std::fprintf(stderr, "cannot load %s\n", argv[1]); return 1; }
+    if (g_text.too_deep) {
+        std::printf("%d text-book line(s) past the 25-ply cap (a seq of more than %d moves); the first: %s\n",
+                    g_text.too_deep, PB_TEXT_MAX_INDEX, g_text.first_too_deep.c_str());
+        return 1;
+    }
     auto t0 = std::chrono::steady_clock::now();
     crossfish_nnue_load_once();
     bool ok = pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); });
