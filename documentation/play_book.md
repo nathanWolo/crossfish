@@ -407,8 +407,16 @@ moves, and `moves_checksum`, over the hashes and every stored move with the
 move count. `cg_selfcheck` (and so the native launcher's `selfcheck` mode)
 prints the first, which must equal the local build's; `test_play_book` pins
 both, and `test_play_book_moves` walks the decoded table from both roots
-(every entry reached, every stored move legal and leading to its own
-position, the random choice uniform). For the shipped book:
+(every entry reached, none past the 25-ply cap, every stored move legal and
+leading to its own position, the random choice uniform). The first checksum
+does not see every alternative: a build that decoded an alternative as
+another move changes it only through the entries stored after that move, so
+an alternative where the book ends (none in the shipped book: all 7 have
+continuations) differs only in its own entry's other bytes, which
+`moves_checksum` covers and `table_checksum` does not. Through the native
+launcher, such an alternative is checked only by the protocol games that
+reach and draw it, until a change that rebuilds the launcher anyway widens
+`cg_selfcheck`'s checksum to all four bytes. For the shipped book:
 `table_checksum=10147742875230593747`, `moves_checksum=7272843604574170237`,
 10,474 entries.
 

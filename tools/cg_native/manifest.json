@@ -20,7 +20,7 @@
     "cpp_impl/nnue_b64_net.hpp": "aa2819fec4ed16d4668211c583e9cdbbb26b33c442a52ce1fc88c9bbd0f12130",
     "cpp_impl/play_book.hpp": "50fa1c3a7b9654019c7a6b6c82fea72da7c3f0c9eaf15a11cc2889bc88c803d6",
     "cpp_impl/play_book_data.hpp": "c90aa1b6e686f07c01f846f7d10522cbaa3c253248252b8ee96abeb157e1f2f9",
-    "cpp_impl/cg_selfcheck.cpp": "113bf4bda1e69012f0cdef0faa08b4e9201bbd303fa41d2050ece8554bad4a21",
+    "cpp_impl/cg_selfcheck.cpp": "ffed8b1dbf352509f80908eb6f49ec63243079ab9d863da260f90c8afe1bc301",
     "tools/cg_native/native_main.cpp": "1f42a6063c2503c41771320d448d9120263c74e5fe03df43fefadc64e4a7e990"
   }
 }

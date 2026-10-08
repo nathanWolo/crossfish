@@ -9,13 +9,13 @@
 // node count of every search.
 // It also decodes the opening book and prints the table's entry count and
 // checksum, which must match play_book_check's table_checksum on the local
-// build. The checksum covers the hashes and the primary moves: each uint32_t
-// entry (payload format 2, play_book.hpp) narrows to its low byte, the
-// primary, in the uint8_t copy below. The other stored moves are checked by
-// play_book_check (moves_checksum, every move, draw uniformity) and
-// test_play_book. An alternative's rank is decoded from the same adaptive
-// stream as everything after it, so a decoding difference there would also
-// change the later entries, and with them this checksum.
+// build. The checksum covers the hashes and the primary moves only: each
+// uint32_t entry (payload format 2, play_book.hpp) narrows to its low byte, the
+// primary, in the uint8_t copy below. An alternative decoded as another move
+// changes it only through the entries the book stores after that move, so an
+// alternative with no continuation is not covered here. Every stored move is
+// checked by play_book_check (moves_checksum, draw uniformity) and the unit
+// tests, on the readable build: not through the native launcher.
 //
 // Build it BEFORE a port and again AFTER. For a port of a tree-identical
 // change the two checksums must match exactly. Nothing here is compiled into

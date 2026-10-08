@@ -207,7 +207,9 @@ same file.
    numbers `port-check`, `cg-min-check` and the CG-flags build give. The table
    checksum covers the position hashes and the primary moves; the book's other
    stored moves (payload format 2, [play_book.md](play_book.md)) are checked
-   by `play_book_check` and the unit tests, and by step 3. Outside this
+   by `play_book_check` and the unit tests on the readable build, and through
+   the launcher only by step 3, in the games that reach and draw them (an
+   alternative after which the book ends changes no hashed byte). Outside this
    check, `selfcheck 30 13` and `selfcheck 20 16` (2,791,649 /
    15576534853043927231 and 5,250,040 / 18090966638842159638) also depend on
    the Zobrist keys, so comparing them with the live file also catches a
