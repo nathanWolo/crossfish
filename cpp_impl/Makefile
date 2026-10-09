@@ -36,7 +36,7 @@ CG_CXX ?= $(shell command -v g++-11 >/dev/null 2>&1 && echo g++-11 || echo $(CXX
 # pragmas and always_inline attributes make the submission fast there.
 CG_FLAGS := -std=gnu++17 -Werror=return-type -g -pthread
 
-.PHONY: all test bench cg-gate cg-min-check port-check test-cpp cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-text play-book-check play-book-match play-book-protocol datagen cg-native cg-native-check clean
+.PHONY: all test bench cg-gate cg-min-check port-check test-cpp nnue-parity cg-flags cg-speed test-python sprt verify cg compile-cg compile-legend cg-input roundrobin opening-book book-inspect play-book-gen play-book play-book-text play-book-check play-book-match play-book-protocol datagen cg-native cg-native-check clean
 
 all: test
 
@@ -108,6 +108,13 @@ $(BIN)/play_book_match: play_book_match.cpp play_book.hpp play_book_data.hpp cro
 
 test-cpp: $(BIN)/unit_tests
 	$(BIN)/unit_tests
+
+# Static-eval parity (nnue_parity.cpp): every record's integer eval, from scratch or replayed through the
+# stack, to compare with tools/nnue_emit_b64_header.py --int-eval.
+$(BIN)/nnue_parity: nnue_parity.cpp $(NNUE_HDRS) | $(BIN)
+	$(CXX) $(CXXFLAGS) -o $@ nnue_parity.cpp
+
+nnue-parity: $(BIN)/nnue_parity
 
 # Deterministic Dev-vs-Prev screen. `equiv` proves a speed-only candidate
 # computes the same tree (identical scores AND node counts); `nodes` reports
