@@ -42,6 +42,12 @@
 namespace b64 {
 
 constexpr int A = 64, W = 65, E = 32, L1 = 16, L2 = 32, NPAT = 19683, MAXPLY = 96, CACHE_BITS = 15;
+// The encoder's hidden widths come from the payload header (27 -> ENC0 -> ENC1 -> E); everything that runs per
+// node is fixed at B-64. The encoder is only used by load(), so a wider encoder costs bake time, not search time.
+constexpr int ENC0 = B64_ENC0, ENC1 = B64_ENC1;
+static_assert(B64_A == A && B64_E == E && B64_L1 == L1 && B64_L2 == L2, "this runtime is B-64 (generic encoder only)");
+static_assert(ENC0 > 0 && ENC1 > 0 && ENC0 <= 1024 && ENC1 <= 1024, "unsupported encoder widths");
+constexpr int cmax(int a, int b) { return a > b ? a : b; }
 constexpr int QA = B64_QA, QPS = B64_QPS, QB = B64_QB, Q2 = B64_Q2, QO = B64_QO;
 constexpr int H1BITS = QA + QB < 14 ? QA + QB : 14, H1_SHIFT = QA + QB - H1BITS;
 constexpr int H2BITS = H1BITS + Q2 < 15 ? H1BITS + Q2 : 15, H2_SHIFT = H1BITS + Q2 - H2BITS;
@@ -53,7 +59,7 @@ constexpr int64_t OUT_MUL = 1LL << (FIN_SHIFT - OUT_SHIFT), PS_MUL = 1LL << (FIN
 
 // The generator (the BGN1 layout: W[out][in], proj_w[m][k][lane]).
 struct Gen {
-    float e0w[64][27], e0b[64], e1w[64][64], e1b[64], e2w[32][64], e2b[32];
+    float e0w[ENC0][27], e0b[ENC0], e1w[ENC1][ENC0], e1b[ENC1], e2w[E][ENC1], e2b[E];
     float pw[9][E][W], pb[9][W], fw[E][W], fb[W];
     float bias[W], dec[27][W], con[20][W];
     float w1[L1][2 * A], b1[L1], w2[L2][L1], b2[L2], wo[L2], bo;
@@ -100,7 +106,7 @@ struct Bits {
 // locations share a scale per lane), the Rice parameters of the normal and the PSQT rows (row % 65 == 64
 // of proj, fwd, dec, con), then Rice(zigzag(q)) per value; value = float(q) * scale.
 static void read_mat(Bits &b, float *m, int rows, int cols, int ns, bool psqt) {
-    float sc[W];
+    float sc[cmax(W, cmax(ENC0, ENC1))];
     for (int i = 0; i < ns; i++) {
         const uint32_t u = b.get(16) << 16;
         std::memcpy(&sc[i], &u, 4);
@@ -120,7 +126,7 @@ static void read_mat(Bits &b, float *m, int rows, int cols, int ns, bool psqt) {
 // Decode the payload into the Generator layout.
 static void unpack(Gen &g) {
     Bits b{(const unsigned char *)B64_NET_CJK};
-    static float m[9 * W * 33];
+    static float m[cmax(9 * W * (E + 1), cmax(ENC0 * 28, cmax(ENC1 * (ENC0 + 1), E * (ENC1 + 1))))];
     auto aug = [&](float *w, float *bias, int out, int in) {  // [bias | W] rows
         read_mat(b, m, out, in + 1, out, false);
         for (int o = 0; o < out; o++) {
@@ -128,9 +134,9 @@ static void unpack(Gen &g) {
             for (int i = 0; i < in; i++) w[o * in + i] = m[o * (in + 1) + 1 + i];
         }
     };
-    aug(&g.e0w[0][0], g.e0b, 64, 27);
-    aug(&g.e1w[0][0], g.e1b, 64, 64);
-    aug(&g.e2w[0][0], g.e2b, 32, 64);
+    aug(&g.e0w[0][0], g.e0b, ENC0, 27);
+    aug(&g.e1w[0][0], g.e1b, ENC1, ENC0);
+    aug(&g.e2w[0][0], g.e2b, E, ENC1);
     read_mat(b, m, 9 * W, 33, W, true);  // row 65 m + j: [proj_b[m][j] | proj_w[m][:, j]]
     for (int r = 0; r < 9 * W; r++) {
         g.pb[r / W][r % W] = m[r * 33];
@@ -171,22 +177,22 @@ static bool live(int p, int *d) {
 
 // The encoder's embedding of a live pattern (the float operations in this order are the reference).
 static void embed(const Gen &g, const int *d, float *e) {
-    float h[64], h2[64];
-    for (int o = 0; o < 64; o++) {  // one-hot input: 9 columns
+    float h[ENC0], h2[ENC1];
+    for (int o = 0; o < ENC0; o++) {  // one-hot input: 9 columns
         float s = g.e0b[o];
         for (int k = 0; k < 9; k++) s += g.e0w[o][3 * k + d[k]];
         h[o] = s;
     }
-    for (int i = 0; i < 64; i++) h[i] = h[i] < 0.f ? 0.f : h[i];  // std::max(h, 0.f)
-    for (int o = 0; o < 64; o++) {
+    for (int i = 0; i < ENC0; i++) h[i] = h[i] < 0.f ? 0.f : h[i];  // std::max(h, 0.f)
+    for (int o = 0; o < ENC1; o++) {
         float s = g.e1b[o];
-        for (int i = 0; i < 64; i++) s += g.e1w[o][i] * h[i];
+        for (int i = 0; i < ENC0; i++) s += g.e1w[o][i] * h[i];
         h2[o] = s;
     }
-    for (int i = 0; i < 64; i++) h2[i] = h2[i] < 0.f ? 0.f : h2[i];
+    for (int i = 0; i < ENC1; i++) h2[i] = h2[i] < 0.f ? 0.f : h2[i];
     for (int o = 0; o < E; o++) {
         float s = g.e2b[o];
-        for (int i = 0; i < 64; i++) s += g.e2w[o][i] * h2[i];
+        for (int i = 0; i < ENC1; i++) s += g.e2w[o][i] * h2[i];
         e[o] = s;
     }
 }
