@@ -532,12 +532,15 @@ are in `documentation/play_book.md`.
 
 On 2026-10-09 the net **r16_x128_l2400_s1601_rs** ("W1") replaced
 r14_d5_final_s2_rs as the evaluation, and the bot dropped its opening book
-(improvement log section 69). W1 is r14 with its pattern encoder widened from
-27-64-64-32 to 27-128-128-32 (function-preserving: the new units start at
-zero) and trained 2.4G rows, its eval rescaled by 1/1.0787; 51,435
-parameters. The encoder only runs in the start-up bake, so the per-node
-search code and speed are r14's. Pre-registered tests, desktop and Dell
-pooled, bookless engines:
+(improvement log section 69). W1 starts from r14's unscaled checkpoint
+(`r14_d5_final_s2`, the net behind the shipped `_rs` copy) with its pattern
+encoder widened from 27-64-64-32 to 27-128-128-32 (function-preserving: the
+new units' outgoing weights start at zero), then trained 2.4G more rows with
+the recipe of the matched control C3 and its eval rescaled by 1/1.0787;
+51,435 parameters. The test against r14 measures the widening and the 2.4G
+rows together; the test against C3 isolates the widening. The encoder only
+runs in the start-up bake, so the per-node search code and speed are r14's.
+Pre-registered tests, desktop and Dell pooled, bookless engines:
 
 | Test | Games | Elo (95%) | Verdict |
 | --- | ---: | --- | --- |
@@ -549,10 +552,19 @@ On the CodinGame ladder the gain is **below resolution**: two W1 agents
 against a same-evening r14 control scored -0.042 as second player (95%
 [-0.090, +0.023], clustered by opening) and -0.004 as first player, and a
 two-agents-per-arm test detects a +14 Elo change with only about 10-15%
-probability; it neither confirms nor refutes the self-play gain. W1 (#6
-30.55, #6 30.61; resubmitted 2026-10-10, #8 30.21 and #9 29.97) is the live
-build. The first turn, which now bakes the wider encoder, takes about 415 ms
-on the Dell of its 1,000 ms (no timeout on our side in 520 ladder games).
+probability; it neither confirms nor refutes the self-play gain. With all
+four W1 agents (2026-10-10, submitted in the order W1 W1 control control W1
+W1, so the pair after the control brackets it in time) the second player's
+difference is -0.046 (clustered 95% [-0.090, +0.010]) and the first
+player's -0.024 (95% [-0.047, +0.003]): still no significant difference, so
+the ladder remains below resolution, but the P2 interval's upper end is now
+just under the self-play-sized +0.013, so whether the gain transfers to the
+second player's games is uncertain and opponent-specific (worse against
+morph, RoboStac and karliso, better against several top bots; FINDINGS
+A19). W1 (#6 30.55, #6 30.61; resubmitted 2026-10-10, #8 30.21 and #9
+29.97) is the live build. The first turn, which now bakes the wider
+encoder, takes about 415 ms on the Dell of its 1,000 ms (no timeout on our
+side in the four agents' 1,040 ladder games).
 The paste file is **82,191 characters** (17,809 left) and the
 native launcher **77,297**. `main`'s launcher is not the live file byte for
 byte: the live one (`dd33df97…`, 82,112 characters) was built before the
@@ -770,7 +782,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
-| 2026-10-09 | NNUE net r16_x128_l2400_s1601_rs (W1): r14 with a 27-128-128-32 encoder (widened, 2.4G rows); no opening book | bookless engines: vs r14 20 ms GSPRT [0, 5] H1 at N=2310, +15.20 ± 9.08; at CodinGame compute N=4000, +13.82 ± 5.94; vs its enc64 control C3 H1 at N=10930, +5.12 ± 4.12; ladder below resolution (P2 -0.042, 95% [-0.090, +0.023], vs a same-evening r14 control) | §69 |
+| 2026-10-09 | NNUE net r16_x128_l2400_s1601_rs (W1): r14's unscaled checkpoint widened to a 27-128-128-32 encoder, then 2.4G more rows; no opening book | bookless engines: vs r14 20 ms GSPRT [0, 5] H1 at N=2310, +15.20 ± 9.08; at CodinGame compute N=4000, +13.82 ± 5.94; vs its enc64 control C3 H1 at N=10930, +5.12 ± 4.12; ladder below resolution (four W1 agents vs a same-evening r14 control: P2 -0.046, clustered 95% [-0.090, +0.010]; P1 -0.024, 95% [-0.047, +0.003]) | §69 |
 | 2026-10-08 | Deep-search second-player opening book (snapshot s5 of the P2 book builder; payload format 2, up to three moves per position) | ladder, second player vs the fixed top 7: 0.207 ± 0.040 (n 75) against 0.063 ± 0.019 with the old book (+0.143 ± 0.044); no second-player book 0.231 ± 0.043; placements #4 32.32, #3 32.69 | §68 |
 | 2026-10-07 | ProbCut (depth >= 5, first 3 moves, depth - 4 against beta + 60 pawns) | N=1584, 328-1001-255, +16.0 ± 9.2, LLR +3.03 PASS; +0.42 ply at 90 ms; at CG compute N=2534, +16.3 ± 8.0, LLR +4.15 PASS | §67 |
 | 2026-10-04 | NNUE net r14_d5_final_s2_rs: r13w_20 fine-tuned for 600M rows on round thirteen's data and labels with a WDL filter and a power loss, rescaled to r13w_20's eval spread | booked paste builds vs r13w_20, 90 ms: GSPRT [0, 6] accepts H1 at N=4200 (LLR +3.32); fresh openings N=4000, 777-2551-672, +9.1 ± 5.9; Dell at CodinGame compute +12.9 ± 6.4 (N=4000); ladder: no measurable change (#4 33.19, #3 33.30) | §65 |

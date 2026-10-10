@@ -4,10 +4,12 @@ Since 2026-09-27 (improvement log section 56) Crossfish's whole evaluation is
 one small NNUE: a pattern-generator net, integer and incremental at run time,
 shared by the local engines (`crossfish_dev.hpp`, `crossfish_prev.hpp`) and
 the CodinGame bot. The shipped net is **r16_x128_l2400_s1601_rs** ("W1",
-since 2026-10-09, section 69): r14_d5_final_s2_rs with its pattern encoder
+since 2026-10-09, section 69): r14's unscaled checkpoint `r14_d5_final_s2`
+(the net behind the shipped r14_d5_final_s2_rs) with its pattern encoder
 widened from 27-64-64-32 to 27-128-128-32 (51,435 parameters instead of
-35,243) and trained 2.4G more rows; the head and everything that runs per
-node are unchanged. **r14_d5_final_s2_rs** (2026-10-04, section 65) was
+35,243), trained 2.4G more rows and rescaled like r14; the head and
+everything that runs per node are unchanged. **r14_d5_final_s2_rs**
+(2026-10-04, section 65) was
 r13w_20's weights fine-tuned for 600M rows on round thirteen's data with a
 WDL filter and a power loss. **r13w_20** (2026-10-01, section 64) was r12_M2's weights
 fine-tuned for 2.4G rows on round thirteen's data. Before it, **r12_M2** (2026-09-28, section 57) was the same
@@ -476,10 +478,18 @@ Dell pooled, GSPRT [0, +5] pentanomial:
 
 Same nodes per second on the same tree (+0.08% against an A/A control; the
 different-tree bench ratio of 1.020-1.023 measured tree composition); W1
-reaches depth 12 with 4.9% fewer nodes. On the CodinGame ladder the gain is
-below resolution: second player -0.042 (95% [-0.090, +0.023]) against a
-same-evening r14 control, first player -0.004, with a test power of about
-10-15% for +14 Elo (FINDINGS A19).
+reaches depth 12 with 4.9% fewer nodes. The tests against r14 measure the
+widening and the 2.4G extra rows together (W1 starts from r14's unscaled
+checkpoint); the test against C3 isolates the widening. On the CodinGame
+ladder the gain is below resolution: with two W1 agents, second player
+-0.042 (95% [-0.090, +0.023]) against a same-evening r14 control, first
+player -0.004, with a test power of about 10-15% for +14 Elo. With all four
+W1 agents (10-10, order W1 W1 control control W1 W1): second player -0.046
+(clustered 95% [-0.090, +0.010]), first player -0.024 (95% [-0.047,
++0.003]); still no significant difference, so the ladder remains below
+resolution, though the P2 interval's upper end is now just under the
+self-play-sized +0.013, so transfer to the second player's games is
+uncertain and opponent-specific (FINDINGS A19).
 
 **r14_d5_final_s2_rs** (improvement log section 65) against r13w_20, the shipped engine's booked paste
 builds in their match mode (`datasets/nnue2/r14/eval/gauntlet.py`, CodinGame's rules), three pre-registered tests:

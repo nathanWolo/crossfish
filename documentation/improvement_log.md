@@ -4437,9 +4437,13 @@ opponents' 6. None was in book. The analyses are
 
 ### The change
 
-The evaluation is the net **r16_x128_l2400_s1601_rs** ("W1"): the shipped
-r14_d5_final_s2_rs with its pattern encoder widened from 27-64-64-32 to
-**27-128-128-32** and trained for 2.4G more rows. The head (64 accumulator
+The evaluation is the net **r16_x128_l2400_s1601_rs** ("W1"): r14's
+unscaled checkpoint `r14_d5_final_s2.pt` (the net behind the shipped
+r14_d5_final_s2_rs, before its eval rescale) with its pattern encoder
+widened from 27-64-64-32 to **27-128-128-32**, trained for 2.4G more rows
+with the matched control C3's recipe and then rescaled by rule S13 (below).
+The tests against r14 measure the widening and the extra rows together; the
+test against C3 isolates the widening. The head (64 accumulator
 lanes, 16 -> 32 -> 1) and everything the search runs per node are unchanged;
 the encoder only runs in `load()`, where it bakes the 25.6 MB of pattern
 tables, so a wider encoder costs start-up time, not search time. The net has
@@ -4531,23 +4535,32 @@ of both hosts.
 W1 went live on 2026-10-09 as the bookless native launcher of the build
 below (agents 6788025 and 6788044, #6 30.55 and #6 30.61), and the live r14
 build was resubmitted the same evening as a control (6788058 #6 30.91,
-6788079 #6 30.85). Against the same 13 opponent agents (FINDINGS A19):
+6788079 #6 30.85). W1 was resubmitted on 2026-10-10 (agents 6788129, #8
+30.21, and 6788151, #9 29.97), after the control, so the order W1 W1
+control control W1 W1 brackets the control in time. Matched-opponent scores
+against the opponent agents both arms met (FINDINGS A19; 95% intervals from
+a bootstrap over clusters of games sharing their first 10 plies within an
+opponent agent):
 
-| | W1 - control | Uncertainty |
-| --- | ---: | --- |
-| second player | -0.042 | 95% [-0.090, +0.023] (bootstrap over clusters of games sharing their first 10 plies within an opponent agent) |
-| first player | -0.004 | s.e. 0.011-0.022 |
+| W1 - control | Two W1 agents (10-09, 13 opponents) | All four W1 agents (10-10, 14 opponents) |
+| --- | --- | --- |
+| second player | -0.042, 95% [-0.090, +0.023] | -0.046, 95% [-0.090, +0.010] |
+| first player | -0.004 (s.e. 0.011-0.022) | -0.024, 95% [-0.047, +0.003] |
 
 That is **below the ladder's resolution, not a loss**: +14 Elo is about
 +0.013 per game at the second player's base of ~0.2, and with a standard
 error of ~0.03 a two-agents-per-arm test detects it with about 10-15%
-probability (a 2 s.e. detection needs about 13 times the games). The
-self-play tests are the evidence of strength. W1 was resubmitted on
-2026-10-10 (agents 6788129, #8 30.21, and 6788151, #9 29.97) and is the
-live build. Our side had 0 timeouts in the W1 agents' games: the first turn,
-which now bakes the wider encoder, takes about 415 ms on the Dell (about 137
-ms more than r14's; roughly 550-600 ms projected on CodinGame) and fits the
-1,000 ms.
+probability (a 2 s.e. detection needs about 13 times the games). With all
+four W1 agents there is still no significant difference, but the second
+player's interval now ends just under the self-play-sized +0.013, so
+whether the gain transfers to the second player's games is uncertain, and
+the difference is opponent-specific: worse against morph, RoboStac, karliso
+and Babebibobu, better against MrSubZero, AllanB, Fancheng, Daporan and
+Apostolique. The self-play tests are the evidence of strength. W1 is the
+live build. Our side had 0 timeouts in the four W1 agents' 1,040 games: the
+first turn, which now bakes the wider encoder, takes about 415 ms on the
+Dell (about 137 ms more than r14's; roughly 550-600 ms projected on
+CodinGame) and fits the 1,000 ms.
 
 ### No book
 
@@ -4662,8 +4675,8 @@ failures:
   opened 4 4 (the protocol check now fails any other first move). The
   launcher's first turn includes the xz decode, the exec and the bake, and
   here shared its CPUs with the harness: the live W1 launcher, alone on a
-  Dell CPU, took 415 ms (2026-10-09), and its 520 ladder games had no
-  timeout on our side.
+  Dell CPU, took 415 ms (2026-10-09), and its 1,040 ladder games (four
+  agents) had no timeout on our side.
 
 ### What lost in round 16
 
