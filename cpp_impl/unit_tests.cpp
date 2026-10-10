@@ -966,8 +966,71 @@ static uint64_t play_book_table_hash(bool every_move) {
     return h;
 }
 
+// The booked build's pins (test_play_book): the decoded table's hashes, like
+// the network payload hashes. Regenerating or re-packing the book changes
+// them: update them with the book that ships. These are the s5 book's under
+// the r14 net (2026-10-08); the build ships no book since 2026-10-09, so they
+// are checked only when play_book_data.hpp holds a book.
+static constexpr uint64_t PLAY_BOOK_PIN_PRIMARY = 10147742875230593747ull;  // cg_selfcheck's table_checksum
+static constexpr uint64_t PLAY_BOOK_PIN_MOVES = 7272843604574170237ull;     // play_book_check's moves_checksum
+
+// No book (PLAY_BOOK_ENTRIES 0, the payload play_book_pack writes for an empty
+// text book): pb_init decodes nothing, the table stays empty and pb_lookup
+// never supplies a move, from either root or in random games.
+static void test_play_book_none(TestCtx &ctx) {
+    auto nnue = [](const PbView &v, int c) { return b64::evaluate_board(v, c); };
+    CHECK_EQ(PLAY_BOOK_FORMAT, 2);
+    CHECK_EQ(PLAY_BOOK_BYTES, 0);
+    CHECK_EQ(PLAY_BOOK_EVAL_FINGERPRINT, 0ull);  // belongs to no net
+    CHECK_EQ(sizeof(PLAY_BOOK_CJK), (size_t)1);  // the empty payload
+    CHECK(pb_eval_fingerprint(nnue) != PLAY_BOOK_EVAL_FINGERPRINT);
+    const bool was_ready = PB_READY;
+    const auto saved_table = PB_TABLE;
+    PB_READY = false;
+    CHECK(!(pb_init<GlobalBoard, Move>(nnue)));
+    CHECK(!PB_READY);
+    CHECK(PB_TABLE.empty());
+    Move bm;
+    {  // moving second: no reply to center-center
+        GlobalBoard root;
+        root.makeMove(Move{4, 4});
+        CHECK(!pb_lookup(root, bm));
+    }
+    {  // moving first: nothing after 4 4 and any reply
+        GlobalBoard root;
+        root.makeMove(Move{4, 4});
+        Move buf[81];
+        int n = root.fillLegalMoves(buf);
+        for (int i = 0; i < n; i++) {
+            root.makeMove(buf[i]);
+            CHECK(!pb_lookup(root, bm));
+            root.unmakeMove();
+        }
+    }
+    std::mt19937 rng(20261010);
+    Move buf[81];
+    int looked = 0;
+    for (int g = 0; g < 400; g++) {
+        GlobalBoard b;
+        b.makeMove(Move{4, 4});
+        while (b.checkWinner() == -1 && b.n_moves < 26) {
+            CHECK(!pb_lookup(b, bm));
+            looked++;
+            int n = b.fillLegalMoves(buf);
+            b.makeMove(buf[rng() % n]);
+        }
+    }
+    CHECK(looked > 400 * 10);
+    PB_TABLE = saved_table;
+    PB_READY = was_ready;
+}
+
 static void test_play_book(TestCtx &ctx) {
     crossfish_nnue_load_once();
+    if (PLAY_BOOK_ENTRIES == 0) {
+        test_play_book_none(ctx);
+        return;
+    }
     // The payload is coded with this net's move ordering: its fingerprint must
     // match the net, and a different evaluator must be refused before the walk.
     auto nnue = [](const PbView &v, int c) { return b64::evaluate_board(v, c); };
@@ -988,10 +1051,10 @@ static void test_play_book(TestCtx &ctx) {
     }
     CHECK((pb_init<GlobalBoard, Move>(nnue)));
     CHECK_EQ((int)PB_TABLE.size(), PLAY_BOOK_ENTRIES);
-    // Pinned like the network payload hashes: regenerating the book changes
-    // them. The first is the value cg_selfcheck prints (hashes and primaries).
-    CHECK_EQ(play_book_table_hash(false), 10147742875230593747ull);
-    CHECK_EQ(play_book_table_hash(true), 7272843604574170237ull);
+    // Pinned like the network payload hashes (PLAY_BOOK_PIN_*): regenerating the
+    // book changes them. The first is the value cg_selfcheck prints (hashes and primaries).
+    CHECK_EQ(play_book_table_hash(false), PLAY_BOOK_PIN_PRIMARY);
+    CHECK_EQ(play_book_table_hash(true), PLAY_BOOK_PIN_MOVES);
     // Every entry holds 1 to PB_MAX_MOVES moves, nothing above them.
     for (auto &kv : PB_TABLE) {
         uint32_t k = kv.second >> 24;
@@ -1124,6 +1187,17 @@ struct PlayBookTree {
 
 static void test_play_book_moves(TestCtx &ctx) {
     crossfish_nnue_load_once();
+    if (PLAY_BOOK_ENTRIES == 0) {  // no book: an empty tree from both roots
+        CHECK(!(pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); })));
+        CHECK(PB_TABLE.empty());
+        PlayBookTree tree{ctx};
+        GlobalBoard first;
+        first.makeMove(Move{4, 4});
+        tree.their(first);
+        CHECK(tree.ours.empty());
+        CHECK_EQ(tree.multi, 0);
+        return;
+    }
     CHECK((pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); })));
     PB_RNG = 20261008;
     PlayBookTree tree{ctx};
@@ -1321,6 +1395,21 @@ static void test_play_book_text(TestCtx &ctx) {
             CHECK_EQ(why.empty(), idx <= PB_TEXT_MAX_INDEX);
             if (idx > PB_TEXT_MAX_INDEX) CHECK(why.find("25-ply cap") != std::string::npos);
         }
+    }
+    {  // an empty text book: nothing to refuse; the packer writes the no-book payload
+        Book b = play_book_text_read("\n  \r\n");
+        CHECK(b.entries.empty());
+        int alt = -1;
+        CHECK_EQ(pb_pack_refusal(b, alt), std::string());
+        CHECK_EQ(alt, 0);
+        const std::string h = pb_no_book_header();
+        for (const char *want : {"static constexpr int PLAY_BOOK_FORMAT = 2;\n",
+                                 "static constexpr int PLAY_BOOK_ENTRIES = 0;\n",
+                                 "static constexpr int PLAY_BOOK_BYTES = 0;\n",
+                                 "static constexpr uint64_t PLAY_BOOK_EVAL_FINGERPRINT = 0ull;\n",
+                                 "static const char PLAY_BOOK_CJK[] = \"\";\n"})
+            CHECK(h.find(want) != std::string::npos);
+        CHECK_EQ(h.rfind("#pragma once\n", 0), (size_t)0);
     }
 }
 

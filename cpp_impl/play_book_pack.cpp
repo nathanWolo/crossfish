@@ -17,6 +17,8 @@
 // the walk reaches a position the text book lacks, or if any text-book entry
 // is never reached (for example a line that does not start from
 // center-center). The coding itself is in play_book_pack.hpp.
+// An empty text book (no positions) is the supported no-book configuration:
+// it writes PLAY_BOOK_ENTRIES 0 with an empty payload (pb_no_book_header).
 //
 //   play_book_pack <book.txt> <out.hpp>
 #include <cstdio>
@@ -50,6 +52,15 @@ int main(int argc, char **argv) {
                      "warning: %d line(s) reach a listed position by another seq with another move; their "
                      "moves are ignored (only lines with the position's own seq add moves). The first: %s\n",
                      book.transposed, book.first_transposed.c_str());
+    if (book.entries.empty()) {  // no book: a net-independent header, so no NNUE load
+        FILE *f = std::fopen(argv[2], "wb");
+        if (!f) { std::fprintf(stderr, "cannot write %s\n", argv[2]); return 1; }
+        std::fputs(pb_no_book_header().c_str(), f);
+        std::fclose(f);
+        std::printf("no book: %s has no book positions; wrote the no-book payload (0 entries) -> %s\n", argv[1],
+                    argv[2]);
+        return 0;
+    }
     crossfish_nnue_load_once();
 
     PackHooks hooks{book};

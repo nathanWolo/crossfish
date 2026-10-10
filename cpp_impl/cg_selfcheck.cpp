@@ -16,6 +16,9 @@
 // alternative with no continuation is not covered here. Every stored move is
 // checked by play_book_check (moves_checksum, draw uniformity) and the unit
 // tests, on the readable build: not through the native launcher.
+// With the no-book payload (PLAY_BOOK_ENTRIES 0, play_book.hpp) the book line
+// reads book=none entries=0 and the empty table's checksum (the FNV offset
+// basis), and the exit code is 0: no book is a supported configuration.
 //
 // Build it BEFORE a port and again AFTER. For a port of a tree-identical
 // change the two checksums must match exactly. Nothing here is compiled into
@@ -144,8 +147,9 @@ int main(int argc, char **argv) {
         [](const PbView &v, int c) { return b64::evaluate_board(v, c); });
     double book_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - book_t0).count();
     std::printf("cg_selfcheck book=%s entries=%zu table_checksum=%llu book_ms=%.1f\n",
-                book_ok ? "ok" : "FAILED", PB_TABLE.size(),
+                PLAY_BOOK_ENTRIES == 0 ? "none" : book_ok ? "ok" : "FAILED", PB_TABLE.size(),
                 (unsigned long long)play_book_table_checksum(), book_ms);
-    // A book packed with another net (or none) is a shipping error: fail the gate.
-    return book_ok ? 0 : 1;
+    // A book packed with another net, or one that fails to decode, is a shipping
+    // error: fail the gate. The no-book payload passes when nothing was decoded.
+    return (book_ok || (PLAY_BOOK_ENTRIES == 0 && PB_TABLE.empty())) ? 0 : 1;
 }

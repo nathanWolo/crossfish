@@ -32,6 +32,16 @@
 // 4 bytes in all). The payload carries PLAY_BOOK_FORMAT = 2, and pb_init does
 // not compile with a payload without it: format 1, the single-move stream of
 // the books before 2026-10-08, has no "another" bits and would decode wrongly.
+//
+// No book (the shipped configuration since 2026-10-09): play_book_pack writes
+// PLAY_BOOK_ENTRIES 0, PLAY_BOOK_BYTES 0, fingerprint 0 and an empty payload
+// from an empty text book. pb_init then returns false before it decodes
+// anything, PB_TABLE stays empty and pb_lookup never returns a move, so the bot
+// searches every move after its hard-coded center-center opener. Without that
+// early return a zero-byte payload would decode as one bogus entry (an all-0
+// bit stream). The empty book belongs to no net (fingerprint 0), so a net swap
+// needs no book step; packing a non-empty text book brings a book back.
+//
 // The runtime code is kept short on purpose: every character of it counts
 // against the CodinGame paste limit (cg_minify strips the comments).
 //
@@ -365,11 +375,13 @@ struct PbDecoder {
 };
 
 #ifndef PLAY_BOOK_NO_DATA
-// Decodes the payload into PB_TABLE. Returns false if the payload is malformed.
+// Decodes the payload into PB_TABLE. Returns false if the payload is malformed,
+// was packed with another evaluator, or is the empty no-book payload.
 // `eval` must be the evaluator the book was packed with.
 template <typename Board, typename MoveT, typename Eval>
 static bool pb_init(Eval eval) {
     static_assert(PLAY_BOOK_FORMAT == 2);  // fails on a format-1 payload: repack with play_book_pack
+    if (PLAY_BOOK_ENTRIES == 0) return false;  // no book (an empty text book): nothing to decode
     if (PB_READY) return true;
     if (pb_eval_fingerprint(eval) != PLAY_BOOK_EVAL_FINGERPRINT) return false;  // packed with another net
     static unsigned char buf[PLAY_BOOK_BYTES + 16];

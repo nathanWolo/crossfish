@@ -21,6 +21,7 @@ PYTHON ?= $(if $(wildcard $(ROOT)/.venv/bin/python),$(ROOT)/.venv/bin/python,pyt
 BIN := $(SRC_DIR)/bin
 # Opening book (documentation/play_book.md). Both the text book play_book.txt
 # and its packed payload play_book_data.hpp (payload format 2) are committed.
+# Since 2026-10-09 the text book is empty: no book (PLAY_BOOK_ENTRIES 0).
 PLAY_BOOK_TXT ?= $(SRC_DIR)/play_book.txt
 PLAY_BOOK_FIRST ?= 5
 PLAY_BOOK_SECOND ?= 4
@@ -167,14 +168,18 @@ book-inspect: $(BIN)/test_bots
 
 test: test-cpp test-python compile-cg compile-legend book-inspect
 
-# Opening book (documentation/play_book.md). The shipped text book is two
-# halves: the first player's from the uttt.ai fork (cg/book/uttt_book_gen.py),
-# the second player's from the deep-search P2 book builder, with up to 3 moves
-# per position (several "S" lines of a position). play-book-gen instead writes
-# a full-coverage book with crossfish's own search (an older method, ~1.7 h on
-# 7 threads). play-book packs the text book into play_book_data.hpp (payload
-# format 2) and checks the result against it (every stored move, and the
-# runtime's uniform choice between a position's moves).
+# Opening book (documentation/play_book.md). No book ships since 2026-10-09:
+# play_book.txt is empty, and play-book packs it into the no-book payload
+# (PLAY_BOOK_ENTRIES 0, fingerprint 0; pb_init decodes nothing), which
+# play-book-check, play-book-protocol and cg-native-check accept. The last
+# book (the s5 book: the first player's half from the uttt.ai fork, the second
+# player's from the deep-search P2 book builder, up to 3 moves per position) is
+# in git history: `git show 4919ed7:cpp_impl/play_book.txt > play_book.txt`,
+# then `make play-book` re-packs it under the current net. play-book-gen
+# writes a full-coverage book with crossfish's own search (an older method,
+# ~1.7 h on 7 threads). play-book packs a non-empty text book into
+# play_book_data.hpp (payload format 2) and checks the result against it
+# (every stored move, and the runtime's uniform choice between a position's moves).
 play-book-gen: $(BIN)/play_book_gen
 	$(BIN)/play_book_gen $(PLAY_BOOK_TXT) $(PLAY_BOOK_FIRST) $(PLAY_BOOK_SECOND) $(PLAY_BOOK_SEARCH_MS)
 

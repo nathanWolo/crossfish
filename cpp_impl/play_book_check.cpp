@@ -14,7 +14,11 @@
 // It prints two checksums of the decoded table: table_checksum over the hashes
 // and the primary moves (the value cg_selfcheck prints, and the value a
 // format-1 table with the same primaries gave), and moves_checksum over the
-// hashes and every stored move (test_play_book pins both).
+// hashes and every stored move (test_play_book pins both for a booked build).
+//
+// With the no-book payload (PLAY_BOOK_ENTRIES 0, from an empty text book) it
+// prints "pb_init: none" and passes only if pb_init decoded nothing and the
+// text book is empty too.
 //
 //   play_book_check <book.txt>
 #include <algorithm>
@@ -154,6 +158,11 @@ int main(int argc, char **argv) {
     crossfish_nnue_load_once();
     bool ok = pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); });
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (PLAY_BOOK_ENTRIES == 0) {  // the no-book payload: right only for an empty text book
+        std::printf("pb_init: none (no book, PLAY_BOOK_ENTRIES 0), %zu table entries; text book %zu positions\n",
+                    PB_TABLE.size(), g_text.entries.size());
+        return (!ok && PB_TABLE.empty() && g_text.entries.empty()) ? 0 : 1;
+    }
     std::printf("pb_init: %s, %zu table entries, %.1f ms\n", ok ? "ok" : "FAILED", PB_TABLE.size(), ms);
     if (!ok) return 1;
     std::printf("table_checksum=%llu (hashes and primary moves)\n", (unsigned long long)primary_table_checksum());
