@@ -5,7 +5,7 @@ one small NNUE: a pattern-generator net, integer and incremental at run time,
 shared by the local engines (`crossfish_dev.hpp`, `crossfish_prev.hpp`) and
 the CodinGame bot. The shipped net is **r16_x128_l2400_s1601_rs** ("W1",
 since 2026-10-09, section 69): r14's unscaled checkpoint `r14_d5_final_s2`
-(the net behind the shipped r14_d5_final_s2_rs) with its pattern encoder
+(r14_d5_final_s2_rs is its rescaled copy) with its pattern encoder
 widened from 27-64-64-32 to 27-128-128-32 (51,435 parameters instead of
 35,243), trained 2.4G more rows and rescaled like r14; the head and
 everything that runs per node are unchanged. **r14_d5_final_s2_rs**

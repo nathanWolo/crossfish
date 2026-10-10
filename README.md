@@ -533,11 +533,11 @@ are in `documentation/play_book.md`.
 On 2026-10-09 the net **r16_x128_l2400_s1601_rs** ("W1") replaced
 r14_d5_final_s2_rs as the evaluation, and the bot dropped its opening book
 (improvement log section 69). W1 starts from r14's unscaled checkpoint
-(`r14_d5_final_s2`, the net behind the shipped `_rs` copy) with its pattern
+(`r14_d5_final_s2`; r14_d5_final_s2_rs is its rescaled copy) with its pattern
 encoder widened from 27-64-64-32 to 27-128-128-32 (function-preserving: the
 new units' outgoing weights start at zero), then trained 2.4G more rows with
 the recipe of the matched control C3 and its eval rescaled by 1/1.0787;
-51,435 parameters. The test against r14 measures the widening and the 2.4G
+51,435 parameters. The tests against r14 measure the widening and the 2.4G
 rows together; the test against C3 isolates the widening. The encoder only
 runs in the start-up bake, so the per-node search code and speed are r14's.
 Pre-registered tests, desktop and Dell pooled, bookless engines:

@@ -4438,8 +4438,8 @@ opponents' 6. None was in book. The analyses are
 ### The change
 
 The evaluation is the net **r16_x128_l2400_s1601_rs** ("W1"): r14's
-unscaled checkpoint `r14_d5_final_s2.pt` (the net behind the shipped
-r14_d5_final_s2_rs, before its eval rescale) with its pattern encoder
+unscaled checkpoint `r14_d5_final_s2.pt` (r14_d5_final_s2_rs, the
+evaluation until this change, is its rescaled copy) with its pattern encoder
 widened from 27-64-64-32 to **27-128-128-32**, trained for 2.4G more rows
 with the matched control C3's recipe and then rescaled by rule S13 (below).
 The tests against r14 measure the widening and the extra rows together; the
