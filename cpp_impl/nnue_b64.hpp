@@ -1,6 +1,7 @@
 #pragma once
-// The engine's evaluation: the B-64 pattern-generator NNUE (net r14_d5_final_s2_rs since 2026-10-04, section
-// 65; r13w_20 from 2026-10-01, section 64; r12_M2 from 2026-09-28, section 57; B64_d5M_57ep before that).
+// The engine's evaluation: the B-64 pattern-generator NNUE (net r16_x128_l2400_s1601_rs since 2026-10-09,
+// section 69, the first with a 128-wide encoder; r14_d5_final_s2_rs from 2026-10-04, section 65; r13w_20 from
+// 2026-10-01, section 64; r12_M2 from 2026-09-28, section 57; B64_d5M_57ep before that).
 // crossfish_dev.hpp and the CodinGame bot (codingame_nnue.cpp) include this same file.
 //
 // The net, per perspective P (rows W = 65 wide: A = 64 accumulator lanes, then 1 PSQT lane):
@@ -12,14 +13,16 @@
 //   h = [clamp(acc_stm + rows, 0, 1)[:64], clamp(acc_other + rows, 0, 1)[:64]] -> 16 -> clamp -> 32 -> clamp
 //   -> 1; eval = trunc(1000 * (out + (psqt_stm - psqt_other) / 2)), from the side to move's view.
 // T and F (9 + 1 tables of 3^9 rows) are not stored. nnue_b64_net.hpp (tools/nnue_emit_b64_header.py)
-// holds the generator that makes them, an encoder 27 -> 64 -> 64 -> 32 of the pattern, one projection per
-// location and one for the forced board, with the other rows and the dense head: 35,243 parameters in
-// 30,923 CJK14 characters. load() decodes it once, bakes the rows of the 11,093 patterns a live board can
+// holds the generator that makes them, an encoder 27 -> ENC0 -> ENC1 -> 32 of the pattern (the widths come
+// from the header: 128 -> 128 for the shipped net, 64 -> 64 before it), one projection per location and one
+// for the forced board, with the other rows and the dense head: 51,435 parameters in 42,682 U15 characters
+// (35,243 with the 64-wide encoder). load() decodes it once, bakes the rows of the 11,093 patterns a live board can
 // have in float (fixed operation order, no FMA, so every build bakes the same floats) and quantizes as it
 // goes: lanes to int16 at 2^B64_QA, the PSQT lane to int16 at 2^B64_QPS in separate arrays, the dense head to
 // int16/int32 at 2^B64_QB, 2^B64_Q2, 2^B64_QO. The emitter picks those scales so that no accumulator, no
 // accumulator + constraint + forced-board row and no dense sum can overflow. 25.6 MB of static tables,
-// about 50 ms at start-up.
+// baked at start-up: about 130 ms at -O3 for the 128-wide encoder (about 50 ms for a 64-wide one), about
+// 260 ms cold with CodinGame's g++ flags (the bake is the only place the encoder width costs time).
 //
 // Kernels: int16 accumulators, AVX2; the first dense layer runs over nonzero activation pairs
 // (_mm256_madd_epi16); the hidden layers use rounded shifts back to int16.

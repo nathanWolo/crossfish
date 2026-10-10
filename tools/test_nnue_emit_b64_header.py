@@ -1,8 +1,9 @@
 """The committed NNUE payload (cpp_impl/nnue_b64_net.hpp) against the verified CodinGame build.
 
-The constants are the verified build's (net r14_d5_final_s2_rs, improvement log section 65; the checkpoint and
-export are in datasets/nnue2/, not in the repository): the sha256 of its payload and the hashes of the 16 integer
-tables its loader bakes, as printed by `python tools/nnue_emit_b64_header.py --check`.
+The constants are the verified build's (net r16_x128_l2400_s1601_rs, W1, improvement log section 69; the
+checkpoint and export are in datasets/nnue2/, not in the repository): the sha256 of its payload, its widths
+(encoder 27 -> 128 -> 128 -> 32 on the B-64 head) and the hashes of the 16 integer tables its loader bakes, as
+printed by `python tools/nnue_emit_b64_header.py --check`.
 unit_tests.cpp checks the same table hashes on the C++ loader, so the two mirrors of load() agree.
 """
 import sys
@@ -14,13 +15,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import nnue_emit_b64_header as emit  # noqa: E402
 
-PAYLOAD_SHA256 = "cde8c6109b36689ecf43faf5a049c8225a54c364077aad8290832eb416221834"
+PAYLOAD_SHA256 = "c6d0c3ada487e8292312240aaba2624b0de796852908f2af2faded6372d261a2"
 SCALES = (9, 12, 13, 13, 10)
 TABLE_HASHES = dict(
-    T=0x9bbaa082f8554047, TP=0xdd257686df3e3139, F=0x08b77ff215924031, FP=0xa8fb18727ed0c670,
-    DEC=0x38f22f9a6c383aeb, DECP=0xd64aeb301bcf3bab, CON=0x3debb6217730b511, CONP=0x888f865e5c67d11f,
-    BIAS=0x10cc379b6ed5fc3d, BIASP=0x9a691300c548b8fb, W1p=0x0b0d9ecc90d342cb, B1=0x00c61dcbf7904c1a,
-    W2p=0x83a5f9151fe78cc5, B2=0x6544804488cf5d81, WO=0xb5d9f93d417af25e, BO=0x5360ca77c125e377)
+    T=0x1508b99e11f9398a, TP=0x6477c257efc89302, F=0x1719ae9206389376, FP=0xba92cd6962ac309f,
+    DEC=0x4766c17357e5054e, DECP=0xa44ed68d4c3606d6, CON=0xd0dbaf4efd5111e4, CONP=0x349a2b848d3f5ba0,
+    BIAS=0x90c2f9f247591608, BIASP=0x9a691300c548b8fb, W1p=0xc4e128ceb1f4faf5, B1=0xf755960c4bce70ef,
+    W2p=0xb00a6ec10065dc86, B2=0x4bf8e6cb92fa4fb9, WO=0x640607e5087c6bca, BO=0x8464289de03c56a4)
 
 
 class CommittedHeaderTest(unittest.TestCase):
@@ -32,9 +33,14 @@ class CommittedHeaderTest(unittest.TestCase):
 
     def test_payload_is_the_verified_one(self):
         import hashlib
-        self.assertEqual(len(self.payload), 53865)
+        self.assertEqual(len(self.payload), 80027)
         self.assertEqual(hashlib.sha256(self.payload).hexdigest(), PAYLOAD_SHA256)
         self.assertEqual(self.qexp, SCALES)
+
+    def test_widths_are_the_verified_ones(self):
+        self.assertEqual((emit.A, emit.L1, emit.L2), (64, 16, 32))
+        self.assertEqual(tuple(emit.ENC), (128, 128, 32))
+        self.assertEqual(emit.n_params(), 51435)
 
     def test_scales_fit_the_net(self):
         got, bounds = emit.scales(self.params, self.T, self.F)

@@ -1530,11 +1530,18 @@ static uint64_t nnue_table_hash(const void *p, size_t n) {
     return h;
 }
 
-// load() must bake exactly the tables of the verified build of the committed net (r14_d5_final_s2_rs, the
-// build of improvement log section 65's ship tests; the hashes are nnue_emit_b64_header.py --check's): same
-// payload, same float bake, same quantization.
+// load() must bake exactly the tables of the verified build of the committed net (r16_x128_l2400_s1601_rs,
+// W1, the build of improvement log section 69's ship tests; the hashes are nnue_emit_b64_header.py --check's
+// and that build's): same payload, same float bake, same quantization.
 static void test_nnue_tables_match_verified_build(TestCtx &ctx) {
     b64::load();
+    CHECK_EQ(B64_ENC0, 128);  // the encoder 27 -> 128 -> 128 -> 32; the head is B-64's
+    CHECK_EQ(B64_ENC1, 128);
+    CHECK_EQ(B64_E, 32);
+    CHECK_EQ(B64_A, 64);
+    // The evaluator fingerprint (play_book.hpp): what a book packed under this net carries, and what the
+    // build of record's probe printed. It moves with any change to the evals.
+    CHECK_EQ(pb_eval_fingerprint(pb_nnue_eval), 3846873435862646193ull);
     CHECK_EQ(B64_QA, 9);
     CHECK_EQ(B64_QPS, 12);
     CHECK_EQ(B64_QB, 13);
@@ -1546,22 +1553,22 @@ static void test_nnue_tables_match_verified_build(TestCtx &ctx) {
         size_t n;
         uint64_t want;
     } tables[] = {
-        {"T", b64::T, sizeof(b64::T), 0x9bbaa082f8554047ull},
-        {"TP", b64::TP, sizeof(b64::TP), 0xdd257686df3e3139ull},
-        {"F", b64::F, sizeof(b64::F), 0x08b77ff215924031ull},
-        {"FP", b64::FP, sizeof(b64::FP), 0xa8fb18727ed0c670ull},
-        {"DEC", b64::DEC, sizeof(b64::DEC), 0x38f22f9a6c383aebull},
-        {"DECP", b64::DECP, sizeof(b64::DECP), 0xd64aeb301bcf3babull},
-        {"CON", b64::CON, sizeof(b64::CON), 0x3debb6217730b511ull},
-        {"CONP", b64::CONP, sizeof(b64::CONP), 0x888f865e5c67d11full},
-        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x10cc379b6ed5fc3dull},
+        {"T", b64::T, sizeof(b64::T), 0x1508b99e11f9398aull},
+        {"TP", b64::TP, sizeof(b64::TP), 0x6477c257efc89302ull},
+        {"F", b64::F, sizeof(b64::F), 0x1719ae9206389376ull},
+        {"FP", b64::FP, sizeof(b64::FP), 0xba92cd6962ac309full},
+        {"DEC", b64::DEC, sizeof(b64::DEC), 0x4766c17357e5054eull},
+        {"DECP", b64::DECP, sizeof(b64::DECP), 0xa44ed68d4c3606d6ull},
+        {"CON", b64::CON, sizeof(b64::CON), 0xd0dbaf4efd5111e4ull},
+        {"CONP", b64::CONP, sizeof(b64::CONP), 0x349a2b848d3f5ba0ull},
+        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x90c2f9f247591608ull},
         {"BIASP", &b64::BIASP, sizeof(b64::BIASP), 0x9a691300c548b8fbull},
-        {"W1p", b64::W1p, sizeof(b64::W1p), 0x0b0d9ecc90d342cbull},
-        {"B1", b64::B1, sizeof(b64::B1), 0x00c61dcbf7904c1aull},
-        {"W2p", b64::W2p, sizeof(b64::W2p), 0x83a5f9151fe78cc5ull},
-        {"B2", b64::B2, sizeof(b64::B2), 0x6544804488cf5d81ull},
-        {"WO", b64::WO, sizeof(b64::WO), 0xb5d9f93d417af25eull},
-        {"BO", &b64::BO, sizeof(b64::BO), 0x5360ca77c125e377ull},
+        {"W1p", b64::W1p, sizeof(b64::W1p), 0xc4e128ceb1f4faf5ull},
+        {"B1", b64::B1, sizeof(b64::B1), 0xf755960c4bce70efull},
+        {"W2p", b64::W2p, sizeof(b64::W2p), 0xb00a6ec10065dc86ull},
+        {"B2", b64::B2, sizeof(b64::B2), 0x4bf8e6cb92fa4fb9ull},
+        {"WO", b64::WO, sizeof(b64::WO), 0x640607e5087c6bcaull},
+        {"BO", &b64::BO, sizeof(b64::BO), 0x8464289de03c56a4ull},
     };
     for (const auto &t : tables) {
         const uint64_t got = nnue_table_hash(t.p, t.n);
@@ -1684,13 +1691,14 @@ static void nnue_position(int i, GlobalBoard &b) {
     }
 }
 
-// The committed net's (r14_d5_final_s2_rs) evals on those positions, checked against the float net in
-// PyTorch (mean |d| 8.8, max 48; r13w_20's were 6.1 / 30, r13w_11's 8.9 / 31, r12_M2's 4.9 / 28 with a
-// 20,000-position parity of 5.8 / 166): a change to the net, the bake, the quantization or the kernels shows
-// up here.
+// The committed net's (r16_x128_l2400_s1601_rs) evals on those positions: equal to
+// nnue_emit_b64_header.py --int-eval's integer reference, and checked against the float net (its BGN1
+// export, equal to the PyTorch checkpoint to 1e-11) at mean |d| 10.1, max 40 (r14_d5_final_s2_rs's were
+// 8.8 / 48, r13w_20's 6.1 / 30, r13w_11's 8.9 / 31, r12_M2's 4.9 / 28 with a 20,000-position parity of
+// 5.8 / 166): a change to the net, the bake, the quantization or the kernels shows up here.
 static void test_nnue_fixed_positions(TestCtx &ctx) {
-    static const int want[16] = {1433, -1431, -296, -117,  305,  745,  451,  1411,
-                                 1824, -2666, 8745, 11145, 7734, 8526, 5407, 12417};
+    static const int want[16] = {1523, -1441, -266, -77,  351,  907,  560,  1353,
+                                 1526, -2779, 8837, 12419, 7807, 7828, 5100, 11381};
     CrossfishDev dev;
     int drawn = 0, free_moves = 0, decided = 0;
     for (int i = 0; i < 16; i++) {

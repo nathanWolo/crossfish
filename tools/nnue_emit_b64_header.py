@@ -7,24 +7,29 @@
   python tools/nnue_emit_b64_header.py --int-eval POS.cfdg OUT.txt [--header HEADER]
 
 NET is the lane-paired BGN1 export of a gen_nnue pattern-generator checkpoint
-(`tools/experiments/fast_nnue/export_bgn.py export NAME OUT --perm`, which rebuilds
-datasets/nnue2/fast/B64_d5M_57ep_perm.bin byte for byte from datasets/nnue2/probe/B64_d5M_57ep.pt); only its
-generator section and its dense head are read. The net's widths come from the file: any A with A % 16 == 0
-(the shipped net is B-64; B-96 and B-128 are verified, documentation/nnue_generic_a.md), an L1 x L2 head
-(L1 % 16 == 0, L2 % 8 == 0) and a three-layer encoder. The header declares them (B64_A, B64_L1, B64_L2,
-B64_E, B64_ENC0, B64_ENC1) and the runtime compiles for them; a header for another width goes under
-cpp_impl/experimental/ and is built with `make NNUE_NET=experimental/NAME.hpp ...`. (On this branch,
-nnue_b64.hpp takes only the encoder widths from the header and static_asserts the B-64 head, A 64, L1 16,
-L2 32, E 32; other A / L1 / L2 need the scaling study's runtime, 425aa1a.) The shipped header
-came from that file with every default below:
+(`tools/experiments/fast_nnue/export_bgn.py export NAME OUT --perm`); only its
+generator section and its dense head are read. The net's widths come from the file: the accumulator width A
+(A % 16 == 0), an L1 x L2 head (L1 % 16 == 0, L2 % 8 == 0) and a three-layer encoder 27 -> ENC0 -> ENC1 -> E.
+The header declares them (B64_A, B64_L1, B64_L2, B64_E, B64_ENC0, B64_ENC1). cpp_impl/nnue_b64.hpp takes the
+encoder widths from it and static_asserts the B-64 head (A 64, L1 16, L2 32, E 32), so only the encoder may
+differ from B-64 (other A / L1 / L2 need the scaling study's runtime, commit 425aa1a). The shipped header
+(net r16_x128_l2400_s1601_rs: encoder 27 -> 128 -> 128 -> 32, 51,435 parameters; documentation/
+improvement_log.md section 69) came from its export with every default below:
 
-  python tools/nnue_emit_b64_header.py datasets/nnue2/fast/B64_d5M_57ep_perm.bin --label B64_d5M_57ep
+  python tools/experiments/fast_nnue/export_bgn.py export r16_x128_l2400_s1601_rs.pt NET.bin --perm
+  python tools/nnue_emit_b64_header.py NET.bin --label r16_x128_l2400_s1601_rs
 
-which reproduces the verified CodinGame build (datasets/nnue2/cg/d5M57, `quant_gen.py emit --qexp
-9,13,13,13,10 --refit-groups proj,fwd,dense --config enc=14,proj=12,fwd=12,dec=14,con=13,dense=14,psqt=14,
-bias=14`) byte for byte: the same 54,114-byte payload, so the same decoded generator and baked tables.
-Calibration reads datasets/nnue2/d8_a.cfdg (--calib), which is not in the repository. Numerical steps
-(least squares, Cholesky) were checked with numpy 2.5.2.
+(NET.bin = r16_x128_l2400_s1601_rs_perm.bin, sha256 766c4d6d4278aa8d...)
+
+which reproduces W1's verified build (datasets/nnue2/r16/build/r16_x128_l2400_s1601_rs_rtB84db7aa2) byte for
+byte: the same 80,027-byte payload (sha256 c6d0c3ada487e829...), so the same decoded generator and baked tables.
+The first shipped header, B64_d5M_57ep (datasets/nnue2/fast/B64_d5M_57ep_perm.bin, rebuilt byte for byte from
+datasets/nnue2/probe/B64_d5M_57ep.pt), likewise reproduced the verified CodinGame build
+(datasets/nnue2/cg/d5M57, `quant_gen.py emit --qexp 9,13,13,13,10 --refit-groups proj,fwd,dense --config
+enc=14,proj=12,fwd=12,dec=14,con=13,dense=14,psqt=14,bias=14`): the same 54,114-byte payload.
+Calibration reads datasets/nnue2/d8_a.cfdg (--calib) and the float error report datasets/nnue2/fnn1/
+parity_in.cfdg (--sample); neither is in the repository. Numerical steps (least squares, Cholesky) were
+checked with numpy 2.5.2.
 
 --check decodes a header's payload, bakes and quantizes it exactly as nnue_b64.hpp load() does (float32,
 same operation order), recomputes the integer scales and prints the FNV-1a hashes of the 16 integer tables;
@@ -71,8 +76,9 @@ row, every stored accumulator and every accumulator + constraint row + forced-bo
 all positions the features can express (per-board extremes by the pattern's stone difference, combined
 under the stone-count balance of a real game: the side to move has as many stones as the other or one
 fewer); the others are the largest with the int32 sums of their layer bounded. `scales()` is a port of the
-experiment loader's choice (tools/experiments/fast_nnue/fast_nnue_b.hpp quantize()): 9, 13, 13, 13, 10 here,
-and 10, 13, 14, 14, 11 on the first CodinGame build's B64_lr1e2, as that loader chose.
+experiment loader's choice (tools/experiments/fast_nnue/fast_nnue_b.hpp quantize()): 9, 12, 13, 13, 10 on the
+shipped net, 9, 13, 13, 13, 10 on B64_d5M_57ep, and 10, 13, 14, 14, 11 on the first CodinGame build's
+B64_lr1e2, as that loader chose.
 """
 from __future__ import annotations
 
