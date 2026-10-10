@@ -966,11 +966,14 @@ static uint64_t play_book_table_hash(bool every_move) {
     return h;
 }
 
-// The booked build's pins (test_play_book): the decoded table's hashes, like
-// the network payload hashes. Regenerating or re-packing the book changes
-// them: update them with the book that ships. These are the s5 book's under
-// the r14 net (2026-10-08); the build ships no book since 2026-10-09, so they
-// are checked only when play_book_data.hpp holds a book.
+// The booked build's pins (test_play_book): hashes of the decoded table (the
+// position hashes with the primary move, and with every stored move), not of
+// the payload. They depend only on the book's positions and moves: a re-pack
+// under another net changes the payload but decodes to the same table (s5
+// restored from 4919ed7 and packed under W1 keeps both values). A different
+// book changes them: update them with the book that ships. These are the s5
+// book's (2026-10-08); the build ships no book since 2026-10-09, so they are
+// checked only when play_book_data.hpp holds a book.
 static constexpr uint64_t PLAY_BOOK_PIN_PRIMARY = 10147742875230593747ull;  // cg_selfcheck's table_checksum
 static constexpr uint64_t PLAY_BOOK_PIN_MOVES = 7272843604574170237ull;     // play_book_check's moves_checksum
 
@@ -1051,8 +1054,9 @@ static void test_play_book(TestCtx &ctx) {
     }
     CHECK((pb_init<GlobalBoard, Move>(nnue)));
     CHECK_EQ((int)PB_TABLE.size(), PLAY_BOOK_ENTRIES);
-    // Pinned like the network payload hashes (PLAY_BOOK_PIN_*): regenerating the
-    // book changes them. The first is the value cg_selfcheck prints (hashes and primaries).
+    // Pinned (PLAY_BOOK_PIN_*): the decoded table's hashes, so another book changes them and a
+    // re-pack of the same book under another net does not. The first is the value cg_selfcheck
+    // prints (hashes and primaries).
     CHECK_EQ(play_book_table_hash(false), PLAY_BOOK_PIN_PRIMARY);
     CHECK_EQ(play_book_table_hash(true), PLAY_BOOK_PIN_MOVES);
     // Every entry holds 1 to PB_MAX_MOVES moves, nothing above them.

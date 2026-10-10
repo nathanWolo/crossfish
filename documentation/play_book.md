@@ -56,17 +56,22 @@ the same code as with a book:
   400 random games), `test_play_book_moves` an empty tree, and
   `test_play_book_text` still packs a small book in memory and decodes it
   with the runtime's walk, so the coder stays tested. The booked checks and
-  their table-checksum pins (`PLAY_BOOK_PIN_*`, the s5 book's under r14) run
-  only when a book is packed.
+  their table-checksum pins (`PLAY_BOOK_PIN_*`, the s5 book's) run only when
+  a book is packed.
 
 **Restoring a book.** Books are move lists and do not depend on the net, so
 any earlier text book can come back: copy it to `cpp_impl/play_book.txt`
 (the last shipped one, s5 with uttt.ai's first-player half: `git show
 4919ed7:cpp_impl/play_book.txt > cpp_impl/play_book.txt`), run
 `make -C cpp_impl play-book` (it packs the book under the current net's move
-ordering and fingerprint, then checks it), update the `PLAY_BOOK_PIN_*`
-checksums in `unit_tests.cpp` from `play_book_check`'s output, regenerate the
-paste and the native launcher, and test the book on the ladder (below).
+ordering and fingerprint, then checks it), regenerate the paste and the
+native launcher, and test the book on the ladder (below). The
+`PLAY_BOOK_PIN_*` checksums in `unit_tests.cpp` hash the decoded table (its
+position hashes and moves), not the payload, so they depend on the book and
+not on the net: s5 restored from 4919ed7 and packed under W1 keeps both
+(`table_checksum` 10147742875230593747, `moves_checksum`
+7272843604574170237). Only a different book needs new pins, taken from
+`play_book_check`'s output.
 
 The rest of this document describes the book as it last shipped (2026-10-08
 to 10-09) and how it was built and measured.
@@ -452,7 +457,7 @@ lines). Then:
 ```bash
 cp <the text book> cpp_impl/play_book.txt
 make -C cpp_impl play-book          # pack + check against the text book (every move, the random choice)
-make -C cpp_impl test               # update the two pinned table checksums in test_play_book first
+make -C cpp_impl test               # a book other than s5: first update the two pinned table checksums (PLAY_BOOK_PIN_*)
 make -C cpp_impl cg-input
 make -C cpp_impl play-book-protocol # exact book use through the real protocol
 ```
