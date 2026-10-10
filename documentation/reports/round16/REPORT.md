@@ -2,13 +2,16 @@
 
 > **About this report.** It was written for the repository on 2026-10-10 from the round's records. Those records,
 > including nets, game files, logs, plans and scripts, live in the local experiment archive `datasets/nnue2/`, which
-> is git-ignored and not part of this repository. Paths below are relative to that archive's `r16/` directory unless
-> they say otherwise. The figures in [`fig/`](fig/) were drawn with matplotlib from the raw result files: the
-> tests' `summary.json`, `results/losses.jsonl` and the CodinGame ladder replays.
+> is git-ignored and not part of this repository. Paths in the body are relative to that archive's `r16/` directory
+> unless they say otherwise, so the round's draft plan is `../ROUND16_PLAN.md`. The Sources section gives its paths
+> relative to `datasets/nnue2/` itself. The figures in [`fig/`](fig/) were drawn with matplotlib by
+> `report/make_figs_v2.py` from the raw result files: the tests' `summary.json`, `results/losses.jsonl` and the
+> CodinGame ladder replays.
 
 **Status (2026-10-10, PDT): final.** Round 16 ran from 10:45 on 2026-10-08 (the first B16 training run) to the
-four-agent ladder reading at 01:40 on 2026-10-10. The widened net W1 (`r16_x128_l2400_s1601_rs`) is live on
-CodinGame without an opening book.
+four-agent ladder reading early on 2026-10-10: the last agent placed at 01:32, and FINDINGS A19 was updated by
+01:40. Read-only scouts for a still wider encoder ran alongside, from 00:48 to 01:55 (section 6). The widened net W1
+(`r16_x128_l2400_s1601_rs`) is live on CodinGame without an opening book.
 
 ## Abstract
 
@@ -50,7 +53,8 @@ widened net's speed gate, was re-read by a dated ruling after its measurements a
 - **The offline loss did not order these changes.** Contrasts with offline gains of +13 to +14 per mille played
   anywhere from −11 to +15 Elo ([Figure 2](fig/fig2_offline_vs_play.png)).
 - **The ladder cannot resolve the gain, and it does not show it.** Four W1 agents were compared with two r14 agents
-  placed between them in time (order W1 W1 r14 r14 W1 W1, so a linear drift of the field cancels).
+  placed between them in time (order W1 W1 r14 r14 W1 W1). This brackets the control in time, so a linear drift of
+  the field largely cancels.
   - W1's second-player (P2) score differed by −0.046, with a cluster-robust 95% interval of [−0.090, +0.010]. Its
     first-player (P1) score differed by −0.024 ([−0.047, +0.003]).
   - Both intervals hold 0 at the clustering chosen before the last two agents played, so W1 is not shown to be
@@ -97,7 +101,7 @@ direction: it ran 1.2% faster per node.
 
 **The rule this round follows.** The owner's rule for "nimble rounds" (10-05) is frozen data, one idea per short
 fine-tune, judgement by games and never by offline loss, and a one-line pre-registered rule per test. The draft plan
-`ROUND16_PLAN.md` listed ten candidate tests, R16-0 to R16-9. Four ran: R16-0 (continuation), R16-1 (EMA), R16-5
+`../ROUND16_PLAN.md` listed ten candidate tests, R16-0 to R16-9. Four ran: R16-0 (continuation), R16-1 (EMA), R16-5
 (macro context, on the owner's request of 10-08, "Pls see if u can get halfkp style to gain") and R16-2 (the widened
 encoder, on the owner's request of 10-09: "let's see if you can get the bigger encoder as a gainer. So train it, sprt
 it etc."). A featurization scout, analysis only, ran between R16-5 and R16-2. R16-3, R16-4 and R16-6 to R16-9 did not
@@ -147,7 +151,8 @@ end.
 
 ### 2.2 Runtime and engines
 
-The evaluator is the pattern-generator NNUE (see `documentation/nnue_training_and_implementation.md`).
+The evaluator is the pattern-generator NNUE (see
+[`documentation/nnue_training_and_implementation.md`](../../nnue_training_and_implementation.md)).
 
 **Where the encoder runs.** The encoder runs only at start-up, when it is baked into per-pattern tables. A wider
 encoder therefore lengthens the bake but leaves the per-node work unchanged.
@@ -160,10 +165,11 @@ first A/A smoke, which used the scaling study's r14 build on the older r13 runti
   and R16-5. They were compiled with g++ 11.4 using CodinGame's command line on the ThinkPad.
 - **`claude/macro-ctx-runtime` f357a24** (local only) is the macro-context port; it built the A2 and A3 engines.
   Context rows fold into the projection, and deciding moves re-context their boards incrementally.
-- **Runtime B, `claude/enc128-runtime` 84db7aa** (local only; commits a2672c9 and 84db7aa on adda324), lets the bake
-  read any encoder width from the net header. Against adda324 it changes six files: a Makefile target, the
-  regenerated `cg_input.cpp` (+286 UTF-16 units), the encoder-only hunks of `nnue_b64.hpp`, the widths line of r14's
-  header, a new `nnue_parity.cpp`, and the generic emitter. The search code and `eval_avx` are unchanged.
+- **Runtime B, `claude/enc128-runtime` 84db7aa** (commits a2672c9 and 84db7aa on adda324; a local branch while the
+  round ran, merged into this branch on 10-10 as c122723) lets the bake read any encoder width from the net header.
+  Against adda324 it changes six files: a Makefile target, the regenerated `cg_input.cpp` (+286 UTF-16 units), the
+  encoder-only hunks of `nnue_b64.hpp`, the widths line of r14's header, a new `nnue_parity.cpp`, and the generic
+  emitter. The search code and `eval_avx` are unchanged.
   - On runtime B, r14 rebuilds bit-identically: payload cde8c610, fingerprint 9446452298351114632, all selfchecks
     and bench 12 499aa1530ed872d3 / 30,721,792 on the desktop and the Dell.
   - Every R16-2 engine was built on runtime B: Dell binaries with g++ 13.3 and CodinGame's command line, desktop
@@ -198,8 +204,8 @@ lines remain.
 
 The CGC budgets are the calibrated C++ budgets (desktop 49 ms with 7 threads, Dell 62 ms with 3 threads) times 1.075,
 the native build's factor. They were not re-probed for `cg_nobook`. Both hosts' pairs feed one pooled result, so
-that result mixes two compute levels; per-host Elo is reported but not judged. Throughput was about 850-1,015 games
-per minute on the laptops and 1,240-1,285 on the desktop and the Dell.
+that result mixes two compute levels; per-host Elo is reported but not judged. At 20 ms, throughput was about 850-1,015
+games per minute on the laptops and 1,240-1,285 on the desktop and the Dell; T3 at CG compute ran at about 312.
 
 ## 3. Pre-registration and deviations
 
@@ -207,7 +213,7 @@ per minute on the laptops and 1,240-1,285 on the desktop and the Dell.
 
 | Plan | Covers | Written / frozen | What it fixes |
 | --- | --- | --- | --- |
-| `ROUND16_PLAN.md` §3 | R16-0, R16-1 | draft of 10-08, before both runs (the file was last edited at 12:01, after them, to add a status line) | one-line rules: B16 vs r14; EMA vs final weights, both GSPRT [0, +5] |
+| `../ROUND16_PLAN.md` §3 | R16-0, R16-1 | draft of 10-08, before both runs (the file was last edited at 12:01, after them, to add a status line) | one-line rules: B16 vs r14; EMA vs final weights, both GSPRT [0, +5] |
 | `MACRO_PLAN.md` | R16-5: A1, A2, A3, C3 | written 00:35 on 10-09, last modified 00:37, before any R16-5 training or game | attempts and rules; speed gate G2 (a mode with more than 10% zero-context overhead is not played); order rule L; build gates G1-G6; openings |
 | `WIDEN_PLAN.md` (sha256 591560bd…) | R16-2: W1 | 14:40-14:56 on 10-09 (file modified 14:55), before W1's launch at 14:58; frozen from T1's first game | gates G1-G6, smoke S0, T1 (decides), T3 (CGC veto), T2 (attribution, read by a fixed table), no fallback arm |
 
@@ -226,7 +232,7 @@ per minute on the laptops and 1,240-1,285 on the desktop and the Dell.
 | # | When | Plan | What happened | Bearing on inference |
 | --- | --- | --- | --- | --- |
 | 1 | 10-08 11:53 | R16-0 runs to a decision or the 30,000 cap (the cap counts as FAIL) | The owner stopped it at 21,028 games, LLR −1.09 | No decision. The interval [−1.0, +5.0] is reported as a stopped estimate |
-| 2 | 10-08 | ROUND16_PLAN: a fresh seed and a fresh opening range per test, and `tools/sprt_cluster.py` | Seed 1601 everywhere, to pair each arm with its control; per-test reshuffles with exclusion; the pooled referee driver | Contrasts are one-factor, but each arm is a single seed (σ_net about 0, upper about 2; E3). Openings are disjoint within the round only |
+| 2 | 10-08 | ROUND16_PLAN: a fresh seed and a fresh opening range per test, and `tools/sprt_cluster.py` (a pooled-SPRT script in the owner's main checkout, not tracked in this repository) | Seed 1601 everywhere, to pair each arm with its control; per-test reshuffles with exclusion; the pooled referee driver | Contrasts are one-factor, but each arm is a single seed (σ_net about 0, upper about 2; E3). Openings are disjoint within the round only |
 | 3 | 10-09 01:30-02:45 | MACRO_PLAN §2.4 runtime spec | Five implementation changes to the port (no refresh fallback, payload end check, exporter threshold, header comment, plain paste size) | None on the results: exact integer parity held (9 × 20,000 positions, 0 mismatches) |
 | 4 | 10-09 14:40 | ROUND16_PLAN R16-2: enc128 at 600M first, then 2.4G on a fail | One 2.4G arm with its matched control C3 | Logged in WIDEN_PLAN before any training |
 | 5 | 10-09 14:40 | ROUND16_PLAN: games on the laptops, engines from g++-11 | Desktop + Dell (owner: "Why only run on dell? You also have the desktop to use"); Dell engines from g++ 13.3, because the ThinkPad was away | Both engines in every pair come from the same compiler on the same host |
@@ -273,9 +279,9 @@ plays its final weights.
 ### 4.2 R16-0: the plain continuation B16 (FINDINGS L13)
 
 B16 against r14 read +1.98 ± 3.02 at 21,028 games, with LLR −1.09, when the owner stopped the test about 9 minutes
-before the cap. There is no decision under the rule. The interval rules out a loss of more than about 1 Elo and does
-not reach +5. The test was on course for the cap, which counts as a FAIL. This matches round 14's few-Elo gains from
-continuation (L13). r14 stayed the comparator.
+before the cap. There is no decision under the rule. The interval rules out a loss of more than about 1 Elo, and its
+upper end is about +5. The test was on course for the cap, which counts as a FAIL. This matches round 14's few-Elo
+gains from continuation (L13). r14 stayed the comparator.
 
 ### 4.3 R16-5: the macro context (FINDINGS A16, confirmed)
 
@@ -398,8 +404,9 @@ at a fixed 20 ms per move on the machines where the cost arises, so any real per
 - Per host: desktop +3.80 ± 5.00, Dell +7.42 ± 7.20.
 - Reading under the plan's fixed table (T1 H1, T2 H1): **"the width is the gainer"**. H1 here means better than 0
   and consistent with +5, not at least +5.
-- C3 against r14 was never played. Subtracting T2 from T1 puts C3 at about +10 over r14. That figure comes from two
-  stopped estimates, so it is not a test.
+- C3 against r14 was never played. Subtracting T2 from T1 (15.20 − 5.12) puts C3 at about +10 over r14. FINDINGS
+  A18 says roughly +9, which is what T3's +13.82 gives in T1's place (+8.7). Both figures rest on stopped estimates,
+  and the second also mixes two compute levels, so neither is a test.
 
 **Hygiene and the Dell stall.**
 
@@ -433,7 +440,8 @@ became −1.35, +15.20 and −11.38 Elo. The widening's +8.8‰ over C3 played +
 no P2 lines. The hard-coded 4 4 opener stays.
 
 **The toolchain route.** The repository's native route needs clang 23.1.2 and g++ 11.4 headers, and those existed
-only on the ThinkPad. On the Dell a user-space route was put together:
+only on the ThinkPad. On the Dell a user-space route was put together, which is now documented in section 3 of
+[`documentation/native_build.md`](../../native_build.md):
 
 - LLVM 23.1.2 and g++ 11.4 headers, under `~/cgbin`;
 - an ICU-70 forwarding shim, so that lld starts;
@@ -444,16 +452,21 @@ The route was validated first by rebuilding the live r14 launcher from adda324. 
 one (d6d902e2…), with identical selfchecks. With the wrapper, the binary needs at most GLIBC_2.34; without it, it
 needs GLIBC_2.38, which CodinGame cannot load.
 
-**No book.** Runtime B's real `play_book.hpp` is linked with a zero-entry data header (0 entries, 0 bytes,
-fingerprint 0). `pb_init` rejects that payload at its fingerprint check, so `pb_lookup` never returns a move. Two
-pieces of the repository's tooling cannot handle this case:
+**No book.** The shipped launcher links runtime B's real `play_book.hpp` with a zero-entry data header (0 entries,
+0 bytes, fingerprint 0). `pb_init` rejects that payload at its fingerprint check, so `pb_lookup` never returns a
+move. At ship time two pieces of the repository's tooling could not handle this case:
 
-- W1's packer refuses an empty text book.
-- The stock `make cg-native-check` stops at its second step, because the launcher's selfcheck prints
-  `book=FAILED entries=0` and exits 1.
+- W1's packer refused an empty text book.
+- The stock `make cg-native-check` stopped at its second step, because the launcher's selfcheck printed
+  `book=FAILED entries=0` and exited 1.
 
-The ship therefore used no-book copies of those checks. Making a no-book build pass the repository's own checks is
-part of merging runtime B.
+The ship therefore used no-book copies of those checks. On 10-10 this branch then merged runtime B (c122723) and made
+an empty text book the supported no-book configuration (22fae39). The packer now writes the no-book header for it,
+`pb_init` returns at once, and `cg_selfcheck` prints `book=none` and exits 0, so `make cg-native-check` can pass;
+9724033 lets `play_book_match` pass without a book. The launcher committed on this branch was rebuilt from the merged
+tree on the same Dell route: 77,297 UTF-16 units (`ef1a2631…`), with a 282,056-byte binary. It is not the live file
+byte for byte, because the compiler now drops the book decoder. At all eight selfcheck settings it gives the live
+launcher's node counts and checksums; only the book line differs.
 
 **The shipped files.**
 
@@ -485,8 +498,10 @@ problems on our side in 1,040 games (four agents).
 **Submissions.** Six agents placed in one night, and each played 260 games. W1 is the shipped bookless launcher
 (dd33df97…). The control is the r14 launcher that was live before W1, without a P2 book (d6d902e2…), resubmitted
 unchanged. The control's two agents sit between W1's two pairs in time, so a drift of the field that is linear in
-time cancels from the comparison. The ladder scores themselves are not compared, because one placement's score has an
-SD of about 0.36 (FINDINGS A19).
+time largely cancels from the comparison. It would cancel exactly only if both arms had the same mean time. Taking
+each placement's midpoint, from submission to placement, W1's four average about 23:34 and the control's two about
+22:59: W1's mean is about 35 minutes later, because of the hour's gap before the resubmission. The ladder scores
+themselves are not compared, because one placement's score has an SD of about 0.36 (FINDINGS A19).
 
 **Table 4. The ladder agents.** "Placed" is the time the placement finished.
 
@@ -518,11 +533,18 @@ agents on both sides:
   00:05-00:35 on 10-10: the gain is below the ladder's resolution, and W1 is not shown to be worse. W1 was then
   resubmitted twice.
 
-**Four W1 agents (10-10, 01:40).** With the restored pair, the comparison covers 14 opponent agents: 393 W1 games
-against 217 control games on P2. The 10-ply cluster definition is the one chosen at the 00:05 correction, before the
-restored agents had played.
+**Four W1 agents (10-10, after the last placement at 01:32).** With the restored pair, the comparison covers 14
+opponent agents: 393 W1 games against 217 control games on P2. The 10-ply cluster definition is the one chosen at
+the 00:05 correction, before the restored agents had played.
 
-**Table 5. W1 minus the control, four W1 agents against two control agents.** Bootstrap SEs over 2,000 resamples.
+**Table 5. W1 minus the control, four W1 agents against two control agents.** Bootstrap SEs over 2,000 resamples,
+as recorded on 10-10 (`README.md`, FINDINGS A19) by `report/cluster_w1.py` with Random(1601). That script takes its
+opponents from a Python set, so string-hash randomization changes which opponent each bootstrap draw goes to, and
+its bounds carry Monte Carlo noise of a few thousandths that does not reproduce run to run. In 13 reruns under fixed
+hash seeds (computed for this report, `report/cluster_hashseed/`), the P2 10-ply interval's lower end ran from −0.093
+to −0.087 and its upper end from +0.006 to +0.010, with SE 0.024-0.025; for P1 the ends ran from −0.049 to −0.046
+and from +0.001 to +0.004, with SE 0.012-0.013. The per-game SEs were 0.021-0.022 (P2) and 0.017-0.018 (P1). Every
+P2 upper end stayed below +0.014.
 
 | Seat | Difference | SE, each game its own cluster | SE, 10-ply clusters | 95%, 10-ply clusters |
 | --- | ---: | ---: | ---: | --- |
@@ -530,7 +552,8 @@ restored agents had played.
 | P1 | −0.024 | 0.018 | 0.013 | **[−0.047, +0.003]** |
 
 Both seats together read −0.037 (SE 0.028, from the per-opponent variances). The deterministic rerun for Figure 3
-gives SE 0.025 and [−0.089, +0.009] for P2, and SE 0.013 and [−0.049, +0.003] for P1.
+(`report/make_figs_v2.py`, which sorts the opponents and the clusters) gives per-game SEs of 0.022 (P2) and 0.017
+(P1). At 10-ply clusters it gives SE 0.025 and [−0.089, +0.009] for P2, and SE 0.013 and [−0.048, +0.003] for P1.
 
 **What the four agents show.**
 
@@ -541,9 +564,11 @@ gives SE 0.025 and [−0.089, +0.009] for P2, and SE 0.013 and [−0.049, +0.003
 - **Transfer to P2 not shown.** The P2 interval's upper end, +0.010, is now below +0.014, the shift that a +14 Elo
   gain would give at the control's P2 score of 0.225. P1's upper end, +0.003, is likewise just below its +0.005. So
   the self-play gain is not shown to carry over to W1's P2 games against this field.
-- **Opponent-specific.** The P2 difference is concentrated in a few opponents (Table 6). W1 scored worse than the
-  control against morph, RoboStac, karliso and Babebibobu, and better against MrSubZero, AllanB, Fancheng, Daporan and
-  Apostolique. Several of these cells hold fewer than ten control games.
+- **Concentrated in a few opponents.** Most of the P2 difference comes from a few opponents (Table 6). W1 scored
+  worse than the control against morph, RoboStac, karliso and Babebibobu, and better against MrSubZero, AllanB,
+  Fancheng, Daporan and Apostolique. No heterogeneity test was run, and several control cells are small (morph 9
+  games, Fancheng 5, Angecide 3, YurkovAS 3). So this describes where the difference sits; it does not show that the
+  effect differs by opponent.
 - **Hygiene.** W1 had 0 problems on our side in 1,040 games. The control had 2 timeouts of its own in 520.
 
 **Table 6. P2 results per opponent agent, four W1 agents against the control.** Mean result (games).
@@ -575,9 +600,9 @@ FINDINGS X1 already recorded that self-play gains of +9 to +20 Elo do not show o
 **Figure 3.** W1's matched score difference from the r14 control pair, per seat, with bootstrap 95% intervals at four
 cluster definitions. Grey squares use the first two W1 agents (the 10-09 reading), blue circles all four. K 10 is
 the headline definition. The intervals were recomputed here from the replays with a fixed resampling order (seed
-1601). The dashed line is the shift that a +14 Elo gain would produce at the control's own score. For P1 the
-intervals narrow as the clusters coarsen, which shared openings alone would not do, so the P1 cluster intervals are
-less trustworthy than the P2 ones; only the coarsest P1 interval (K 6) excludes 0.
+1601; `report/make_figs_v2.py`). The dashed line is the shift that a +14 Elo gain would produce at the control's own
+score. For P1 the intervals narrow as the clusters coarsen, which shared openings alone would not do, so the P1
+cluster intervals are less trustworthy than the P2 ones; only the coarsest P1 interval (K 6) excludes 0.
 
 **The reading.** The ladder cannot resolve W1's self-play gain. The difference is below the ladder's resolution, and
 W1 is not shown to be worse. With four agents the ladder also does not show the gain transferring to the second
@@ -605,12 +630,12 @@ strength. W1 is the live build.
   offline mode, never played.
 - **The ladder test is weak.** It has four W1 agents and two control agents in one night, and line diversity that
   differs between the arms for reasons not explained. Its verdict depends on the cluster definition: the per-game P2
-  interval excludes 0, the 10-ply one does not. Its power for the expected effect is about 14%.
-- **The ship route is outside the repository.** The ship toolchain is a user-space route on the Dell, validated by one
-  byte-identical rebuild, not the repository's documented route. The no-book configuration does not yet pass the
-  stock checks.
+  interval excludes 0, the 10-ply one does not. Its bootstrap bounds move by a few thousandths between reruns. Its
+  power for the expected effect is about 14%.
 - **Less first-turn margin.** The first turn has less margin than r14's: about 415 ms on the Dell, projected to
-  550-600 ms on CodinGame.
+  550-600 ms on CodinGame. A fast-bake prototype from the WIDEN2 scouts (`README.md`, 10-10 00:48-01:55) cuts W1's
+  Dell first turn from 417 to 222 ms (median of 24 cold spawns on CPU 3) with byte-identical tables, but it has not
+  been through the full G3 set and is not shipped.
 
 ## 6. Conclusions
 
@@ -623,23 +648,31 @@ strength. W1 is the live build.
    Elo.
 4. **The ladder cannot certify Elo changes in the teens.** With four W1 agents against two control agents, W1 is not
    shown to be worse, but its P2 interval ends below the expected +0.014, so the gain's transfer to the second
-   player's ladder games is not shown, and the difference is opponent-specific. The self-play tests are the
-   evidence. A lower-noise transfer check, if one is wanted, would be position-level (W1 against r14 moves on
-   positions from our ladder games, judged by deep search) or games against a non-sibling engine.
+   player's ladder games is not shown. The difference looks concentrated in a few opponents, though no
+   heterogeneity test was run. The self-play tests are the evidence. A lower-noise transfer check, if one is wanted,
+   would be position-level (W1 against r14 moves on positions from our ladder games, judged by deep search) or games
+   against a non-sibling engine.
 5. **Next.** Open items:
    - the planned search-constant SPSA (ProbCut's constants are tuned to the net's eval scale) on W1;
-   - merging runtime B with a supported no-book configuration;
+   - an encoder wider than 128. Read-only scouts on 10-10 (00:48-01:55) sized enc160 to enc256, and the draft plan
+     `WIDEN2_PLAN.md` followed. It is not approved, and no net has been trained or played for it (the scouts' only
+     GPU work was seven short timing runs). It recommends enc192 with W1 as the matched control, a GSPRT of [0, +3],
+     and two runtime changes: a fast bake and a raw-byte native payload. The fast-bake prototype alone cuts W1's
+     Dell first turn from 417 to 222 ms with byte-identical tables;
    - the plan's untested ideas, if wanted: e2b share, wider head, output buckets, λ jitter, 300M length.
 
 ## Sources
 
-The paths are in the local experiment archive `datasets/nnue2/`, which is not in this repository.
+The paths in this section are relative to the local experiment archive `datasets/nnue2/`, which is not in this
+repository.
 
 - **Round log and plans:**
-  - `r16/README.md`, every dated entry from 2026-10-08 10:45 to the four-agent ladder entry of 2026-10-10 01:40;
+  - `r16/README.md`, every dated entry from 2026-10-08 10:45 to the 2026-10-10 00:05-00:35 entry, whose last bullets
+    record the four-agent ladder result, and the 00:48-01:55 entry on the WIDEN2 scouts;
   - `ROUND16_PLAN.md`;
   - `r16/MACRO_PLAN.md`;
   - `r16/WIDEN_PLAN.md`;
+  - `r16/WIDEN2_PLAN.md` (a draft, not approved);
   - `r16/feat_scratch/FEATURIZATION_SCOUT.md`.
 - **Games:** `r16/gsprt/{aa_smoke, r16_1_ema, r16_0_b16, r16_5b_mcj, r16_5c_mcj_l2400, aa2_smoke, r16_2t1_x128_r14,
   r16_2t3_x128_cgc, r16_2t2_x128_c3}/` (`summary.json`, `records_*.jsonl`, `hosts/`); `r16/openings/`.
@@ -654,11 +687,15 @@ The paths are in the local experiment archive `datasets/nnue2/`, which is not in
   - `cg/ladder/prep/r15/ana_w1nobook_matched.out`, `ana_w1nobook_vs_ctl.out` (two W1 agents) and
     `ana_w1x4_vs_ctl.out` (four);
   - the watcher logs and health checks `cg/ladder/prep/r15/{watch, check}_{w1nobook, ctlW1, w1nobookR}.*`;
-  - the replays under `cg/ladder/prep/games/`.
-  The matched-score and cluster-bootstrap scripts (`matched_w1c.py`, `cluster_w1.py`) and the figure script were
-  kept with the session's working files, not in the archive.
-- **Cross-round evidence:** `FINDINGS.md` entries A16, A17, A18, A19 (as updated at 01:40 on 10-10), L13 and H13,
-  with A14, E3, E6, E8, N8, O15 and X1 for context.
+  - the replays under `cg/ladder/prep/games/`;
+  - the scripts, copied into the archive on 10-10 from the session's working files: `r16/report/matched_w1.py`,
+    `matched_w1b.py` and `matched_w1c.py` (the matched scores; they wrote the three `.out` files above, in that
+    order) and `cluster_w1.py` (the cluster bootstrap of Table 5 and of the 10-09 reading), with its 13
+    fixed-hash-seed reruns in `r16/report/cluster_hashseed/`.
+- **Figures and totals:** `r16/report/make_figs_v2.py`, which draws `fig/` and writes `r16/report/totals_v2.json`
+  (the game totals, the training minutes and rows/s, and the deterministic ladder rerun).
+- **Cross-round evidence:** `FINDINGS.md` entries A16, A17, A18, A19 (its four-agent update, labelled 10-10 01:32
+  in the entry and 01:40 in the changelog), L13 and H13, with A14, E3, E6, E8, N8, O15 and X1 for context.
 - **Related reports in this repository:** [round 14](../round14/REPORT.md) and [the scaling study](../scaling_study/REPORT.md).
 
 ## Appendix A. W1's ship of record
@@ -666,7 +703,7 @@ The paths are in the local experiment archive `datasets/nnue2/`, which is not in
 | Item | Value |
 | --- | --- |
 | Net | `r16_x128_l2400_s1601_rs` (.pt sha256 8a0f7398…; unscaled d14b4f35…), b 1.078737 |
-| Runtime | `claude/enc128-runtime` 84db7aa (on adda324); archive of 137 files |
+| Runtime | `claude/enc128-runtime` 84db7aa (on adda324; merged into this branch as c122723); archive of 137 files |
 | Header | `nnue_b64_net.hpp` sha256 e29d7218…; payload of 42,682 U15 characters; widths A 64 / L1 16 / L2 32 / E 32 / ENC 128-128 |
 | Determinism | fingerprint 3846873435862646193; Zobrist 3a74072d5bcdfc91; bench 12 = 635 searches, 29,208,628 nodes, hash c12bfc8e73c521ca; 16 table hashes in build.json |
 | Launcher / paste | `cg_input_native_w1_nobook.py` dd33df97… (82,112 units) / `cg_input_paste_w1_nobook.cpp` a893a029… (81,943 units) |
