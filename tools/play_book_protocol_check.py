@@ -249,8 +249,9 @@ def main():
             print(f"  after {lab['seq']} (ply {lab['ply']}): {moves}  ({sum(counts)} visits)")
     print(f"\n{games - failures}/{games} games played from the book exactly where expected "
           f"(book moves per game: first {mean(book_moves[True]):.1f}, second {mean(book_moves[False]):.1f})")
-    print(f"first turn: max {max(first_turn):.1f} ms; later moves: median "
-          f"{all_times[len(all_times) // 2]:.1f} ms, max {all_times[-1]:.1f} ms "
+    first_turn.sort()
+    print(f"first turn: max {first_turn[-1]:.1f} ms (median {first_turn[len(first_turn) // 2]:.1f}); later moves: "
+          f"median {all_times[len(all_times) // 2]:.1f} ms, max {all_times[-1]:.1f} ms "
           f"over {len(all_times)} replies")
     sys.exit(1 if failures else 0)
 
