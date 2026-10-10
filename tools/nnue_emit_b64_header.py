@@ -51,7 +51,8 @@ The net (the B-64 numbers; W = A + 1 lanes: A accumulator lanes + 1 PSQT lane; 3
   dense head 128 -> 16 -> 32 -> 1
 
 Payload: one MSB-first bit stream of 11 matrices, each row one output unit with its bias in column 0:
-  enc0 64x28, enc1 64x65, enc2 32x65   [b | W] of the encoder layers
+  enc0 ENC0x28, enc1 ENC1x(ENC0+1), enc2 Ex(ENC1+1)   [b | W] of the encoder layers
+                (B-64: 64x28, 64x65, 32x65; W1: 128x28, 128x129, 32x129)
   proj 9Wx33    row W m + j: [proj_b[m][j] | proj_w[m][:, j]]  (lane j of location m; j = A is PSQT)
   fwd Wx33      row j: [fwd_b[j] | fwd_w[:, j]]
   dec Wx27, con Wx20   transposed: one row per lane
