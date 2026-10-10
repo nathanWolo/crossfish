@@ -99,10 +99,11 @@ immediately before token minification.
 
 ## 3. Neural evaluation included in the submission
 
-The evaluation is the pattern-generator NNUE r14_d5_final_s2_rs (35,243
-parameters; improvement log section 65; r13w_20 from 2026-10-01 to
-2026-10-04, section 64; r12_M2 from 2026-09-28 to 2026-10-01, section 57;
-B64_d5M_57ep before that). The paste file carries two networks:
+The evaluation is the pattern-generator NNUE r16_x128_l2400_s1601_rs (W1:
+51,435 parameters, encoder 27-128-128-32; improvement log section 69;
+r14_d5_final_s2_rs from 2026-10-04 to 2026-10-09, section 65; r13w_20 from
+2026-10-01, section 64; r12_M2 from 2026-09-28, section 57; B64_d5M_57ep
+before that). The paste file carries two networks:
 
 - the NNUE's generator (section 3.1), from which the bot bakes its 25.6 MB of
   integer tables at start-up;
@@ -128,7 +129,7 @@ bias in column 0:
 
 | Matrix | Rows x columns | Content |
 | --- | --- | --- |
-| `enc0`, `enc1`, `enc2` | 64 x 28, 64 x 65, 32 x 65 | the encoder, one-hot 27 -> 64 -> 64 -> 32 |
+| `enc0`, `enc1`, `enc2` | ENC0 x 28, ENC1 x (ENC0 + 1), 32 x (ENC1 + 1): 128 x 28, 128 x 129, 32 x 129 for W1 (64 x 28, 64 x 65, 32 x 65 before it) | the encoder, one-hot 27 -> ENC0 -> ENC1 -> 32; the header's widths line (`B64_ENC0`, `B64_ENC1`) gives the widths |
 | `proj` | 585 x 33 | row 65m + j: lane j of location m's projection (lane 64 is the PSQT lane) |
 | `fwd` | 65 x 33 | the forced-board projection, one row per lane |
 | `dec`, `con` | 65 x 27, 65 x 20 | decided and constraint rows, transposed to one row per lane |
@@ -153,10 +154,16 @@ IEEE single arithmetic in numpy and in C++.
   and `bias` round to nearest. The encoder is GPTQ-rounded but not refit: on
   this net its refit moved rare patterns' embeddings (max error 116 against 11
   at 16 bits everywhere).
-- **Size.** 53,865 bytes = **28,728 U15 characters** (payload sha256
-  `cde8c610...`, pinned by `tools/test_nnue_emit_b64_header.py`; r13w_20's was
-  53,834 bytes = 28,712, r13w_11's 53,927 = 28,762, r12_M2's 54,159 = 28,885).
-- **Error.** For r14_d5_final_s2_rs the dequantized generator alone, in
+- **Size.** W1: 80,027 bytes = **42,682 U15 characters** (payload sha256
+  `c6d0c3ada487e829...`, pinned by `tools/test_nnue_emit_b64_header.py`).
+  The wider encoder is the difference: r14_d5_final_s2_rs's payload was
+  53,865 bytes = 28,728 characters (`cde8c610...`), r13w_20's 53,834 = 28,712,
+  r13w_11's 53,927 = 28,762, r12_M2's 54,159 = 28,885.
+- **Error.** For W1 the dequantized generator alone, in float, is 1.75 mean /
+  65.1 max eval units from the float net on the 20,000 parity positions, and
+  the bot's integer eval is 10.1 / 40 from the float net on the 16 positions
+  `unit_tests.cpp` pins (equal to `--int-eval`'s integer reference, which
+  also matches the runtime on 40,000 positions). For r14_d5_final_s2_rs the dequantized generator alone, in
   float, is 1.73 mean / 74.4 max eval units from the float net on the 20,000
   parity positions, and the bot's integer eval is 8.8 / 48 from the PyTorch
   net on the 16 positions `unit_tests.cpp` pins (r13w_20: 1.97 / 66.7 and
@@ -173,8 +180,11 @@ IEEE single arithmetic in numpy and in C++.
   bit-length models all land within 1% of the shipped Rice code.
 
 At start-up `b64::load()` reads the bits straight from the U15 characters
-(`b64::Bits`, no byte buffer), then bakes and quantizes the tables in about
-50 ms, inside the 1,000 ms first turn
+(`b64::Bits`, no byte buffer), then bakes and quantizes the tables, inside
+the 1,000 ms first turn: about 50 ms for a 64-wide encoder and about 130 ms
+for W1's at -O3 on the desktop (190 ms on the Dell), about 260 ms cold for
+W1 built with CodinGame's flags on the Dell (the
+encoder runs only here, so its width costs nothing per node)
 ([nnue_training_and_implementation.md](nnue_training_and_implementation.md)
 section 6). The bake runs in a fixed float order without FMA, so every
 compiler bakes the same tables; the unit tests pin their hashes.
@@ -355,7 +365,7 @@ The committed tests pin the payloads to:
 
 | Payload | Bytes | Characters | Pinned hash |
 | --- | ---: | ---: | --- |
-| NNUE generator | 53,865 | 28,728 | sha256 `cde8c6109b36689e...` (`tools/test_nnue_emit_b64_header.py`), plus the 16 baked tables' hashes (`unit_tests.cpp`) |
+| NNUE generator (W1) | 80,027 | 42,682 | sha256 `c6d0c3ada487e829...` (`tools/test_nnue_emit_b64_header.py`), plus the 16 baked tables' hashes (`unit_tests.cpp`) |
 | Macro residual | 3,076 | 1,641 | FNV-1a 64 `626e29f3a8d65679` |
 | D16 local evaluator (retired) | 42,855 | 24,489 | FNV-1a 64 `e35e987c17a453cf` |
 
@@ -585,10 +595,10 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 113642 (bundled 197911)
--> cpp_impl/cg_input.cpp 73088
-saved 124823
-cap 26912 left
+cpp_impl/codingame_nnue.cpp 118238 (bundled 216073)
+-> cpp_impl/cg_input.cpp 82191
+saved 133882
+cap 17809 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
@@ -597,16 +607,16 @@ translation unit, not with the readable top-level source.
 Sizes are UTF-16 code units, which is what CodinGame counts. Everything
 outside the three payload literals is ASCII, and every payload character is
 one UTF-16 unit, so the unit count equals Python's `len`. It does not equal
-`wc -c`: each payload character is three UTF-8 bytes, and the file is 134,389
+`wc -c`: each payload character is three UTF-8 bytes, and the file is 170,837
 bytes. The CLI exits with failure when output is 100,000 units or larger.
 
 | Part of `cg_input.cpp` | UTF-16 units |
 | --- | ---: |
-| code (minified engine, NNUE runtime, book decoder) | 37,597 |
-| NNUE generator payload | 28,728 |
-| gameplay opening book payload | 1,895 |
+| code (minified engine, NNUE runtime, book decoder) | 37,868 |
+| NNUE generator payload (W1) | 42,682 |
+| gameplay opening book payload (no book) | 0 |
 | macro net payload | 1,641 |
-| **total** | **69,861** (30,139 left) |
+| **total** | **82,191** (17,809 left) |
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
@@ -632,8 +642,11 @@ ProbCut (improvement log section 67) added 596 characters of code, for 73,510.
 The deep-search second-player book (section 68) replaced uttt.ai's
 second-player half: its payload is 1,895 characters instead of 5,778, and the
 multi-move runtime (payload format 2) costs 234 characters of code, for
-**69,861, with 30,139 left**. A smaller
-NNUE payload configuration would still free about 1,350 (section 3.1).
+**69,861, with 30,139 left**. Round sixteen's W1 (section 69) has a 128-wide
+encoder, a 42,682-character payload (+13,954), and ships without a book
+(-1,895; the runtime's width-generic bake and the no-book guard add about 300
+characters of code): **82,191, with 17,809 left**. A smaller NNUE payload
+configuration would still free about 1,350 (section 3.1).
 
 ## 11. Reproducible generation procedure
 
@@ -661,10 +674,14 @@ python3 tools/nnue_emit_b64_header.py --check
 ```
 
 The shipped header came from
-`python tools/nnue_emit_b64_header.py datasets/nnue2/fast/r14_d5_final_s2_rs_perm.bin --label r14_d5_final_s2_rs`
-with every other option at its default (the same command on `r13w_20_perm.bin`, `r13w_11_perm.bin`,
-`r12_M2_perm.bin` or `B64_d5M_57ep_perm.bin` rebuilds the previous headers byte for byte); the emitter's GPTQ calibration reads
-`datasets/nnue2/d8_a.cfdg`, which is not in the repository.
+`python tools/nnue_emit_b64_header.py datasets/nnue2/r16/build/r16_x128_l2400_s1601_rs_rtB84db7aa2/r16_x128_l2400_s1601_rs_perm.bin --label r16_x128_l2400_s1601_rs`
+with every other option at its default; the emitter reads the encoder widths from the net file and writes them
+into the header. The same command on `datasets/nnue2/fast/r14_d5_final_s2_rs_perm.bin`, `r13w_20_perm.bin`,
+`r13w_11_perm.bin`, `r12_M2_perm.bin` or `B64_d5M_57ep_perm.bin` rebuilds the previous headers' payloads byte for
+byte (r14's header gains only the widths line and its four comment lines); the emitter's GPTQ calibration reads
+`datasets/nnue2/d8_a.cfdg`, which is not in the repository. A net with another encoder width needs no code
+change; the integer parity check is `make -C cpp_impl nnue-parity` and `bin/nnue_parity POS.cfdg OUT.txt
+[scratch|incremental]` against `tools/nnue_emit_b64_header.py --int-eval POS.cfdg REF.txt` (identical files).
 
 The macro net has its own emitter (and so does the retired MiniNet,
 `tools/nnue_emit_mininet_header.py`):
