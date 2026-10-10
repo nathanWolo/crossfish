@@ -4621,9 +4621,12 @@ play-book` re-packs it under the current net.
   1.3.13). The binary is smaller than the live W1 launcher's (310,768 B,
   launcher 82,112 units, `dd33df97…`) because with `PLAY_BOOK_ENTRIES` 0 the
   compiler drops the book decoder; the search is the same (below). It was
-  built on the Dell (the ThinkPad, which built every native launcher before,
-  is away) by the route that rebuilt the live r14 launcher byte for byte on
-  2026-10-09: official LLVM 23.1.2, g++ 11.4 headers, an ICU 70 shim for lld
+  built on the Dell, as was the live W1 launcher (the launchers before
+  those came from the ThinkPad, Pop!_OS 22.04, except ProbCut's, built in an
+  `ubuntu:22.04` container on a cloud VM, section 67; the ThinkPad is away),
+  by the route that rebuilt the live r14 launcher byte for byte on
+  2026-10-09: official LLVM 23.1.2,
+  g++ 11.4 headers, an ICU 70 shim for lld
   and a clang wrapper that keeps glibc 2.39's headers from binding
   `std::atoi` to `__isoc23_strtol@GLIBC_2.38`
   ([native_build.md](native_build.md) section 3). The manifest's
@@ -4669,7 +4672,7 @@ failures:
   | 100 | launcher (`cg-native-check`) | 100 / 100, 0 `BOOK` | 570.7 ms (483.2) | 90.1 / 90.4 ms, 1,099 replies |
   | 100 | launcher, full length | 100 / 100, 0 `BOOK` | 505.1 ms (483.3) | 90.1 / 90.4 ms, 1,710 replies |
   | 20 | paste, built with CodinGame's command (g++ 13: rc 0, 0 diagnostics) | 20 / 20, 0 `BOOK` | 395.6 ms (392.9) | 90.1 / 90.4 ms, 321 replies |
-  | 40 | readable build (`play-book-protocol`) | 40 / 40, 0 `BOOK` | 343.9 ms (337.4) | 90.1 / 90.5 ms, 440 replies |
+  | 40 | paste at -O3 (`play-book-protocol`) | 40 / 40, 0 `BOOK` | 343.9 ms (337.4) | 90.1 / 90.5 ms, 440 replies |
 
   0 illegal moves and 0 timeouts; every game in which the bot moved first
   opened 4 4 (the protocol check now fails any other first move). The

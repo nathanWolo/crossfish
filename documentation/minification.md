@@ -886,14 +886,30 @@ is pasting an old or wrong file: the first line of the paste must be
 
 Minification reduces source size, not runtime initialization work. Profile:
 
-- CJK14 decoding;
-- the NNUE bake and quantization (about 50 ms);
+- payload decoding (U15 and CJK14);
+- the NNUE bake and quantization: for W1's 128-wide encoder about 130 ms at
+  -O3 on the desktop and about 190 ms on the Dell, and about 195-260 ms on
+  the Dell with CodinGame's flags (cold runs: median 195 ms on CPU 3, 258 ms
+  in the G5 gate on CPU 0); r14's 64-wide encoder took about 50 ms at -O3;
 - macro lookup-table construction;
-- the opening book decode;
+- the opening book decode (nothing since 2026-10-09: no book ships);
 - opening warm-up search.
 
-On the laptop with CodinGame's flags the whole first turn takes about 175-220
-ms, and 474 ms at worst with two bots starting on one core at once.
+W1's whole first turn (process start to first reply, including the 90 ms
+search) was measured on the Dell (Pop!_OS 24.04) in CodinGame-protocol games
+against a random opponent. With the bot and the harness sharing CPUs 4-5
+(improvement log section 69, Checks) the paste takes about 340-400 ms
+(median 337 ms at -O3 over 40 games; median 393 ms, max 396 ms built with
+CodinGame's command, g++ 13 standing in for 11.2, over 20 games) and the
+native launcher median 483 ms, max 571 ms. Alone on a Dell CPU the launcher
+takes about 415 ms median (10-100 cold spawns or games), of which about
+99 ms is the launcher itself (Python start, U15 decode, xz, exec). r14's
+first turn took about 175-220 ms on the laptop with CodinGame's flags
+(474 ms at worst with two bots starting on one core at once) and about
+278 ms through its launcher on the Dell. CodinGame's judge is slower than
+the Dell (about 1.3-1.45x in the compute calibration), so W1's first turn
+there projects to roughly 550-600 ms; the four W1 ladder agents' 1,040
+games had no timeout on our side.
 
 The submitted engine must keep this combined initialization and first response
 inside CodinGame's first-turn allowance, while later searches remain below the

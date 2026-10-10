@@ -560,9 +560,9 @@ player's -0.024 (95% [-0.047, +0.003]): still no significant difference, so
 the ladder remains below resolution, but the P2 interval's upper end is now
 just under the self-play-sized +0.013, so whether the gain transfers to the
 second player's games is uncertain and opponent-specific (worse against
-morph, RoboStac and karliso, better against several top bots; FINDINGS
-A19). W1 (#6 30.55, #6 30.61; resubmitted 2026-10-10, #8 30.21 and #9
-29.97) is the live build. The first turn, which now bakes the wider
+morph, RoboStac, karliso and Babebibobu, better against MrSubZero, AllanB,
+Fancheng, Daporan and Apostolique; FINDINGS A19). W1 (#6 30.55, #6 30.61;
+resubmitted 2026-10-10, #8 30.21 and #9 29.97) is the live build. The first turn, which now bakes the wider
 encoder, takes about 415 ms on the Dell of its 1,000 ms (no timeout on our
 side in the four agents' 1,040 ladder games).
 The paste file is **82,191 characters** (17,809 left) and the
@@ -596,12 +596,13 @@ Against the control, s5 is **+0.143 ± 0.044** and no book +0.167 ± 0.047
 (1 s.e.): both clear the pre-registered bar of the control plus two standard
 errors, so the old second-player half was costing points. s5 and no book
 are level (-0.024 ± 0.059), and by the pre-registered rule the deep-search
-book stays. Our side timed out once in 558 games (first player, move 21, out
+book stayed. Our side timed out once in 558 games (first player, move 21, out
 of book). The field changed between the control's day and the test's (new
 agents of AllanB, Apostolique, Babebibobu, RoboStac and sZoom), so the
-placements are not comparable across the two days. On `main` the native
-submission is the live file byte for byte (sha256 `775c3208…`, 68,860
-characters) and the paste file is **69,861 characters** (30,139 left).
+placements are not comparable across the two days. At the time, `main`'s
+native submission was the live file byte for byte (sha256 `775c3208…`,
+68,860 characters) and its paste file was **69,861 characters** (30,139
+left).
 
 On 2026-10-07 **ProbCut** joined the search (improvement log section 67): at a
 null-window node of depth 5 or more, the first three ordered moves get a
@@ -732,11 +733,13 @@ one). On 2026-10-04 it was **72,914 characters**, 27,086
 under the cap (the minifier's count; `wc -c` reports UTF-8 bytes); this exact
 file was submitted twice on 2026-10-04 and placed #4 (33.19) and #3 (33.30). The 2026-09-27 submission (94,922 characters,
 net B64_d5M_57ep) finished placement at **rank 1** of CodinGame's Ultimate
-Tic-Tac-Toe ladder. Built with CodinGame's flags
-on the laptop, replies take 90.2-90.5 ms against the 100 ms referee, and the
-first turn about 175-220 ms of its 1,000 ms alone, and up to about 380-470 ms
-when two bots start together on one pinned laptop E-core in referee games (it
-bakes the NNUE's tables in about 50 ms).
+Tic-Tac-Toe ladder. Replies take 90.1-90.5 ms against the 100 ms referee. With
+r14 (64-wide encoder, NNUE bake about 50 ms), built with CodinGame's flags on
+the laptop, the first turn took about 175-220 ms of its 1,000 ms alone, and
+up to about 380-470 ms when two bots started together on one pinned laptop
+E-core in referee games. W1's 128-wide encoder bakes in about 195-260 ms with
+CodinGame's flags on the Dell, and its first turn takes about 415 ms there
+through the native launcher (improvement log section 69).
 
 On 2026-09-28 the net r12_M2 (round twelve: data the NNUE engine labelled
 itself, and its own self-play) passed the official 90 ms SPRT against
