@@ -17,9 +17,11 @@ No book (the shipped default since 2026-10-09; documentation/play_book.md): pass
 play_book_text_dump). That is the exact no-book check: no position is in the
 book, so every reply must be a search move (none marked "BOOK"), and the
 opponent, finding no book reply to steer to, plays uniformly at random after its
-opening move. A no-book build fails the check without --book, which demands a
-book reply to center-center; verify.sh, the Makefile and cg_perf_gate.py all
-pass --book.
+opening move (center-center with probability 0.9). Without --book the check is
+not a no-book check: the opponent's first move is uniformly random, and a book
+reply is demanded only in the bot-second games where it happens to open
+center-center (about 1 in 81), so a no-book build passes or fails by chance.
+verify.sh, the Makefile and cg_perf_gate.py all pass --book.
 
 In every mode, the bot moving first must open center-center (4 4): both book
 roots assume it, and the bot plays it hard-coded.

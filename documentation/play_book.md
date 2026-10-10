@@ -41,7 +41,8 @@ the same code as with a book:
 - **`play_book_check`** prints `pb_init: none (no book, PLAY_BOOK_ENTRIES 0)`
   and passes only if nothing was decoded and the text book is empty too.
 - **`play_book_text_dump`** writes an empty text book; `play_book_match` says
-  there is nothing to measure.
+  there is nothing to measure and exits 0, so `make play-book-match` is a
+  no-op.
 - **`tools/cg_native/verify.sh`** expects `book=none` when the data header has
   0 entries (else `book=ok`), and its protocol step runs against the empty
   dump.
