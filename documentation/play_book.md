@@ -21,12 +21,15 @@ data alone (`PLAY_BOOK_ENTRIES 0`); the runtime, the bot and the search are
 the same code as with a book:
 
 - **The text book** `cpp_impl/play_book.txt` is empty (0 bytes).
-- **The packer** writes the no-book header for an empty text book, without
-  loading the net: `PLAY_BOOK_FORMAT 2`, `PLAY_BOOK_ENTRIES 0`,
-  `PLAY_BOOK_BYTES 0`, `PLAY_BOOK_EVAL_FINGERPRINT 0`, `PLAY_BOOK_CJK = ""`
+- **The packer** writes the no-book header for an empty text book (0 bytes,
+  or nothing but blank lines and `#` comments), without loading the net:
+  `PLAY_BOOK_FORMAT 2`, `PLAY_BOOK_ENTRIES 0`, `PLAY_BOOK_BYTES 0`,
+  `PLAY_BOOK_EVAL_FINGERPRINT 0`, `PLAY_BOOK_CJK = ""`
   (`pb_no_book_header` in `play_book_pack.hpp`). Fingerprint 0 means the
   empty book belongs to no net, so a net swap needs no book step.
   `make -C cpp_impl play-book` regenerates the committed header byte for byte.
+  A file with no book line and any other content (say `README.md` passed as
+  the book) is refused, not packed as no book.
 - **The runtime:** `pb_init` returns false at once when `PLAY_BOOK_ENTRIES`
   is 0, so `PB_READY` stays false, `PB_TABLE` stays empty and `pb_lookup`
   never returns a move. (Without that line a zero-byte payload whose
@@ -400,6 +403,11 @@ are no separate coverage records. Two line forms are accepted:
   (comma-separated cells, `mb * 9 + sq`, or `-` for the empty board) and our
   move there, in real orientation. The packer replays and keys it, so an
   external generator never has to reproduce the canonical key.
+
+Blank lines and comment lines (first non-blank character `#`) are skipped.
+Any other line is an error: the packer and `play_book_check` refuse a text
+book with a line that is neither form (prose, an `S` line without a move, a
+`seq` that is not cell indices 0-80), naming the first such line.
 
 **Several moves per position.** Several lines with the same `seq` list that
 position's book moves, in file order; the first is the primary. For example,

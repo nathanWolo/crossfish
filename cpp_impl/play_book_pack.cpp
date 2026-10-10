@@ -17,8 +17,11 @@
 // the walk reaches a position the text book lacks, or if any text-book entry
 // is never reached (for example a line that does not start from
 // center-center). The coding itself is in play_book_pack.hpp.
-// An empty text book (no positions) is the supported no-book configuration:
-// it writes PLAY_BOOK_ENTRIES 0 with an empty payload (pb_no_book_header).
+// Fails, too, on any line that is not a book line, a blank line or a #
+// comment. An empty text book (nothing but blank lines and # comments) is the
+// supported no-book configuration: it writes PLAY_BOOK_ENTRIES 0 with an
+// empty payload (pb_no_book_header). Another file without book lines (a wrong
+// path such as README.md) is refused, not packed as no book.
 //
 //   play_book_pack <book.txt> <out.hpp>
 #include <cstdio>
@@ -40,7 +43,8 @@ int main(int argc, char **argv) {
     }
     Book book;
     if (!book.load(argv[1])) { std::fprintf(stderr, "cannot load %s\n", argv[1]); return 1; }
-    // Illegal moves, the 25-ply cap, at most PB_MAX_MOVES distinct moves per position.
+    // Lines that are not book lines, illegal moves, the 25-ply cap, at most PB_MAX_MOVES distinct
+    // moves per position.
     int alt_total = 0;
     std::string refusal = pb_pack_refusal(book, alt_total);
     if (!refusal.empty()) {
@@ -57,8 +61,8 @@ int main(int argc, char **argv) {
         if (!f) { std::fprintf(stderr, "cannot write %s\n", argv[2]); return 1; }
         std::fputs(pb_no_book_header().c_str(), f);
         std::fclose(f);
-        std::printf("no book: %s has no book positions; wrote the no-book payload (0 entries) -> %s\n", argv[1],
-                    argv[2]);
+        std::printf("no book: %s is an empty text book (only blank lines and # comments); wrote the no-book "
+                    "payload (0 entries) -> %s\n", argv[1], argv[2]);
         return 0;
     }
     crossfish_nnue_load_once();

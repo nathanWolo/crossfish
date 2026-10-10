@@ -9,7 +9,8 @@
 // At positions with several moves it also draws pb_lookup 3,000 times and
 // prints how often each move came out; a move more than 20% off its uniform
 // share is a failure ("bad draws"). A text book with a line past the 25-ply
-// cap fails before the walk (the packer refuses one).
+// cap, or with a line that is not a book line, a blank line or a # comment,
+// fails before the walk (the packer refuses both).
 //
 // It prints two checksums of the decoded table: table_checksum over the hashes
 // and the primary moves (the value cg_selfcheck prints, and the value a
@@ -18,7 +19,7 @@
 //
 // With the no-book payload (PLAY_BOOK_ENTRIES 0, from an empty text book) it
 // prints "pb_init: none" and passes only if pb_init decoded nothing and the
-// text book is empty too.
+// text book is empty too (nothing but blank lines and # comments).
 //
 //   play_book_check <book.txt>
 #include <algorithm>
@@ -152,6 +153,11 @@ int main(int argc, char **argv) {
     if (g_text.too_deep) {
         std::printf("%d text-book line(s) past the 25-ply cap (a seq of more than %d moves); the first: %s\n",
                     g_text.too_deep, PB_TEXT_MAX_INDEX, g_text.first_too_deep.c_str());
+        return 1;
+    }
+    if (g_text.unparsed) {
+        std::printf("%d text-book line(s) that are not book lines, blank lines or # comments; the first: %s\n",
+                    g_text.unparsed, g_text.first_unparsed.c_str());
         return 1;
     }
     auto t0 = std::chrono::steady_clock::now();

@@ -132,8 +132,10 @@ struct PackHooks {
     }
 };
 
-// The data header the packer writes for an empty text book: the supported
-// no-book configuration (play_book.hpp). Fingerprint 0: an empty book belongs
+// The data header the packer writes for an empty text book (no lines but blank
+// lines and # comments): the supported no-book configuration (play_book.hpp).
+// Its text must not change: play_book_data.hpp is this string byte for byte,
+// and the native manifest hashes that file. Fingerprint 0: an empty book belongs
 // to no net, so it survives a net swap unchanged.
 static std::string pb_no_book_header() {
     return "#pragma once\n"
@@ -149,13 +151,22 @@ static std::string pb_no_book_header() {
            "static const char PLAY_BOOK_CJK[] = \"\";\n";
 }
 
-// Why a loaded text book cannot be packed, or "" when it can: a line with an
-// illegal move, a line past the 25-ply cap, or a position with more than
-// PB_MAX_MOVES distinct moves (reported by its lines, at most 5 positions).
+// Why a loaded text book cannot be packed, or "" when it can: a line that is
+// not a book line, a blank line or a comment, a line with an illegal move, a
+// line past the 25-ply cap, or a position with more than PB_MAX_MOVES distinct
+// moves (reported by its lines, at most 5 positions). So "" with no entries
+// means a file of only blank and comment lines, the no-book configuration;
+// any other file without book lines (a wrong path, prose) is refused.
 // `alt_total` gets the number of further (non-primary) moves.
 static std::string pb_pack_refusal(const Book &book, int &alt_total) {
     std::string err;
-    char buf[160];
+    char buf[200];
+    if (book.unparsed) {
+        std::snprintf(buf, sizeof buf,
+                      "%d line(s) that are not book lines, blank lines or # comments%s; the first: ",
+                      book.unparsed, book.entries.empty() ? " and no book line: not a text book" : "");
+        err += buf + book.first_unparsed + "\n";
+    }
     if (book.illegal) {
         std::snprintf(buf, sizeof buf, "%d book line(s) with an illegal move; the first: ", book.illegal);
         err += buf + book.first_illegal + "\n";

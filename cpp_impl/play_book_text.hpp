@@ -14,6 +14,14 @@
 // position's seq; the packer refuses a position with more than PB_MAX_MOVES
 // (3) moves, any illegal move and any line past the 25-ply cap. A book with
 // one line per position is a single-move book, as before.
+//
+// Blank lines and comment lines (first non-blank character '#') are skipped.
+// Any other line that is not a book line (an "S" line without a seq and a
+// move or with a seq that is not cell indices 0..80, a key line with missing
+// fields, prose) is skipped too but counted in `unparsed`, and the packer and
+// play_book_check refuse a text book with one. So a text book of only blank
+// and comment lines, and nothing else, is the no-book configuration
+// (play_book_pack.hpp): another file passed as the book is an error.
 #include <array>
 #include <cstdio>
 #include <fstream>
@@ -119,6 +127,8 @@ struct Book {
     std::string first_too_deep;
     int transposed = 0;  // lines for a listed position by another seq, with another move (ignored)
     std::string first_transposed;
+    int unparsed = 0;    // non-blank, non-comment lines that are not book lines (skipped)
+    std::string first_unparsed;
 
     // The primary move, in the real orientation of b.
     bool lookup(GlobalBoard &b, Move &out) const {
@@ -167,26 +177,36 @@ struct Book {
     }
     bool read(std::istream &f) {
         std::string line;
+        auto unparsable = [&](const std::string &l) {
+            if (!unparsed++) first_unparsed = l;
+        };
         while (std::getline(f, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
             std::istringstream in(line);
             std::string k;
-            if (!(in >> k)) continue;
+            if (!(in >> k)) continue;   // a blank line
+            if (k[0] == '#') continue;  // a comment line
             if (k == "S") {
                 std::string seq;
                 int move;
-                if (!(in >> seq >> move)) continue;
+                if (!(in >> seq >> move)) { unparsable(line); continue; }
                 GlobalBoard b;
                 std::vector<int> cells;
+                bool bad_cell = false;  // not a cell index 0..80
                 if (seq != "-") {
                     std::istringstream ms(seq);
                     std::string cell;
                     while (std::getline(ms, cell, ',')) {
-                        int c = std::stoi(cell);
+                        size_t used = 0;
+                        int c = -1;
+                        try { c = std::stoi(cell, &used); } catch (...) { used = 0; }
+                        bad_cell = used == 0 || used != cell.size() || c < 0 || c > 80;
+                        if (bad_cell) break;
                         cells.push_back(c);
                         b.makeMove(Move{c / 9, c % 9});
                     }
                 }
+                if (bad_cell) { unparsable(line); continue; }
                 Move real{move / 9, move % 9}, legal[81];
                 bool ok = false;
                 int n_legal = b.fillLegalMoves(legal);
@@ -240,6 +260,8 @@ struct Book {
             if (in >> e.move.mini_board >> e.move.square >> e.score >> e.ply >> e.prob) {
                 e.moves.push_back(e.move);
                 entries[k] = e;
+            } else {
+                unparsable(line);
             }
         }
         return true;

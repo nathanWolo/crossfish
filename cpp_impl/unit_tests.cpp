@@ -1247,8 +1247,9 @@ static Book play_book_text_read(const std::string &text) {
 }
 
 // The text book and the packer on small books in memory: the loader's rules
-// for several lines of one position, the packer's refusals (illegal moves,
-// more than PB_MAX_MOVES moves, the 25-ply cap), and a pack -> decode round
+// for several lines of one position and for blank and comment lines, the
+// packer's refusals (lines that are not book lines, illegal moves, more than
+// PB_MAX_MOVES moves, the 25-ply cap), the no-book case, and a pack -> decode round
 // trip through the runtime's own walk (pb_init's hooks). Restores PB_TABLE.
 static void test_play_book_text(TestCtx &ctx) {
     crossfish_nnue_load_once();
@@ -1267,11 +1268,14 @@ static void test_play_book_text(TestCtx &ctx) {
         "S 40,36 8\r\n"      // moving first, after 4 4, 3 3: 2 2
         "S 40,44 72\r\n"     // that position rotated (after 4 4, 5 5) by another seq, the same move: merged
         "S 40,44 80\r\n"     // ... another move: not an alternative, counted in `transposed`
-        "\r\n  \r\n";
+        "# a comment line\r\n"
+        "\r\n  \r\n"
+        "  # an indented comment, S 40 37\r\n";
     Book book = play_book_text_read(text);
     CHECK_EQ(book.entries.size(), (size_t)4);
     CHECK_EQ(book.illegal, 0);
     CHECK_EQ(book.too_deep, 0);
+    CHECK_EQ(book.unparsed, 0);  // blank lines and comments are not book lines and not errors
     CHECK_EQ(book.transposed, 1);
     CHECK(book.first_transposed.find("\"S 40,44 80\"") != std::string::npos);
     CHECK(book.first_transposed.find("\"S 40,36 8\"") != std::string::npos);
@@ -1414,6 +1418,36 @@ static void test_play_book_text(TestCtx &ctx) {
                                  "static const char PLAY_BOOK_CJK[] = \"\";\n"})
             CHECK(h.find(want) != std::string::npos);
         CHECK_EQ(h.rfind("#pragma once\n", 0), (size_t)0);
+    }
+    {  // blank lines and # comments only: an empty text book too, so the no-book payload
+        Book b = play_book_text_read("# no book\n\n   # an indented comment\r\n\t\n#\n");
+        CHECK(b.entries.empty());
+        CHECK_EQ(b.unparsed, 0);
+        int alt = -1;
+        CHECK_EQ(pb_pack_refusal(b, alt), std::string());
+    }
+    {  // no book line but other content (README.md passed as the book): refused, never the no-book payload
+        Book b = play_book_text_read("# crossfish\n\nAn Ultimate Tic-Tac-Toe engine.\r\n## Build\nmake test\n");
+        CHECK(b.entries.empty());
+        CHECK_EQ(b.unparsed, 2);
+        CHECK_EQ(b.first_unparsed, std::string("An Ultimate Tic-Tac-Toe engine."));
+        int alt = 0;
+        const std::string why = pb_pack_refusal(b, alt);
+        CHECK(why.find("2 line(s) that are not book lines") != std::string::npos);
+        CHECK(why.find("not a text book") != std::string::npos);
+    }
+    {  // malformed book lines are never positions: counted and refused, next to good book lines too
+        for (const char *bad : {"S", "S 40", "S 40,36 x", "S 40,x 1", "S 40,,36 1", "S 40,99 1", "S 40,-1 1",
+                                "S 40,36a 1", "x.. 1 2"}) {
+            Book b = play_book_text_read(std::string("S 40 36\n") + bad + "\n");
+            CHECK_EQ(b.entries.size(), (size_t)1);
+            CHECK_EQ(b.unparsed, 1);
+            CHECK_EQ(b.first_unparsed, std::string(bad));
+            int alt = 0;
+            const std::string why = pb_pack_refusal(b, alt);
+            CHECK(why.find("not book lines") != std::string::npos);
+            CHECK(why.find("not a text book") == std::string::npos);
+        }
     }
 }
 
