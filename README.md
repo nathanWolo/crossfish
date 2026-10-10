@@ -2,9 +2,12 @@
 
 Entry for the UVicAI UTTT tournament (first place) and a CodinGame Ultimate Tic-Tac-Toe engine.
 
-The **active engine is C++**. Its evaluation is a 35,243-parameter
+The **active engine is C++**. Its evaluation is a 51,435-parameter
 pattern-generator NNUE (`cpp_impl/nnue_b64.hpp`, payload
-`cpp_impl/nnue_b64_net.hpp`) with integer, incremental AVX2 inference.
+`cpp_impl/nnue_b64_net.hpp`; net r16_x128_l2400_s1601_rs, whose 27-128-128-32
+pattern encoder only runs at start-up) with integer, incremental AVX2 inference.
+The bot plays without an opening book since 2026-10-09 (the 4 4 opener is
+hard-coded).
 `cpp_impl/codingame_nnue.cpp` is the readable CodinGame engine and includes
 the eval headers; `cpp_impl/cg_input.cpp` is the bundled/minified C++ file.
 **The live CodinGame submission is `cpp_impl/cg_input_native.py`**: the same
@@ -27,10 +30,10 @@ Detailed project documentation:
   machine and round-robin ratings
 - The NNUE experiments' own tools and results: [trainers](tools/experiments/nnue2/README.md) and
   [fast inference, candidate builds, checks and two-net matches](tools/experiments/fast_nnue/README.md)
-- [NNUE research reports](documentation/reports/README.md): the full pre-registered write-ups of round 14 and the scaling study
+- [NNUE research reports](documentation/reports/README.md): the full pre-registered write-ups of round 14, the scaling study and round 16
 - [CodinGame submission and minifier](documentation/minification.md)
 - [Native submission](documentation/native_build.md): the clang build in a Python 3 launcher that is live on CodinGame
-- [Gameplay opening book](documentation/play_book.md): the book the CodinGame bot plays from
+- [Gameplay opening book](documentation/play_book.md): the book machinery of the CodinGame bot (no book ships since 2026-10-09)
 - [SPRT opening book](documentation/opening_book.md): the frozen starting positions the SPRT harness uses
 
 Hill-climbing Elo is a specific loop: freeze Prev, edit only Dev, prove correctness, then SPRT. Read **Improving the engine** before changing search or eval.
@@ -323,7 +326,9 @@ a freeze:
    `tools/test_nnue_emit_b64_header.py` (see section 10 of
    `documentation/nnue_training_and_implementation.md`);
    Dev, Prev and the bot all read that one header. Keep large LUTs in static
-   storage. **A new net also needs the opening book re-packed**: its payload
+   storage. With no book (the default since 2026-10-09: an empty
+   `cpp_impl/play_book.txt`, `PLAY_BOOK_ENTRIES 0`) a new net needs no book
+   step. **If a book is restored, a new net needs it re-packed**: its payload
    is coded with the net's move ordering, so run `make -C cpp_impl play-book`
    (from `cpp_impl/play_book.txt`) and commit `play_book_data.hpp`. A stale
    book is refused at start-up (`cg_selfcheck` prints `book=FAILED` and exits
@@ -341,7 +346,8 @@ a freeze:
    which the bot's `N` output shows at once.
 5. Rebuild the live submission on Linux: `CF_CLANG=/path/to/clang++ make
    cg-native`, then `make cg-native-check` (IDENTICAL at depths 5, 7 and 9,
-   40/40 protocol games). Commit `cpp_impl/cg_input_native.py` and
+   40/40 protocol games). On a host newer than Ubuntu 22.04 (glibc above 2.36)
+   use the user-space route of `documentation/native_build.md` section 3. Commit `cpp_impl/cg_input_native.py` and
    `tools/cg_native/manifest.json`; `tools/test_cg_native.py` fails in CI if
    the bot's sources changed after the last native build. Paste
    `cg_input_native.py` into CodinGame with the language set to **Python 3**
@@ -452,17 +458,18 @@ enable FMA in MiniNet; it will disagree with the scalar reference.
 ## CodinGame file and minifier
 
 CodinGame's source cap is **100,000 characters**, counted as UTF-16 code
-units. The NNUE generator (28,728 characters), the macro net (1,641) and the
-opening book (1,895) are packed at 15 bits per character on the U15 alphabet
+units. The NNUE generator (42,682 characters) and the macro net (1,641) are
+packed at 15 bits per character on the U15 alphabet (so was the opening book,
+1,895 characters, until it was dropped on 2026-10-09)
 (CJK ideographs plus a private-use range, see
 `documentation/minification.md`), so the file is larger in bytes than in
 counted characters; trust the minifier's count, not `wc -c`.
 `cpp_impl/cg_input.cpp` is the C++ submission; the readable source and generated
-headers are intentionally kept separate for review. The file is **69,861
-characters** (30,139 left).
+headers are intentionally kept separate for review. The file is **82,191
+characters** (17,809 left).
 
 **The live submission is `cpp_impl/cg_input_native.py`** (language: Python 3,
-68,860 characters): the same bot as `cg_input.cpp`, built by clang 23 with
+77,297 characters): the same bot as `cg_input.cpp`, built by clang 23 with
 `-O3 -march=haswell`, xz-compressed and U15-encoded into a launcher that execs
 it. It searches the identical tree about 7.5% faster than CodinGame's g++
 build of the paste (GSPRT [0, 5] H1 at 5,400 games at 62 ms, about +6 to +8
@@ -492,46 +499,79 @@ implementation, and validation procedure.
 
 ## Opening book
 
-The CodinGame bot plays its first moves from an opening book,
-`cpp_impl/play_book_data.hpp`: a tree after the first player's center-center
-(moving second, the book assumes the opponent opened there) in two halves.
+**No book ships since 2026-10-09** (the owner's ruling, improvement log
+section 69). The bot opens 4 4 when it moves first (hard-coded) and searches
+every other move. `cpp_impl/play_book.txt` is empty and
+`cpp_impl/play_book_data.hpp` is the no-book payload that `make -C cpp_impl
+play-book` packs from it (`PLAY_BOOK_ENTRIES 0`, fingerprint 0, no payload):
+`pb_init` decodes nothing and `pb_lookup` never returns a move.
+`cg_selfcheck` prints `book=none entries=0` and exits 0, and every check
+(`play-book-check`, `play-book-protocol`, `cg-native-check`, the CI gate's
+exact book check) accepts that state. A net swap needs no book step.
 
-- **Moving first**, the book is uttt.ai's (8,828 positions): it covers the
-  replies uttt.ai's policy rates at 0.03 or more, grown deepest along the
-  likeliest lines, and our moves are uttt.ai's after a 3,200-simulation
-  search, with a crossfish veto.
-- **Moving second**, since 2026-10-08, it is crossfish's own deep-search book
-  (1,646 positions, snapshot s5 of the P2 book builder). A depth-32 search
-  gives each position's move and every legal move is also searched to depth
-  28; where the two disagree by more than 300, a second depth-32 search
-  decides between them, and where it names a third move (228 positions, 14%)
-  the every-move scan's best is stored. The replies it covers come from the
-  engine's own scores, plus positions added on lines that earlier snapshots
-  lost on the ladder: the ladder decided where to search and what to add,
-  never which move is stored. No stored move is deeper than ply 24 (the 25-ply
-  cap). At five positions,
-  the root among them, two or three near-tied moves are stored and the bot
-  picks one at random in each game.
+Why: on the ladder (2026-10-08, section 68) the deep-search second-player
+book s5 scored 0.207 ± 0.040 as second player against the seven top bots and
+no second-player book 0.231 ± 0.043, level; a later snapshot scored -0.06
+against a same-night no-book control (2026-10-09); and every book has to be
+re-packed and re-tested for each net. The last shipped book was uttt.ai's
+first-player half (8,828 positions) plus s5 (1,646 positions), 10,474
+positions in 1,895 characters, stored without keys as the arithmetic-coded
+decisions of a fixed walk with the NNUE's move ordering as the model (payload
+format 2, up to three moves per position). In September, with the pre-NNUE
+engine, the uttt.ai book was worth **+99.4 ± 11.2** head-to-head against the
+plain engine; with the NNUE engine the self-play value was gone (+8.6 ±
+12.1).
 
-That is 10,474 positions in 1,895 characters, stored without keys: the
-decisions along a fixed walk of the book, arithmetic-coded with the NNUE's
-move ordering as the model (payload format 2, which stores up to three moves
-per position). A new net needs the book re-packed (`make -C cpp_impl
-play-book`, from `cpp_impl/play_book.txt`).
-
-On the ladder (2026-10-08, improvement log section 68), with the live engine
-and only the second player's book changed, the bot scored **0.207 ± 0.040**
-as second player against the seven top bots with the deep-search book, 0.063
-± 0.019 with uttt.ai's second-player half and 0.231 ± 0.043 with none. In
-September, with the pre-NNUE engine, the uttt.ai book was worth **+99.4 ±
-11.2** head-to-head against the plain engine (3,000 games, 90 ms; the
-full-coverage book before it +18.7 ± 11.1) and a paired book value of **+72.0
-vs +26.3** against the round-six engine; with the NNUE engine the self-play
-value was gone (+8.6 ± 12.1). Moving second against anything but a
-center-center opening, the bot has no book. Design, measurements and the
-regeneration procedure are in `documentation/play_book.md`.
+The machinery stays. To bring a book back, put a text book in
+`cpp_impl/play_book.txt` (the s5 book: `git show
+4919ed7:cpp_impl/play_book.txt`) and run `make -C cpp_impl play-book`, which
+re-packs it under the current net. Design, measurements and the procedure
+are in `documentation/play_book.md`.
 
 ## Latest strength result
+
+On 2026-10-09 the net **r16_x128_l2400_s1601_rs** ("W1") replaced
+r14_d5_final_s2_rs as the evaluation, and the bot dropped its opening book
+(improvement log section 69). W1 starts from r14's unscaled checkpoint
+(`r14_d5_final_s2`; r14_d5_final_s2_rs is its rescaled copy) with its pattern
+encoder widened from 27-64-64-32 to 27-128-128-32 (function-preserving: the
+new units' outgoing weights start at zero), then trained 2.4G more rows with
+the recipe of the matched control C3 and its eval rescaled by 1/1.0787;
+51,435 parameters. The tests against r14 measure the widening and the 2.4G
+rows together; the test against C3 isolates the widening. The encoder only
+runs in the start-up bake, so the per-node search code and speed are r14's.
+Pre-registered tests, desktop and Dell pooled, bookless engines:
+
+| Test | Games | Elo (95%) | Verdict |
+| --- | ---: | --- | --- |
+| vs r14, 20 ms, GSPRT [0, +5] | 2,310 | **+15.20 ± 9.08** | H1 (LLR +2.95) |
+| vs r14 at CodinGame compute, fixed length | 4,000 | **+13.82 ± 5.94** | [+7.88, +19.76] |
+| vs C3 (the same 2.4G rows without the widening), 20 ms, GSPRT [0, +5] | 10,930 | **+5.12 ± 4.12** | H1 (LLR +2.96) |
+
+On the CodinGame ladder the gain is **below resolution**: two W1 agents
+against a same-evening r14 control scored -0.042 as second player (95%
+[-0.090, +0.023], clustered by opening) and -0.004 as first player, and a
+two-agents-per-arm test detects a +14 Elo change with only about 10-15%
+probability; it neither confirms nor refutes the self-play gain. With all
+four W1 agents (2026-10-10, submitted in the order W1 W1 control control W1
+W1, so the pair after the control brackets it in time) the second player's
+difference is -0.046 (clustered 95% [-0.090, +0.010]) and the first
+player's -0.024 (95% [-0.047, +0.003]): still no significant difference, so
+the ladder remains below resolution, but the P2 interval's upper end is now
+just under the self-play-sized +0.013, so whether the gain transfers to the
+second player's games is uncertain and opponent-specific (worse against
+morph, RoboStac, karliso and Babebibobu, better against MrSubZero, AllanB,
+Fancheng, Daporan and Apostolique; FINDINGS A19). W1 (#6 30.55, #6 30.61;
+resubmitted 2026-10-10, #8 30.21 and #9 29.97) is the live build. The first turn, which now bakes the wider
+encoder, takes about 415 ms on the Dell of its 1,000 ms (no timeout on our
+side in the four agents' 1,040 ladder games).
+The paste file is **82,191 characters** (17,809 left) and the
+native launcher **77,297**. `main`'s launcher is not the live file byte for
+byte: the live one (`dd33df97…`, 82,112 characters) was built before the
+no-book mode existed, from runtime B's format-1 book code and a hand-written
+empty book that its fingerprint check refused; it plays identically (the
+selfchecks match at eight settings; only the book line differs, book=FAILED
+there).
 
 On 2026-10-08 the **second player's opening book** became crossfish's own
 deep-search book (improvement log section 68): snapshot s5 of the P2 book
@@ -556,12 +596,13 @@ Against the control, s5 is **+0.143 ± 0.044** and no book +0.167 ± 0.047
 (1 s.e.): both clear the pre-registered bar of the control plus two standard
 errors, so the old second-player half was costing points. s5 and no book
 are level (-0.024 ± 0.059), and by the pre-registered rule the deep-search
-book stays. Our side timed out once in 558 games (first player, move 21, out
+book stayed. Our side timed out once in 558 games (first player, move 21, out
 of book). The field changed between the control's day and the test's (new
 agents of AllanB, Apostolique, Babebibobu, RoboStac and sZoom), so the
-placements are not comparable across the two days. On `main` the native
-submission is the live file byte for byte (sha256 `775c3208…`, 68,860
-characters) and the paste file is **69,861 characters** (30,139 left).
+placements are not comparable across the two days. At the time, `main`'s
+native submission was the live file byte for byte (sha256 `775c3208…`,
+68,860 characters) and its paste file was **69,861 characters** (30,139
+left).
 
 On 2026-10-07 **ProbCut** joined the search (improvement log section 67): at a
 null-window node of depth 5 or more, the first three ordered moves get a
@@ -681,20 +722,24 @@ Timeouts: Prev=35 Dev=33
 
 See section 58 of the improvement log.
 
-The shipped engine is `main`'s `cpp_impl/cg_input.cpp`: the round-eleven
-search with the mate-window pruning fix, the pattern-generator NNUE as its
-whole evaluation (net r14_d5_final_s2_rs since 2026-10-04, r13w_20 before it), the CodinGame-compiler
-inlining work and the uttt.ai opening book (since 2026-10-08 only its
-first-player half; the second player's book is the deep-search one). It was
-**72,914 characters**, 27,086
+The shipped engine is `main`'s `cpp_impl/cg_input.cpp` (live as its native
+build `cg_input_native.py`): the round-eleven search with the mate-window
+pruning fix and ProbCut, the pattern-generator NNUE as its whole evaluation
+(net r16_x128_l2400_s1601_rs since 2026-10-09, r14_d5_final_s2_rs from
+2026-10-04, r13w_20 before it), the CodinGame-compiler inlining work, and no
+opening book since 2026-10-09 (the uttt.ai book before it; from 2026-10-08
+only its first-player half, the second player's book being the deep-search
+one). On 2026-10-04 it was **72,914 characters**, 27,086
 under the cap (the minifier's count; `wc -c` reports UTF-8 bytes); this exact
 file was submitted twice on 2026-10-04 and placed #4 (33.19) and #3 (33.30). The 2026-09-27 submission (94,922 characters,
 net B64_d5M_57ep) finished placement at **rank 1** of CodinGame's Ultimate
-Tic-Tac-Toe ladder. Built with CodinGame's flags
-on the laptop, replies take 90.2-90.5 ms against the 100 ms referee, and the
-first turn about 175-220 ms of its 1,000 ms alone, and up to about 380-470 ms
-when two bots start together on one pinned laptop E-core in referee games (it
-bakes the NNUE's tables in about 50 ms).
+Tic-Tac-Toe ladder. Replies take 90.1-90.5 ms against the 100 ms referee. With
+r14 (64-wide encoder, NNUE bake about 50 ms), built with CodinGame's flags on
+the laptop, the first turn took about 175-220 ms of its 1,000 ms alone, and
+up to about 380-470 ms when two bots started together on one pinned laptop
+E-core in referee games. W1's 128-wide encoder bakes in about 195-260 ms with
+CodinGame's flags on the Dell, and its first turn takes about 415 ms there
+through the native launcher (improvement log section 69).
 
 On 2026-09-28 the net r12_M2 (round twelve: data the NNUE engine labelled
 itself, and its own self-play) passed the official 90 ms SPRT against
@@ -740,6 +785,7 @@ the 50,000-position book; the improvement-log section has the full record.
 
 | Date | Step | Result | Log |
 | --- | --- | --- | ---: |
+| 2026-10-09 | NNUE net r16_x128_l2400_s1601_rs (W1): r14's unscaled checkpoint widened to a 27-128-128-32 encoder, then 2.4G more rows; no opening book | bookless engines: vs r14 20 ms GSPRT [0, 5] H1 at N=2310, +15.20 ± 9.08; at CodinGame compute N=4000, +13.82 ± 5.94; vs its enc64 control C3 H1 at N=10930, +5.12 ± 4.12; ladder below resolution (four W1 agents vs a same-evening r14 control: P2 -0.046, clustered 95% [-0.090, +0.010]; P1 -0.024, 95% [-0.047, +0.003]) | §69 |
 | 2026-10-08 | Deep-search second-player opening book (snapshot s5 of the P2 book builder; payload format 2, up to three moves per position) | ladder, second player vs the fixed top 7: 0.207 ± 0.040 (n 75) against 0.063 ± 0.019 with the old book (+0.143 ± 0.044); no second-player book 0.231 ± 0.043; placements #4 32.32, #3 32.69 | §68 |
 | 2026-10-07 | ProbCut (depth >= 5, first 3 moves, depth - 4 against beta + 60 pawns) | N=1584, 328-1001-255, +16.0 ± 9.2, LLR +3.03 PASS; +0.42 ply at 90 ms; at CG compute N=2534, +16.3 ± 8.0, LLR +4.15 PASS | §67 |
 | 2026-10-04 | NNUE net r14_d5_final_s2_rs: r13w_20 fine-tuned for 600M rows on round thirteen's data and labels with a WDL filter and a power loss, rescaled to r13w_20's eval spread | booked paste builds vs r13w_20, 90 ms: GSPRT [0, 6] accepts H1 at N=4200 (LLR +3.32); fresh openings N=4000, 777-2551-672, +9.1 ± 5.9; Dell at CodinGame compute +12.9 ± 6.4 (N=4000); ladder: no measurable change (#4 33.19, #3 33.30) | §65 |
@@ -779,12 +825,12 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `cpp_impl/cg_selfcheck.cpp` — checksums the CodinGame port's fixed-depth scores and node counts (and, with `cg-speed`, times them)
 - `cpp_impl/engine_selfcheck.cpp` — the same checksum over Dev or Prev, so `make -C cpp_impl port-check` can compare a port with Dev
 - `cpp_impl/opening_book.bin` — frozen 50,000-position depth-16-qualified SPRT book
-- `cpp_impl/play_book.hpp` / `play_book_data.hpp` — gameplay opening book runtime and payload; `play_book_*.cpp` are its packer, checker, generator and match tools
+- `cpp_impl/play_book.hpp` / `play_book_data.hpp` — gameplay opening book runtime and payload (the no-book payload since 2026-10-09: `PLAY_BOOK_ENTRIES 0`, from the empty `play_book.txt`); `play_book_*.cpp` are its packer, checker, generator and match tools
 - `cpp_impl/mini_eval.hpp` — retired D8/H4 MiniNet, kept for unit tests
 - `tools/cg_minify.py` — ice4-style minifier used to build `cg_input.cpp`
 - `tools/cg_perf_gate.py`, `tools/cg_gate/Dockerfile` — the CodinGame performance gate CI runs on every pull request; `tools/cg_gate/eval_change.json`, when present, declares an intentional eval-architecture change for it (delete it after merge)
 - `tools/cg_speed_check.py`, `tools/speed_ab.py` — nodes-per-move through the real protocol, and repeated paired Dev-vs-Prev timing with a confidence interval
-- `tools/nnue_emit_b64_header.py` — the NNUE payload emitter and checker (`--check`)
+- `tools/nnue_emit_b64_header.py` — the NNUE payload emitter (any encoder width, from the net file), checker (`--check`) and integer reference (`--int-eval`); `cpp_impl/nnue_parity.cpp` (`make -C cpp_impl nnue-parity`) is the runtime's side of that parity check
 - `tools/experiments/nnue2/`, `tools/experiments/fast_nnue/` — the NNUE's trainers, and its candidate builds, exactness checks, two-net matches and Linux worker (log §56; each has a README)
 - `tools/nnue_*.py` (the rest) — MiniNet and macro-head training and header emitters; `tools/experiments/full_nnue/` archives the rejected per-cell full-NNUE study (log §53)
 - `cpp_impl/datagen.cpp`, `tools/eval_*.py`, `tools/nnue_train_blend.py`, `tools/round_robin.py`, `tools/sprt_merge.py`, `tools/sprt_worker.py` — eval data, training and testing tools (log §55, `documentation/eval_data.md`); `tools/experiments/capacity/` holds the architecture probes
@@ -794,6 +840,6 @@ and eval but not the CodinGame build; that is why the rows for sections 47 and
 - `documentation/nnue_training_and_implementation.md` — the NNUE's architecture, training, quantization, payload and runtime, and the MiniNet and macro heads before it
 - `documentation/eval_data.md` — the eval data pipeline, win-probability trainer, candidate A/B builds, pooled SPRTs and round robins
 - `documentation/opening_book.md` — SPRT book selection, binary format, validation, and versioning policy
-- `documentation/play_book.md` — the gameplay opening book: design, measurements, regeneration
+- `documentation/play_book.md` — the gameplay opening book: the no-book default, design, measurements, regeneration
 - `documentation/minification.md` — from readable source to the 100,000-character paste file
 - `documentation/native_build.md` — the native submission: toolchain, build, checks, measurements, rules

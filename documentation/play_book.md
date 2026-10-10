@@ -1,10 +1,85 @@
 # Gameplay opening book
 
 `cpp_impl/play_book_data.hpp` is the opening book the CodinGame bot plays
-from. It is unrelated to `cpp_impl/opening_book.bin`, which is the frozen set of
+from. **Since 2026-10-09 it is the no-book payload**: no book ships (below).
+It is unrelated to `cpp_impl/opening_book.bin`, which is the frozen set of
 SPRT *starting positions* described in [opening_book.md](opening_book.md).
 
-## What it covers
+## No book (the default since 2026-10-09)
+
+The owner closed the opening books on 2026-10-09 (improvement log section
+69): the bot opens 4 4 when it moves first (hard-coded in
+`codingame_nnue.cpp`, as always) and searches every other move. The reasons:
+on the ladder the deep-search second-player book s5 and no second-player book
+were level (0.207 ± 0.040 against 0.231 ± 0.043 as second player against the
+top seven, 2026-10-08), a later snapshot scored -0.06 against a same-night
+no-book control (2026-10-09), and every book must be re-packed and re-tested
+for each net.
+
+No book is a supported configuration of the book machinery, selected by the
+data alone (`PLAY_BOOK_ENTRIES 0`); the runtime, the bot and the search are
+the same code as with a book:
+
+- **The text book** `cpp_impl/play_book.txt` is empty (0 bytes).
+- **The packer** writes the no-book header for an empty text book (0 bytes,
+  or nothing but blank lines and `#` comments), without loading the net:
+  `PLAY_BOOK_FORMAT 2`, `PLAY_BOOK_ENTRIES 0`, `PLAY_BOOK_BYTES 0`,
+  `PLAY_BOOK_EVAL_FINGERPRINT 0`, `PLAY_BOOK_CJK = ""`
+  (`pb_no_book_header` in `play_book_pack.hpp`). Fingerprint 0 means the
+  empty book belongs to no net, so a net swap needs no book step.
+  `make -C cpp_impl play-book` regenerates the committed header byte for byte.
+  A file with no book line and any other content (say `README.md` passed as
+  the book) is refused, not packed as no book.
+- **The runtime:** `pb_init` returns false at once when `PLAY_BOOK_ENTRIES`
+  is 0, so `PB_READY` stays false, `PB_TABLE` stays empty and `pb_lookup`
+  never returns a move. (Without that line a zero-byte payload whose
+  fingerprint matched would decode as one bogus entry, an all-0 bit stream:
+  our rank-0 reply to 4 4.) The NNUE bake happens before `pb_init` in the bot,
+  so the search does not see the difference; the first turn only skips the
+  book decode. With `PLAY_BOOK_ENTRIES` a compile-time 0, the native build's
+  optimizer drops the decoder altogether.
+- **`cg_selfcheck`** (and the native launcher's `selfcheck` mode) prints
+  `book=none entries=0 table_checksum=1469598103934665603` (the empty
+  table's checksum, the FNV offset basis) and exits 0.
+- **`play_book_check`** prints `pb_init: none (no book, PLAY_BOOK_ENTRIES 0)`
+  and passes only if nothing was decoded and the text book is empty too.
+- **`play_book_text_dump`** writes an empty text book; `play_book_match` says
+  there is nothing to measure and exits 0, so `make play-book-match` is a
+  no-op.
+- **`tools/cg_native/verify.sh`** expects `book=none` when the data header has
+  0 entries (else `book=ok`), and its protocol step runs against the empty
+  dump.
+- **`tools/play_book_protocol_check.py --book <empty file>`** is the exact
+  no-book check: no position is in the book, so every reply must be a search
+  move (none marked `BOOK`). In every mode it also checks that the bot moving
+  first opens 4 4. `make play-book-protocol` and the CI gate pass the empty
+  `play_book.txt`.
+- **Unit tests:** with 0 entries `test_play_book` checks the no-book state
+  (the constants, `pb_init` false, no lookup after 4 4 from either seat or in
+  400 random games), `test_play_book_moves` an empty tree, and
+  `test_play_book_text` still packs a small book in memory and decodes it
+  with the runtime's walk, so the coder stays tested. The booked checks and
+  their table-checksum pins (`PLAY_BOOK_PIN_*`, the s5 book's) run only when
+  a book is packed.
+
+**Restoring a book.** Books are move lists and do not depend on the net, so
+any earlier text book can come back: copy it to `cpp_impl/play_book.txt`
+(the last shipped one, s5 with uttt.ai's first-player half: `git show
+4919ed7:cpp_impl/play_book.txt > cpp_impl/play_book.txt`), run
+`make -C cpp_impl play-book` (it packs the book under the current net's move
+ordering and fingerprint, then checks it), regenerate the paste and the
+native launcher, and test the book on the ladder (below). The
+`PLAY_BOOK_PIN_*` checksums in `unit_tests.cpp` hash the decoded table (its
+position hashes and moves), not the payload, so they depend on the book and
+not on the net: s5 restored from 4919ed7 and packed under W1 keeps both
+(`table_checksum` 10147742875230593747, `moves_checksum`
+7272843604574170237). Only a different book needs new pins, taken from
+`play_book_check`'s output.
+
+The rest of this document describes the book as it last shipped (2026-10-08
+to 10-09) and how it was built and measured.
+
+## What it covered (until 2026-10-09)
 
 The book is a tree that starts after the first player's **center-center**:
 
@@ -304,9 +379,9 @@ paste characters.
 | File | Role |
 | --- | --- |
 | `cpp_impl/play_book.hpp` | Runtime: canonical hash, walk, decoder, lookup and the random choice. Shipped. |
-| `cpp_impl/play_book_data.hpp` | Generated payload (format 2). Shipped. Do not edit. |
+| `cpp_impl/play_book_data.hpp` | Generated payload (format 2). Shipped. Do not edit. Since 2026-10-09 the no-book payload (0 entries). |
 | `cpp_impl/play_book_text.hpp` | Text book format (several moves per position) and string-keyed symmetry helpers for the tools. |
-| `cpp_impl/play_book.txt` | The shipped book as a text book (`S` lines), the packer's default input. |
+| `cpp_impl/play_book.txt` | The shipped book as a text book (`S` lines), the packer's default input. Empty since 2026-10-09 (no book); the s5 book is at `git show 4919ed7:cpp_impl/play_book.txt`. |
 | `cpp_impl/play_book_pack.cpp` | Packs a text book into `play_book_data.hpp` (needs the NNUE: it orders moves like the bot). |
 | `cpp_impl/play_book_text_dump.cpp` | Writes the shipped payload back out as a text book (`make play-book-text`); it packs again to the same payload. |
 | `cpp_impl/play_book_check.cpp` | Decodes the payload and checks every stored move against the text book, and the runtime's choice at positions with several moves. |
@@ -328,6 +403,11 @@ are no separate coverage records. Two line forms are accepted:
   (comma-separated cells, `mb * 9 + sq`, or `-` for the empty board) and our
   move there, in real orientation. The packer replays and keys it, so an
   external generator never has to reproduce the canonical key.
+
+Blank lines and comment lines (first non-blank character `#`) are skipped.
+Any other line is an error: the packer and `play_book_check` refuse a text
+book with a line that is neither form (prose, an `S` line without a move, a
+`seq` that is not cell indices 0-80), naming the first such line.
 
 **Several moves per position.** Several lines with the same `seq` list that
 position's book moves, in file order; the first is the primary. For example,
@@ -377,14 +457,15 @@ of it), `--cover` the prior threshold, `--sims` uttt.ai's search, and
 the P2 book builder (`datasets/nnue2/cg/ladder/book/p2book/`, README sections
 3-8e): its `book_p2.txt` is a text book of second-player `S` lines with the
 alternatives after each primary, and it keeps the 25-ply cap itself
-(`--max-idx 23`). The shipped `cpp_impl/play_book.txt` is the uttt.ai book's
-first-player lines (8,828 lines, in their original order) followed by s5's
-`book_p2.txt` (1,653 lines). Then:
+(`--max-idx 23`). The last shipped text book (2026-10-08, in git at
+`4919ed7:cpp_impl/play_book.txt`) is the uttt.ai book's first-player lines
+(8,828 lines, in their original order) followed by s5's `book_p2.txt` (1,653
+lines). Then:
 
 ```bash
 cp <the text book> cpp_impl/play_book.txt
 make -C cpp_impl play-book          # pack + check against the text book (every move, the random choice)
-make -C cpp_impl test               # update the two pinned table checksums in test_play_book first
+make -C cpp_impl test               # a book other than s5: first update the two pinned table checksums (PLAY_BOOK_PIN_*)
 make -C cpp_impl cg-input
 make -C cpp_impl play-book-protocol # exact book use through the real protocol
 ```
@@ -394,8 +475,9 @@ and the native submission (`make cg-native`, `make cg-native-check`;
 refuses a line whose stored move is past half-move index 24 moving first or 23
 moving second (a line's half-move index is the number of moves in its `seq`).
 
-Re-packing the shipped book (after a net change, or a change to the coder)
-needs no generator: `cpp_impl/play_book.txt` is that book, and
+Re-packing a book (after a net change, or a change to the coder) needs no
+generator: `cpp_impl/play_book.txt` is that book (empty, packing to the
+no-book payload, while no book ships), and
 `make -C cpp_impl play-book-text` regenerates it from the current payload with
 the current net (one line per stored move, a position's primary first).
 `make -C cpp_impl play-book-gen` still writes a full-coverage book with
@@ -416,9 +498,10 @@ continuations) differs only in its own entry's other bytes, which
 `moves_checksum` covers and `table_checksum` does not. Through the native
 launcher, such an alternative is checked only by the protocol games that
 reach and draw it, until a change that rebuilds the launcher anyway widens
-`cg_selfcheck`'s checksum to all four bytes. For the shipped book:
-`table_checksum=10147742875230593747`, `moves_checksum=7272843604574170237`,
-10,474 entries.
+`cg_selfcheck`'s checksum to all four bytes. For the s5 book under r14 (the
+last shipped book): `table_checksum=10147742875230593747`,
+`moves_checksum=7272843604574170237`, 10,474 entries. With no book,
+`table_checksum=1469598103934665603` (an empty table).
 
 ## Testing a book change
 

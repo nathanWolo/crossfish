@@ -121,6 +121,11 @@ template <class T> struct cf_heap_array {
 // contradiction filter and a power loss, its eval rescaled by 1/1.047 to
 // r13w_20's spread. Same architecture, code and scales; the payload and the
 // re-packed book changed. Booked builds at 90 ms, N=4000: +9.1 +/- 5.9 Elo.
+// Net r16_x128_l2400_s1601_rs since 2026-10-09 (section 69): r14 widened to a
+// 27-128-128-32 encoder (51,435 parameters) and trained 2.4G rows, its eval
+// rescaled by 1/1.0787. The encoder widths come from the header; the per-node
+// code is unchanged (only the bake is wider). No opening book (the 4 4 opener
+// stays). Bookless at CodinGame compute, N=4000: +13.8 +/- 5.9 Elo vs r14.
 //a struct representing a 3x3 board with 16 bit integers
 struct MiniBoard {
     cf_array<int, 2> markers = {0, 0};

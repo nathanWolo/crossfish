@@ -1,12 +1,17 @@
 # NNUE training and runtime implementation
 
 Since 2026-09-27 (improvement log section 56) Crossfish's whole evaluation is
-one small NNUE: a pattern-generator net with 35,243 parameters, integer and
-incremental at run time, shared by the local engines (`crossfish_dev.hpp`,
-`crossfish_prev.hpp`) and the CodinGame bot. The shipped net is
-**r14_d5_final_s2_rs** (since 2026-10-04, section 65): r13w_20's weights
-fine-tuned for 600M rows on round thirteen's data with a WDL filter and a
-power loss. **r13w_20** (2026-10-01, section 64) was r12_M2's weights
+one small NNUE: a pattern-generator net, integer and incremental at run time,
+shared by the local engines (`crossfish_dev.hpp`, `crossfish_prev.hpp`) and
+the CodinGame bot. The shipped net is **r16_x128_l2400_s1601_rs** ("W1",
+since 2026-10-09, section 69): r14's unscaled checkpoint `r14_d5_final_s2`
+(r14_d5_final_s2_rs is its rescaled copy) with its pattern encoder
+widened from 27-64-64-32 to 27-128-128-32 (51,435 parameters instead of
+35,243), trained 2.4G more rows and rescaled like r14; the head and
+everything that runs per node are unchanged. **r14_d5_final_s2_rs**
+(2026-10-04, section 65) was
+r13w_20's weights fine-tuned for 600M rows on round thirteen's data with a
+WDL filter and a power loss. **r13w_20** (2026-10-01, section 64) was r12_M2's weights
 fine-tuned for 2.4G rows on round thirteen's data. Before it, **r12_M2** (2026-09-28, section 57) was the same
 architecture trained on data that the NNUE engine labelled itself, and the
 first shipped net was **B64_d5M_57ep**. The NNUE replaced
@@ -66,12 +71,12 @@ network:
 
 | Part | Shape | Parameters |
 | --- | --- | ---: |
-| encoder: one-hot 27 (3 states x 9 squares) -> 64 -> 64 -> 32, ReLU between | shared by all rows | 8,032 |
+| encoder: one-hot 27 (3 states x 9 squares) -> 64 -> 64 -> 32, ReLU between (W1: -> 128 -> 128 -> 32) | shared by all rows | 8,032 (W1: 24,224) |
 | projection per location: `T[m][p] = enc(p) @ proj_w[m] + proj_b[m]` | 9 x (32 x 65 + 65) | 19,305 |
 | forced-board projection: `F[p] = enc(p) @ fwd_w + fwd_b` | 32 x 65 + 65 | 2,145 |
 | bias, decided rows (27), constraint rows (20: 10 per side) | 48 x 65 | 3,120 |
 | head: 128 -> 16 -> 32 -> 1 | | 2,641 |
-| **total** | | **35,243** |
+| **total** | | **35,243** (W1: **51,435**) |
 
 Lane 64 of every row is a PSQT lane: it bypasses the head and enters the
 output directly, so the accumulators carry a linear material-style term for
@@ -83,6 +88,18 @@ log section 53's 199-feature design). A pattern row sees the whole 3 x 3 geometr
 a per-cell first layer has to rebuild from data. B-128 (61,483 parameters)
 fitted 0.4 points better and played 6 Elo worse at 20 ms, being about 15%
 slower.
+
+**The encoder's width is free at run time.** The encoder only computes the
+11,093 pattern rows in `load()`; search reads the baked tables. So a wider
+encoder costs start-up time (W1's bake: about 130 ms at -O3 on the
+desktop and 190 ms on the Dell, about 260 ms cold on the Dell with
+CodinGame's flags, against about 50 ms) and payload characters
+(+13,954), not nodes per second: on the same search tree W1 costs +0.08% per
+node over an A/A control. The runtime takes the encoder widths from the
+header (section 6). Widening the shipped net function-preservingly (new units
+start with zero outgoing weights, so step 0 is the old net) and training on
+was the scaling study's one lever that reached play, and W1 is that lever on
+r14 (FINDINGS A14, A18; improvement log section 69).
 
 ## 3. Training data
 
@@ -287,7 +304,7 @@ on co-activation), which cuts the nonzero pairs per evaluation from 37.7 to
 
 **Integer scales.** Every table is quantized to a power of two:
 
-| Scale | What | r14_d5_final_s2_rs (and r13w_20, r13w_11) | r12_M2 | B64_d5M_57ep |
+| Scale | What | W1, r14_d5_final_s2_rs (and r13w_20, r13w_11) | r12_M2 | B64_d5M_57ep |
 | --- | --- | ---: | ---: | ---: |
 | `B64_QA` | the 64 accumulator lanes (int16) | 2^9 | 2^9 | 2^9 |
 | `B64_QPS` | the PSQT lane (int16, separate arrays) | 2^12 | 2^12 | 2^13 |
@@ -311,13 +328,22 @@ from the float net on average (max 164; the float evals' standard deviation
 is 2,881), mostly at late plies. Its held-out loss equals the float net's to
 within 3e-6.
 
-**The payload.** The source carries the generator, not the tables: 35,243
-parameters, rounded with GPTQ and a least-squares refit, one bf16 scale per
-row, a bit width per group and Rice coding, in 30,923 CJK14 characters
-([minification.md](minification.md) section 3.1).
-`tools/nnue_emit_b64_header.py NET.bin --label NAME` writes
+**The payload.** The source carries the generator, not the tables: the
+net's parameters, rounded with GPTQ and a least-squares refit, one bf16 scale
+per row, a bit width per group and Rice coding (B64_d5M_57ep: 35,243
+parameters in 30,923 CJK14 characters; [minification.md](minification.md)
+section 3.1). `tools/nnue_emit_b64_header.py NET.bin --label NAME` writes
 `cpp_impl/nnue_b64_net.hpp` from the lane-paired export and derives the five
-scales itself (a port of the loader's bound). The payload's own rounding keeps
+scales itself (a port of the loader's bound). It reads the net's widths from
+the file and writes them into the header as a widths line
+(`B64_A, B64_L1, B64_L2, B64_E, B64_ENC0, B64_ENC1`), which the runtime
+compiles for. `--int-eval POS.cfdg OUT.txt` is its integer reference: every
+record's eval computed the way `nnue_b64.hpp` computes it from scratch
+(int16 lane sums, the clamp, the pair madds, the rounded shifts), with the
+overflow bounds asserted, to compare line for line with
+`cpp_impl/nnue_parity.cpp` (section 8). W1's payload is 80,027 bytes = 42,682
+U15 characters (sha256 `c6d0c3ada487e829…`); its rounding moves the float
+eval by 1.75 mean / 65.1 max units on the 20,000 parity positions. The payload's own rounding keeps
 the bot at 4.72 / 163 from the float net, the same as the unrounded net.
 r14_d5_final_s2_rs's payload is 53,865 bytes = 28,728 U15 characters
 (r13w_20: 53,834 = 28,712; r13w_11: 53,927 = 28,762; r12_M2: 54,159 =
@@ -329,7 +355,13 @@ the 20,000 parity positions (r13w_20: 1.97 / 66.7; r13w_11: 1.69 / 41.8).
 **Start-up.** `b64::load()` decodes the payload into the generator, runs the
 encoder on the 11,093 live patterns, projects each through the nine location
 projections and the forced-board one, and quantizes every row as it is made:
-25.6 MB of static int16 tables in about 50 ms. The float operations run in a
+25.6 MB of static int16 tables in about 50 ms with a 64-wide encoder, about
+130 ms with W1's 128-wide one (-O3 on the desktop; about 190 ms on the
+Dell, and about 260 ms cold there with CodinGame's flags). The encoder widths `ENC0`, `ENC1` come from the header
+(`B64_ENC0`, `B64_ENC1`, up to 1,024 each); a `static_assert` pins the rest
+to B-64 (A 64, E 32, L1 16, L2 32), because the per-node kernels are written
+for it. The generator struct and `unpack`'s and `read_mat`'s buffers are
+sized from the widths; nothing that runs per node depends on them. The float operations run in a
 fixed order without FMA, so every compiler and flag set bakes the same floats;
 the unit tests pin the hashes of all 16 integer tables. `load()` uses a plain
 ready flag, which the single-threaded bot needs; the engines call it through
@@ -400,7 +432,10 @@ port-check` proves the bot searches exactly like Dev):
 
 - `unit_tests` (`make test`):
   - `nnue_tables_match_verified_build`: the 16 table hashes and the five
-    scales of the build checked with CodinGame's compiler.
+    scales of the build checked with CodinGame's compiler, the encoder widths
+    (128, 128, 32 on the B-64 head) and the evaluator fingerprint
+    `pb_eval_fingerprint` (W1: 3846873435862646193; the value a book packed
+    under the net carries).
   - `nnue_fixed_positions`: 16 positions (decided and drawn boards, forced
     boards, free moves) through `evaluate_board`, an independent scalar int64
     reference and Dev's `evaluate()`, against the verified bot's own evals;
@@ -411,8 +446,16 @@ port-check` proves the bot searches exactly like Dev):
     new stack at the empty board): keyed == incremental == from scratch ==
     scalar.
 - `tools/test_nnue_emit_b64_header.py` (numpy only): the committed header
-  decodes to the verified payload, its scales are the ones the net needs, the
-  Python bake gives the pinned table hashes, and pack/unpack round-trips.
+  decodes to the verified payload with the verified widths and parameter
+  count, its scales are the ones the net needs, the Python bake gives the
+  pinned table hashes, and pack/unpack round-trips.
+- `make -C cpp_impl nnue-parity` builds `bin/nnue_parity IN.cfdg OUT.txt
+  [scratch|incremental]`: the runtime's integer eval of every eval_data
+  record, from scratch or replayed through the lazy stack (random stone
+  orders, checked against from-scratch on the way). Its output must equal
+  `nnue_emit_b64_header.py --int-eval IN.cfdg REF.txt` byte for byte. W1's
+  ship: 0 differences on `fnn1/parity_in.cfdg` and `r16/macro/parity_mc.cfdg`
+  (20,000 records each), both modes.
 - `python tools/nnue_emit_b64_header.py --check [HEADER]` decodes any header,
   bakes it in float32 in `load()`'s order, derives the scales and prints the
   table hashes.
@@ -422,6 +465,31 @@ port-check` proves the bot searches exactly like Dev):
 sparse `nnue.hpp` path, not this net.)
 
 ## 9. Strength and speed
+
+**W1, r16_x128_l2400_s1601_rs** (improvement log section 69), pre-registered
+(`datasets/nnue2/r16/WIDEN_PLAN.md`), bookless `cg_nobook` builds, desktop and
+Dell pooled, GSPRT [0, +5] pentanomial:
+- against r14_d5_final_s2_rs at 20 ms: **H1 at 2,310 games, +15.20 +/- 9.08**
+  (LLR +2.951; pentanomial 37/257/487/316/58);
+- against r14 at CodinGame compute (desktop 7 x 53 ms, Dell 3 x 67 ms), 4,000
+  fixed games: **+13.82 +/- 5.94** [+7.88, +19.76];
+- against its matched enc64 control C3 (the same 2.4G rows and batches
+  without the widening) at 20 ms: **H1 at 10,930 games, +5.12 +/- 4.12**.
+
+Same nodes per second on the same tree (+0.08% against an A/A control; the
+different-tree bench ratio of 1.020-1.023 measured tree composition); W1
+reaches depth 12 with 4.9% fewer nodes. The tests against r14 measure the
+widening and the 2.4G extra rows together (W1 starts from r14's unscaled
+checkpoint); the test against C3 isolates the widening. On the CodinGame
+ladder the gain is below resolution: with two W1 agents, second player
+-0.042 (95% [-0.090, +0.023]) against a same-evening r14 control, first
+player -0.004, with a test power of about 10-15% for +14 Elo. With all four
+W1 agents (10-10, order W1 W1 control control W1 W1): second player -0.046
+(clustered 95% [-0.090, +0.010]), first player -0.024 (95% [-0.047,
++0.003]); still no significant difference, so the ladder remains below
+resolution, though the P2 interval's upper end is now just under the
+self-play-sized +0.013, so transfer to the second player's games is
+uncertain and opponent-specific (FINDINGS A19).
 
 **r14_d5_final_s2_rs** (improvement log section 65) against r13w_20, the shipped engine's booked paste
 builds in their match mode (`datasets/nnue2/r14/eval/gauntlet.py`, CodinGame's rules), three pre-registered tests:
@@ -491,9 +559,16 @@ make -C cpp_impl cg-input && make test && make -C cpp_impl port-check
   swapping `nnue_b64_net.hpp` in Dev's build is the simpler A/B, but Dev and
   Prev then need separately named copies of the runtime (the fast_nnue README
   explains why one shared header silently gives both engines one net).
-- **Same shape only.** The runtime is specialised to B-64 with a 16 -> 32
-  head; another shape needs `nnue_b64.hpp` changed with it, and the unit
-  tests' expected values regenerated.
+- **Same head only; the encoder may differ.** The runtime reads the encoder
+  widths from the header (any ENC0, ENC1 up to 1,024), but is specialised to
+  B-64 with a 16 -> 32 head (a `static_assert`); another head needs
+  `nnue_b64.hpp` changed with it (the scaling study's runtime, commit
+  `425aa1a`, has the general one), and the unit tests' expected values
+  regenerated. Check a new width's integer parity with `make nnue-parity`
+  against `--int-eval` (section 8).
+- **No book step.** With no opening book (the default since 2026-10-09) a
+  net swap needs nothing else; with a book, re-pack it (`make -C cpp_impl
+  play-book`, [play_book.md](play_book.md)).
 - **Calibration data.** The emitter's GPTQ and refit read
   `datasets/nnue2/d8_a.cfdg` (`--calib`), which is not in the repository.
   Its `--check` path is what CI runs.
@@ -506,7 +581,8 @@ repository):
 
 | Net | Since | Checkpoint | Export (`--perm`) | Emitter | Scales | Payload | Matches |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| r14_d5_final_s2_rs | 2026-10-04 (§65) | `datasets/nnue2/probe/r14_d5_final_s2_rs.pt` sha256 `68ad5e532cf57e9c…`, `.json` (`r14_d5_final_s2.pt` from `gen_r14.py`, eval x 1/1.0473 by `r14/tools/scale_b.py --apply`) | `datasets/nnue2/fast/r14_d5_final_s2_rs_perm.bin` CRC-32 `65bdbb1a` | `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r14_d5_final_s2_rs_perm.bin --label r14_d5_final_s2_rs` (defaults; GPTQ calibration `d8_a.cfdg`) | 9, 12, 13, 13, 10 | 53,865 bytes = 28,728 chars, sha256 `cde8c6109b36689ecf43faf5a049c8225a54c364077aad8290832eb416221834` | booked paste builds vs r13w_20: 90 ms N=4000 +9.1 +/- 5.9; 90 ms GSPRT [0, 6] H1 at N=4200; Dell CodinGame compute +12.9 +/- 6.4 |
+| r16_x128_l2400_s1601_rs (W1; encoder 128, 128, 32) | 2026-10-09 (§69) | `datasets/nnue2/r16/nets/r16_x128_l2400_s1601_rs.pt` sha256 `8a0f7398caea2212…` (`r16_x128_l2400_s1601.pt`, r14_d5_final_s2 widened and trained 2.4G rows by `frozen_r16`, eval x 1/1.078737 by `r16/tools/scale_b_r16.py --apply`) | `datasets/nnue2/r16/build/r16_x128_l2400_s1601_rs_rtB84db7aa2/r16_x128_l2400_s1601_rs_perm.bin` sha256 `766c4d6d4278aa8d…`, CRC-32 `1dd4a119` | `tools/nnue_emit_b64_header.py … r16_x128_l2400_s1601_rs_perm.bin --label r16_x128_l2400_s1601_rs` (defaults; GPTQ calibration `d8_a.cfdg`); header sha256 `e29d72187a8eec6d…` | 9, 12, 13, 13, 10 | 80,027 bytes = 42,682 chars, sha256 `c6d0c3ada487e8292312240aaba2624b0de796852908f2af2faded6372d261a2`; fingerprint 3846873435862646193 | bookless vs r14: 20 ms GSPRT H1 at N=2310, +15.20 +/- 9.08; CodinGame compute N=4000 +13.82 +/- 5.94; vs C3 H1 at N=10930, +5.12 +/- 4.12 |
+| r14_d5_final_s2_rs | 2026-10-04 (§65; replaced by W1 on 2026-10-09) | `datasets/nnue2/probe/r14_d5_final_s2_rs.pt` sha256 `68ad5e532cf57e9c…`, `.json` (`r14_d5_final_s2.pt` from `gen_r14.py`, eval x 1/1.0473 by `r14/tools/scale_b.py --apply`) | `datasets/nnue2/fast/r14_d5_final_s2_rs_perm.bin` CRC-32 `65bdbb1a` | `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r14_d5_final_s2_rs_perm.bin --label r14_d5_final_s2_rs` (defaults; GPTQ calibration `d8_a.cfdg`) | 9, 12, 13, 13, 10 | 53,865 bytes = 28,728 chars, sha256 `cde8c6109b36689ecf43faf5a049c8225a54c364077aad8290832eb416221834` | booked paste builds vs r13w_20: 90 ms N=4000 +9.1 +/- 5.9; 90 ms GSPRT [0, 6] H1 at N=4200; Dell CodinGame compute +12.9 +/- 6.4 |
 | r13w_20 | 2026-10-01 (§64; replaced by r14_d5_final_s2_rs on 2026-10-04) | `datasets/nnue2/probe/r13w_20.pt` sha256 `eaf8c46b93bbbd03…`, `.json` (trial 20 of study r13w, `gen_r13.py`) | `datasets/nnue2/fast/r13w_20_perm.bin` CRC-32 `d18dccb2` | `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r13w_20_perm.bin --label r13w_20` (defaults; GPTQ calibration `d8_a.cfdg`) | 9, 12, 13, 13, 10 | 53,834 bytes = 28,712 chars, sha256 `492a36eaf2f1c1011fdd5fb2533a4ee2416574dfb73346252511ef2accd11916` | paste files 90 ms N=1000 +16.0 +/- 10.9; 20 ms +16.6 +/- 5.3; Dell CodinGame compute +20.2 +/- 12.4 |
 | r13w_11 | 2026-10-01 (§64; replaced by r13w_20 the same day, never submitted) | `datasets/nnue2/probe/r13w_11.pt` sha256 `8128258e168763b1…`, `.json` (trial 11 of study r13w, `gen_r13.py`) | `datasets/nnue2/fast/r13w_11_perm.bin` CRC-32 `75044cc4` | `tools/nnue_emit_b64_header.py datasets/nnue2/fast/r13w_11_perm.bin --label r13w_11` (defaults; GPTQ calibration `d8_a.cfdg`) | 9, 12, 13, 13, 10 | 53,927 bytes = 28,762 chars, sha256 `712039a021b912bc92503b7f66c70cd6079a798f7f1734e72be6108f45342047` | paste files 90 ms N=1000 +11.8 +/- 11.0; 20 ms +11.4 +/- 5.5; Dell CodinGame compute +13.6 +/- 12.6 |
 | r12_M2 | 2026-09-28 (§57) | `datasets/nnue2/probe/r12_M2.pt` (`gen_r12.py`) | `datasets/nnue2/fast/r12_M2_perm.bin` CRC-32 `60f1f9ea` | `… r12_M2_perm.bin --label r12_M2` | 9, 12, 13, 13, 11 | 54,159 bytes = 28,885 chars, sha256 `4ba93b1a422c480c…` | 90 ms SPRT N=504 +70.6 +/- 19.7; paste files N=3000 +52.5 +/- 7.0 |

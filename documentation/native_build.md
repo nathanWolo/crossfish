@@ -17,7 +17,7 @@ language set to C++ (see **Switching back**).
 
 | File | |
 | --- | --- |
-| `cpp_impl/cg_input_native.py` | Generated: the submission (68,860 UTF-16 units, 31,140 under the cap, since 2026-10-08). Committed, like `cg_input.cpp`. Never hand-edit it. |
+| `cpp_impl/cg_input_native.py` | Generated: the submission (77,297 UTF-16 units, 22,703 under the cap; net W1, no book, built 2026-10-10). Committed, like `cg_input.cpp`. Never hand-edit it. |
 | `tools/cg_native/manifest.json` | Generated: the build record. Holds the binary's and the file's sha256, the toolchain, the flags, the symbol versions, and the hashes of the sources it was built from. |
 | `tools/cg_native/build.sh` | Builds the binary, checks it against CodinGame's runtime, then packs it (`make cg-native`). |
 | `tools/cg_native/pack.py` | xz + U15 packer and the launcher template. |
@@ -97,8 +97,9 @@ and `cg_input.cpp` is the fallback. A newer image is no problem.
 ### Toolchain
 
 The build host must be Linux x86-64, because the output is a Linux ELF
-executable. Windows cannot produce it, so build on the ThinkPad or another
-Linux machine. WSL with Ubuntu 22.04 should also work, but it is untested. The host's glibc decides the binary's symbol
+executable. Windows cannot produce it, so build on the ThinkPad (Pop!_OS
+22.04), on a newer Linux in a 22.04 container, or on a newer Linux without
+root by the user-space route below (the Dell, which built the W1 launcher). WSL with Ubuntu 22.04 should also work, but it is untested. The host's glibc decides the binary's symbol
 versions, so use **Ubuntu 22.04 / Debian 12 or older** (the shipped binary came
 from Pop!_OS 22.04, glibc 2.35). A newer distribution may need GLIBC_2.38 or
 later, and `build.sh` would refuse that binary.
@@ -139,6 +140,63 @@ writes inside the repository, so leave `CF_NATIVE_OUT` at its default. The
 ProbCut build (improvement log section 67) came from such a container on a
 glibc 2.39 cloud VM: it needs only GLIBC_2.34, and two builds a day apart gave
 the same binary.
+
+**On a newer distribution without root or a container (the Dell route).** The
+Dell (Pop!_OS 24.04, glibc 2.39, g++ 13.3 only, no sudo) builds the launcher
+from user-space files only; this route rebuilt the then-live r14 launcher byte
+for byte on 2026-10-09 (`d6d902e2…`, binary `00ad55b9…`, against the
+ThinkPad's build) before it built W1's (improvement log section 69). It needs
+three workarounds, each of which `build.sh` would otherwise trip over:
+
+1. **lld needs ICU 70.** The release tarball is built on Ubuntu 22.04 and its
+   `ld.lld` is linked BIND_NOW against `libicu{uc,i18n,data}.so.70`; 24.04 has
+   ICU 74. lld imports only seven `ucnv_*` converter functions (libxml2's,
+   used for lld-link manifests, never by an ELF link), so a shim directory
+   does: a `libicuuc.so.70` of seven tail-jump forwarders (`ucnv_open_70:
+   jmp ucnv_open_74@PLT`, and so on) and empty `libicui18n.so.70` and
+   `libicudata.so.70`, built with the system gcc. Put it on
+   `LD_LIBRARY_PATH` for the build command only.
+2. **The g++ 11.4 headers** come from Ubuntu 22.04's `libstdc++-11-dev` and
+   `libgcc-11-dev` packages unpacked into a user directory (`dpkg -x`; the
+   shipped build's are 11.4.0-1ubuntu1~22.04.3, `__GLIBCXX__ 20230528`).
+   Their `.../gcc/x86_64-linux-gnu/11/libstdc++.so` is a relative link to a
+   file the unpack does not provide; re-point it at the system's
+   `/usr/lib/x86_64-linux-gnu/libstdc++.so.6`. Otherwise lld silently links
+   `libstdc++.a` statically (a 748 KB binary) and `build.sh` dies in its
+   symbol-version grep.
+3. **glibc 2.39's headers bind `std::atoi` to `__isoc23_strtol@GLIBC_2.38`**
+   (clang defines `_GNU_SOURCE`, and glibc 2.38+ headers then redirect the
+   `strtol` family), which CodinGame's glibc 2.36 cannot load; `build.sh`
+   refuses that binary (`needs GLIBC_2.38`). A `CF_CLANG` wrapper that
+   force-includes a three-line header fixes it, as glibc's own build does:
+
+   ```c
+   /* glibc236_compat.h */
+   #include <features.h>
+   #undef __GLIBC_USE_C2X_STRTOL
+   #define __GLIBC_USE_C2X_STRTOL 0
+   ```
+
+   ```sh
+   #!/bin/sh
+   # clang++ wrapper: the official LLVM 23.1.2 clang++ with the compat header force-included
+   exec "$HOME/cgbin/llvm/bin/clang++" -include "$(dirname "$(readlink -f "$0")")/glibc236_compat.h" "$@"
+   ```
+
+The command (paths as on the Dell; the binary then needs GLIBC_2.34,
+GLIBCXX_3.4.29, CXXABI_1.3.11, like the ThinkPad's):
+
+```bash
+CF_CLANG=$HOME/r16ship/validate/compat/clang++ \
+CF_GCC_INSTALL_DIR=$HOME/cgbin/gcc11/usr/lib/gcc/x86_64-linux-gnu/11 \
+LD_LIBRARY_PATH=$HOME/r16ship/validate/icu70shim \
+make -C cpp_impl cg-native
+```
+
+Build from an LF export of the commit (`git -c core.autocrlf=false -c
+core.eol=lf archive HEAD`), never from a Windows checkout. With no g++-11
+driver on the host, the manifest's `libstdcxx` note reads "g++ 11 headers
+(<dir>)" instead of the full version; the binary does not depend on it.
 
 ### Commands
 
@@ -184,6 +242,20 @@ reproduced the live file byte for byte: binary 278,720 B
 sources differ from the live build's only in comments, so the manifest's
 source hashes differ while the binary does not.
 
+**W1 (2026-10-10, improvement log section 69)** was built on the Dell by the
+route above from an LF export of its commit: binary 282,056 B
+(`e631630421d28a47f2305c3b5170c10d7c257dedc1edb2de87ea3414b4abb125`), xz
+142,948 B, `cg_input_native.py` 77,297 units
+(`ef1a263177d77796dea915bc7329bf1243b0fdd405dba74012feae4272533d51`). It is
+**not** the live file byte for byte: the launcher live on CodinGame since
+2026-10-09 (`dd33df97…`, 82,112 units, binary 310,768 B) was built from
+runtime B's branch with the format-1 book code and a hand-written empty book
+header, before the no-book mode existed. With `PLAY_BOOK_ENTRIES` 0 the
+compiler now drops the book decoder, hence the smaller binary. The search is
+the same: both launchers give the same selfcheck lines at the eight settings
+of section 4; only the book line differs (`book=none`, exit 0, against
+`book=FAILED`, exit 1).
+
 A different clang, different libstdc++ headers or a different packer give
 another binary. That is acceptable if `make cg-native-check` passes, but the
 change should be deliberate. The fingerprint is the real gate, not the hash.
@@ -199,9 +271,14 @@ same file.
 1. **Static.** It runs `tools/test_cg_native.py` (below).
 2. **Identity.** `python3 cg_input_native.py selfcheck 120 d` must equal the
    readable C++ build's `bin/cg_selfcheck 120 d` at d = 5, 7 and 9: node
-   counts, search checksum, `book=ok` and the book table checksum. The current
-   values (main since 2026-10-08: r14 + ProbCut, the deep-search
-   second-player book) are 568,480 / 14701287764179133873, 884,055 /
+   counts, search checksum, the book line and the book table checksum. The
+   book line must read `book=ok`, or `book=none` when `play_book_data.hpp` is
+   the no-book payload (`PLAY_BOOK_ENTRIES 0`, [play_book.md](play_book.md)).
+   The current values (main since 2026-10-10: net W1 + ProbCut, no book) are
+   581,761 / 2961480880280574853, 870,788 / 17722219369592891007 and
+   1,933,752 / 17063734611541076025, with `book=none entries=0
+   table_checksum=1469598103934665603` (an empty table). Before it (r14, the
+   deep-search second-player book): 568,480 / 14701287764179133873, 884,055 /
    7700840096549893098 and 1,891,725 / 2284235251857539044, with book=ok,
    10,474 entries and table checksum 10147742875230593747. These are the
    numbers `port-check`, `cg-min-check` and the CG-flags build give. The table
@@ -210,10 +287,13 @@ same file.
    by `play_book_check` and the unit tests on the readable build, and through
    the launcher only by step 3, in the games that reach and draw them (an
    alternative after which the book ends changes no hashed byte). Outside this
-   check, `selfcheck 30 13` and `selfcheck 20 16` (2,791,649 /
+   check, `selfcheck 30 13` and `selfcheck 20 16` (W1: 2,397,704 /
+   10765171953305468990 and 6,365,625 / 13532556547547119207; r14: 2,791,649 /
    15576534853043927231 and 5,250,040 / 18090966638842159638) also depend on
    the Zobrist keys, so comparing them with the live file also catches a
-   build against other keys (libc++).
+   build against other keys (libc++). W1 at the other settings checked at its
+   ship: `60 11` 2,175,739 / 6273588726557586242, `25 15` 4,136,091 /
+   657249701197255696, `200 6` 1,147,995 / 9992545704861880294.
 3. **Protocol.** It plays 40 CodinGame-protocol games through the launcher
    (`tools/play_book_protocol_check.py`) against the text book that
    `bin/play_book_text_dump` decodes from the payload. The book check is
@@ -223,7 +303,13 @@ same file.
    times, later moves 90.1-90.2 ms median and 90.3-90.4 ms max, first turn at
    most 480 and 412 ms. With the deep-search book (2026-10-08, 60 games, idle
    ThinkPad): 60/60, later moves median 90.2 ms and at most 90.4 ms, first
-   turn at most 264.5 ms.
+   turn at most 264.5 ms. With no book the dump is an empty text book, so
+   every reply must be a search move (none marked `BOOK`), and the bot moving
+   first must open 4 4. W1 (2026-10-10, Dell, bot and harness sharing CPUs
+   4-5): 100/100 with 0 `BOOK` replies, every bot-first game opening 4 4,
+   later moves median 90.1 ms and at most 90.4 ms, first turn at most
+   570.7 ms (median 483.2); the same in 100 further full-length games (first
+   turn at most 505.1 ms).
 
 **CI** (`make test` runs `tools/test_cg_native.py`, with no clang):
 
@@ -323,12 +409,16 @@ CodinGame.
 ## 7. Workflow for a bot change
 
 1. Change `codingame_nnue.cpp` (or a net, or the book) and pass the usual
-   gates (README, **Shipping to CodinGame**).
+   gates (README, **Shipping to CodinGame**). With no book (the default since
+   2026-10-09) a net change needs no book step.
 2. `make cg-input`, then commit `cg_input.cpp`. The CodinGame performance gate
    checks it in CI.
-3. On Linux, run `make cg-native` and `make cg-native-check`. Commit
+3. On Linux, run `make cg-native` and `make cg-native-check` (on a newer
+   host, the user-space route of section 3). Commit
    `cpp_impl/cg_input_native.py` **and** `tools/cg_native/manifest.json`.
-   Without them, `tools/test_cg_native.py` fails in CI.
+   Without them, `tools/test_cg_native.py` fails in CI. Any later edit to one
+   of the manifest's nine sources, even a comment, needs another build;
+   documentation does not.
 4. Paste `cg_input_native.py` into the IDE with the language set to
    **Python 3**. The user submits twice and pools both agents. The README's
    CodinGame section lists the steps.

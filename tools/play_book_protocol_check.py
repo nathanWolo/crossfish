@@ -12,6 +12,20 @@ stay in the book, so games follow book lines deeply. Without the text book the
 opponent plays uniformly at random, and the bot moving second must still play
 from the book at its first move (after center-center).
 
+No book (the shipped default since 2026-10-09; documentation/play_book.md): pass
+--book with the empty text book (cpp_impl/play_book.txt, or the payload dumped by
+play_book_text_dump). That is the exact no-book check: no position is in the
+book, so every reply must be a search move (none marked "BOOK"), and the
+opponent, finding no book reply to steer to, plays uniformly at random after its
+opening move (center-center with probability 0.9). Without --book the check is
+not a no-book check: the opponent's first move is uniformly random, and a book
+reply is demanded only in the bot-second games where it happens to open
+center-center (about 1 in 81), so a no-book build passes or fails by chance.
+verify.sh, the Makefile and cg_perf_gate.py all pass --book.
+
+In every mode, the bot moving first must open center-center (4 4): both book
+roots assume it, and the bot plays it hard-coded.
+
 Positions with several book moves (payload format 2: several "S" lines of one
 position with the same seq list its moves, in file order, the primary first):
   - a game fails if a BOOK move leads to none of the positions after the
@@ -138,6 +152,8 @@ def play(bot, bot_first, rng, max_ply, book, choices):
                 move = (int(reply[0]), int(reply[1]))
                 if move not in valid:
                     raise AssertionError(f"illegal move {move} at ply {ply}")
+                if ply == 0 and move != (4, 4):
+                    errors.append(f"opened {move[0]} {move[1]}, not center-center (4 4)")
                 from_book = len(reply) > 2 and reply[2] == "BOOK"
                 n_book += from_book
                 if book_keys is not None and ply > 0:
@@ -209,6 +225,8 @@ def main():
         print(f"text book: {len(keys)} positions, {len(multi)} with several moves "
               f"({sum(len(children[k]) == 2 for k in multi)} with 2, {sum(len(children[k]) == 3 for k in multi)} "
               f"with 3, {sum(len(children[k]) > 3 for k in multi)} with more)")
+        if not keys:
+            print("no book: the text book is empty, so every reply must be a search move (0 BOOK replies)")
     rng = random.Random(2026)
     failures = 0
     all_times, first_turn, book_moves = [], [], {True: [], False: []}
@@ -233,8 +251,9 @@ def main():
             print(f"  after {lab['seq']} (ply {lab['ply']}): {moves}  ({sum(counts)} visits)")
     print(f"\n{games - failures}/{games} games played from the book exactly where expected "
           f"(book moves per game: first {mean(book_moves[True]):.1f}, second {mean(book_moves[False]):.1f})")
-    print(f"first turn: max {max(first_turn):.1f} ms; later moves: median "
-          f"{all_times[len(all_times) // 2]:.1f} ms, max {all_times[-1]:.1f} ms "
+    first_turn.sort()
+    print(f"first turn: max {first_turn[-1]:.1f} ms (median {first_turn[len(first_turn) // 2]:.1f}); later moves: "
+          f"median {all_times[len(all_times) // 2]:.1f} ms, max {all_times[-1]:.1f} ms "
           f"over {len(all_times)} replies")
     sys.exit(1 if failures else 0)
 

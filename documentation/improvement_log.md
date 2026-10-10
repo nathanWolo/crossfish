@@ -4432,3 +4432,276 @@ opponents' 6. None was in book. The analyses are
   multi-move positions. The g++-11 paste played 20 of 20 the same way (first
   turn at most 234.7 ms). The book decodes in about 12 ms with CodinGame's
   flags (the old book: about 90 ms).
+
+## 69. Round 16: the wider-encoder net W1 ships, without a book (8-10 October 2026)
+
+### The change
+
+The evaluation is the net **r16_x128_l2400_s1601_rs** ("W1"): r14's
+unscaled checkpoint `r14_d5_final_s2.pt` (r14_d5_final_s2_rs, the
+evaluation until this change, is its rescaled copy) with its pattern encoder
+widened from 27-64-64-32 to **27-128-128-32**, trained for 2.4G more rows
+with the matched control C3's recipe and then rescaled by rule S13 (below).
+The tests against r14 measure the widening and the extra rows together; the
+test against C3 isolates the widening. The head (64 accumulator
+lanes, 16 -> 32 -> 1) and everything the search runs per node are unchanged;
+the encoder only runs in `load()`, where it bakes the 25.6 MB of pattern
+tables, so a wider encoder costs start-up time, not search time. The net has
+51,435 parameters (r14: 35,243) in an 80,027-byte payload, 42,682 U15
+characters. The bot ships **with no opening book**: the hard-coded 4 4 opener
+stays, every later move is searched.
+
+Three parts landed together:
+
+- **Runtime B** (commits `a2672c9`, `84db7aa`, merged as they were built and
+  tested): `nnue_b64.hpp` takes the encoder widths from the header's new
+  widths line (`B64_ENC0`, `B64_ENC1`) and `static_assert`s the B-64 head;
+  the generator struct, `read_mat`'s scale buffer and `unpack`'s matrix
+  buffer are sized from them. `tools/nnue_emit_b64_header.py` is the scaling
+  study's generic emitter (any widths, plus `--int-eval`, an integer
+  reference of the runtime's own eval), and `cpp_impl/nnue_parity.cpp`
+  (`make nnue-parity`) prints the runtime's eval of every record of an
+  eval_data file, from scratch or replayed through the lazy stack, to compare
+  with it line for line. With r14's header the runtime is bit-identical to
+  the one it replaces (same payload, tables, fingerprint, selfchecks, unit
+  tests, bench 12 on desktop and Dell).
+- **The net** (below).
+- **No book as a supported configuration** (below).
+
+### Why, and the pre-registration
+
+The scaling study's only lever that reached play was encoder capacity: a
+function-preserving widening of r13w_20 to enc128 beat its matched enc64
+continuation by +7.3 Elo at 2.4G rows (FINDINGS A14; the study's report in
+[reports/scaling_study](reports/scaling_study/REPORT.md)). The owner asked to
+try it on the shipped net ("let's see if you can get the bigger encoder as a
+gainer"). The plan, its gates and its one-line decision rules were written
+before any training, build or game (`datasets/nnue2/r16/WIDEN_PLAN.md`,
+2026-10-09 14:40-14:56):
+
+- **W1** = `r14_d5_final_s2.pt` widened exactly as the study's X family
+  (new units' outgoing weights at zero, so step 0 is r14's function; new-unit
+  lr multiplier 1), then 2.4G rows (146,484 steps x 16,384) with round 16's
+  B16 recipe (R\*'s, on e2b + sp14) and seed 1601. The control **C3**
+  (`r16_b16_l2400_s1601`) is the same run without the widening: same data
+  order, same batches, same filter lines.
+- Gates before any game: G1 step-0 identity (51,435 parameters, every
+  inherited element equal, evals identical to r14 on 220,000 rows); G2 W1's
+  SPH14-dd loss below C3's (0.025381 < 0.025606, and below at every epoch);
+  G3 the runtime rebuilds r14 bit-identically and W1's integer eval equals
+  `--int-eval` on 40,000 positions (0 mismatches, desktop clang and Dell g++
+  13 with CodinGame's command); G4 the desktop ns/node ratio W1 / r14 at most
+  1.010; G5 the Dell's cold bake at most 300 ms (median 258); G6 the paste
+  under 100,000 units.
+- **G4 deviation**, ruled and dated before the first game: the
+  pre-registered statistic (bench 12 wall ns/node, each net on its own search
+  tree) read 1.020-1.023 in four independent runs, but on the **same** tree
+  the extra cost is +0.08% over an A/A control (and W1 reaches depth 12 with
+  4.9% fewer nodes): the statistic measured tree composition, not a per-node
+  cost. G4 was re-read on the same-tree statistic and passed; any real speed
+  cost is in T1's fixed 20 ms per move anyway.
+- The rescale rule S13 (round 14's): `b` = 1.078737 on SPH13 against
+  r13w_20, so the eval is multiplied by 1/b (the PSQT lane and the last dense
+  layer only) -> `r16_x128_l2400_s1601_rs`.
+
+### The games
+
+Pooled desktop (10 workers) and Dell (6 workers) referee games
+(`datasets/nnue2/r16/eval/gsprt16x.py`, after a clean A/A smoke), bookless
+`cg_nobook` builds of runtime B, GSPRT [0, +5] logistic Elo, alpha = beta =
+0.05, pentanomial, openings disjoint from every earlier round-16 test:
+
+| Test | Opponent | Conditions | Games | Pentanomial | Elo (95%) | Verdict |
+| --- | --- | --- | ---: | --- | --- | --- |
+| T1 | r14_d5_final_s2_rs | 20 ms, GSPRT | 2,310 | 37 / 257 / 487 / 316 / 58 | **+15.20 ± 9.08** (stopped) | **H1**, LLR +2.951 |
+| T3 | r14_d5_final_s2_rs | CodinGame compute (desktop 7 x 53 ms, Dell 3 x 67 ms), fixed length | 4,000 | 35 / 376 / 1,037 / 499 / 53 | **+13.82 ± 5.94** [+7.88, +19.76] | no veto (upper bound > 0) |
+| T2 | C3 (enc64, same 2.4G rows) | 20 ms, GSPRT | 10,930 | 197 / 1,269 / 2,424 / 1,326 / 249 | **+5.12 ± 4.12** (stopped) | **H1**, LLR +2.962 |
+
+T1's hosts agree (desktop +13.7, Dell +17.8), as do T3's (+14.1, +12.9).
+T2 reads, by the rule fixed before any game, "the width is the gainer": over
+the very same 2.4G continuation the widening alone is above 0 at 95%
+([+1.0, +9.2]). It does not split T1's +15 between the width and the extra
+rows; by subtraction C3 would be about +10 ± 10 over r14, which was never
+played (and stopped estimates lean high). 0 forfeits and 0 illegal replies in all three. The two ~325 ms W1 replies on
+the Dell (one in T1, one in T2) fit a stall of the Dell itself: a later
+engine-free spin probe found gaps of up to 588 ms on several CPUs at once
+every ~302 s (with the desktop session's network applet busy), T1's and T2's
+events sit on that period, and in a later run the control engine was hit
+too. An independent recheck recomputed every verdict from the raw records
+of both hosts.
+
+### The ladder
+
+W1 went live on 2026-10-09 as the bookless native launcher of the build
+below (agents 6788025 and 6788044, #6 30.55 and #6 30.61), and the live r14
+build was resubmitted the same evening as a control (6788058 #6 30.91,
+6788079 #6 30.85). W1 was resubmitted on 2026-10-10 (agents 6788129, #8
+30.21, and 6788151, #9 29.97), after the control, so the order W1 W1
+control control W1 W1 brackets the control in time. Matched-opponent scores
+against the opponent agents both arms met (FINDINGS A19; 95% intervals from
+a bootstrap over clusters of games sharing their first 10 plies within an
+opponent agent):
+
+| W1 - control | Two W1 agents (10-09, 13 opponents) | All four W1 agents (10-10, 14 opponents) |
+| --- | --- | --- |
+| second player | -0.042, 95% [-0.090, +0.023] | -0.046, 95% [-0.090, +0.010] |
+| first player | -0.004 (s.e. 0.011-0.022) | -0.024, 95% [-0.047, +0.003] |
+
+That is **below the ladder's resolution, not a loss**: +14 Elo is about
++0.013 per game at the second player's base of ~0.2, and with a standard
+error of ~0.03 a two-agents-per-arm test detects it with about 10-15%
+probability (a 2 s.e. detection needs about 13 times the games). With all
+four W1 agents there is still no significant difference, but the second
+player's interval now ends just under the self-play-sized +0.013, so
+whether the gain transfers to the second player's games is uncertain, and
+the difference is opponent-specific: worse against morph, RoboStac, karliso
+and Babebibobu, better against MrSubZero, AllanB, Fancheng, Daporan and
+Apostolique. The self-play tests are the evidence of strength. W1 is the
+live build. Our side had 0 timeouts in the four W1 agents' 1,040 games: the
+first turn, which now bakes the wider encoder, takes about 415 ms on the
+Dell (about 137 ms more than r14's; roughly 550-600 ms projected on
+CodinGame) and fits the 1,000 ms.
+
+### No book
+
+The owner closed the opening books on 2026-10-09 ("ship it with no book"):
+the deep-search second-player book s5 had tied no book on the ladder (0.207
+± 0.040 against 0.231 ± 0.043 as second player against the top seven,
+section 68), a later P2 snapshot scored -0.06 against a same-night no-book
+control, and on 2026-10-08 dropping the old first player's half had measured
+no different from keeping it; a book also has to be re-packed and re-tested
+for every net. `main` carried the s5 book
+until this change. It now ships the **no-book configuration**, which is a
+supported state of the book machinery rather than a hack
+([play_book.md](play_book.md)):
+
+- `cpp_impl/play_book.txt` is empty, and `make play-book` packs it into the
+  no-book payload: `PLAY_BOOK_ENTRIES 0`, `PLAY_BOOK_BYTES 0`, fingerprint 0
+  (it belongs to no net, so a net swap needs no book step), empty payload.
+- `pb_init` returns false at once when `PLAY_BOOK_ENTRIES` is 0 (a zero-byte
+  payload would otherwise decode as one bogus entry), so `PB_TABLE` stays
+  empty and `pb_lookup` never returns a move.
+- `cg_selfcheck` prints `book=none entries=0
+  table_checksum=1469598103934665603` (the empty table) and exits 0;
+  `play_book_check` prints `pb_init: none` and passes only for an empty text
+  book; `play_book_text_dump` writes an empty text book; `verify.sh` expects
+  `book=none`; the protocol check with `--book <empty file>` requires every
+  reply to be a search move and checks that the bot moving first opens 4 4.
+- The live W1 launcher was built before this mode existed, from runtime B's
+  format-1 `play_book.hpp` and a hand-written zero-entry header whose
+  fingerprint `pb_init` refused; it plays the same (no book move ever) but
+  its selfcheck says `book=FAILED` and exits 1.
+
+The s5 text book stays in git history (`git show
+4919ed7:cpp_impl/play_book.txt`); copying it back and running `make
+play-book` re-packs it under the current net.
+
+### The build
+
+- **Header** `cpp_impl/nnue_b64_net.hpp`: W1's build of record
+  (`datasets/nnue2/r16/build/r16_x128_l2400_s1601_rs_rtB84db7aa2`) copied
+  byte for byte, sha256 `e29d72187a8eec6d…`. Checkpoint
+  `r16/nets/r16_x128_l2400_s1601_rs.pt` sha256 `8a0f7398caea2212…`; export
+  `r16_x128_l2400_s1601_rs_perm.bin` sha256 `766c4d6d4278aa8d…` (CRC-32
+  `1dd4a119`); emitter defaults (`--label r16_x128_l2400_s1601_rs`, GPTQ
+  calibration `d8_a.cfdg`). Payload 80,027 bytes = 42,682 U15 characters,
+  sha256 `c6d0c3ada487e829…`; scales 9, 12, 13, 13, 10 (r14's); its rounding
+  moves the float eval by 1.75 mean / 65.1 max on the 20,000 parity
+  positions. Table hashes (`--check` and the build of record agree): T
+  `1508b99e11f9398a`, F `1719ae9206389376`, ..., BO `8464289de03c56a4` (all
+  16 in `unit_tests.cpp`). Evaluator fingerprint 3846873435862646193,
+  Zobrist `3a74072d5bcdfc91`, bench 12 = 635 searches, 29,208,628 nodes, hash
+  `c12bfc8e73c521ca`, on desktop and Dell alike.
+- **Paste** `cpp_impl/cg_input.cpp`: **82,191 UTF-16 units** (17,809 left;
+  main with r14 and the s5 book: 69,861). The wider net's payload is +13,954
+  characters; the book's 1,895 are gone.
+- **Native** `cpp_impl/cg_input_native.py`: **77,297 units**, sha256
+  `ef1a263177d77796…`; binary 282,056 B (`e631630421d28a47…`), xz 142,948 B;
+  needs GLIBC_2.34, GLIBCXX_3.4.29, CXXABI_1.3.11 (CodinGame: 2.36 / 3.4.30 /
+  1.3.13). The binary is smaller than the live W1 launcher's (310,768 B,
+  launcher 82,112 units, `dd33df97…`) because with `PLAY_BOOK_ENTRIES` 0 the
+  compiler drops the book decoder; the search is the same (below). It was
+  built on the Dell, as was the live W1 launcher (the launchers before
+  those came from the ThinkPad, Pop!_OS 22.04, except ProbCut's, built in an
+  `ubuntu:22.04` container on a cloud VM, section 67; the ThinkPad is away),
+  by the route that rebuilt the live r14 launcher byte for byte on
+  2026-10-09: official LLVM 23.1.2,
+  g++ 11.4 headers, an ICU 70 shim for lld
+  and a clang wrapper that keeps glibc 2.39's headers from binding
+  `std::atoi` to `__isoc23_strtol@GLIBC_2.38`
+  ([native_build.md](native_build.md) section 3). The manifest's
+  `libstdcxx` note reads "g++ 11 headers" because the Dell has no g++-11
+  driver to print the full version.
+
+### Checks
+
+All on the Dell, from an LF `git archive` of the commit that carries the
+launcher (CPUs 4-5 for the games, the harness sharing them), 25 checks, 0
+failures:
+
+- **Static.** The launcher is 77,297 UTF-16 units with 0 surrogates; the
+  binary it decodes is the manifest's (282,056 B, `e631630421d28a47…`) and
+  needs at most GLIBC_2.34, GLIBCXX_3.4.29, CXXABI_1.3.11 (libc, libgcc_s,
+  libm, libstdc++); `cg_input.cpp` equals a fresh minifier run (82,191
+  units, 0 surrogates).
+- **Identity.** `make cg-native-check`: the launcher equals the readable
+  build at depths 5, 7 and 9 (581,761 / 2961480880280574853, 870,788 /
+  17722219369592891007, 1,933,752 / 17063734611541076025) with `book=none
+  entries=0 table_checksum=1469598103934665603`. At all eight selfcheck
+  settings (`120 5`, `120 7`, `120 9`, `30 13`, `20 16`, `60 11`, `25 15`,
+  `200 6`) the launcher, the readable build and the live launcher
+  `dd33df97…` give the same node counts and checksums; the new two say
+  `book=none` and exit 0, the live one `book=FAILED` and exits 1. The
+  launcher's `selfcheck 20 16` takes 0.66 s.
+- **Tests.** `make test`: 33 / 33 unit tests, 10 Python engine tests, 126
+  tool tests (1 skipped). `port-check` d5 / 7 / 9 IDENTICAL; `cg-min-check`
+  6 / 6 IDENTICAL (with the Dell's g++ 13 standing in for CodinGame's 11.2;
+  CI runs 11.2); `cg-speed` `30 13` 0.273 s at -O3 against 0.276 s with
+  CodinGame's flags.
+- **No book.** `make play-book` rewrites `play_book_data.hpp` byte for byte;
+  `play-book-check` prints `pb_init: none`; `play-book-protocol` 40 / 40.
+- **Integer parity.** `nnue_parity` from scratch and through the
+  incremental stack equals `--int-eval` on `parity_in` and `parity_mc`
+  (20,000 records each, 0 mismatches); the bake takes about 190 ms at -O3 on
+  the Dell.
+- **Protocol games** against a random opponent, both seats, no position in
+  the (empty) book, so every reply must be a search move:
+
+  | Games | Through | Result | First turn, max (median) | Later moves, median / max |
+  | ---: | --- | --- | --- | --- |
+  | 100 | launcher (`cg-native-check`) | 100 / 100, 0 `BOOK` | 570.7 ms (483.2) | 90.1 / 90.4 ms, 1,099 replies |
+  | 100 | launcher, full length | 100 / 100, 0 `BOOK` | 505.1 ms (483.3) | 90.1 / 90.4 ms, 1,710 replies |
+  | 20 | paste, built with CodinGame's command (g++ 13: rc 0, 0 diagnostics) | 20 / 20, 0 `BOOK` | 395.6 ms (392.9) | 90.1 / 90.4 ms, 321 replies |
+  | 40 | paste at -O3 (`play-book-protocol`) | 40 / 40, 0 `BOOK` | 343.9 ms (337.4) | 90.1 / 90.5 ms, 440 replies |
+
+  0 illegal moves and 0 timeouts; every game in which the bot moved first
+  opened 4 4 (the protocol check now fails any other first move). The
+  launcher's first turn includes the xz decode, the exec and the bake, and
+  here shared its CPUs with the harness: the live W1 launcher, alone on a
+  Dell CPU, took 415 ms (2026-10-09), and its 1,040 ladder games (four
+  agents) had no timeout on our side.
+
+### What lost in round 16
+
+Round 16 ran "nimble" one-idea fine-tunes of r14 judged by GSPRTs (FINDINGS
+L13, H13, A16, A17):
+
+- **B16**, r14 continued 600M rows on new data with R\*'s recipe: +1.98 ±
+  3.02 at 21,028 games, stopped by the owner without a decision.
+- **EMA weights** of that run against its final weights: -7.38 ± 8.01, H0 at
+  2,920 games; final weights stay the rule.
+- **HalfKP-style macro context** (rows keyed by the macro-board state, folded
+  into the projection at emit time; its own runtime port): joint mode -1.35 ±
+  5.00 at 600M (H0 at 7,698) and -11.38 ± 9.49 at 2.4G (H0 at 2,016) against
+  matched controls, although it led them offline by +13 per mille; the sum44
+  mode was blocked by its +13.2% ns/node before any game.
+- **Featurization scout** (analysis only): no cheap macro-type feature is
+  worth a round (each at most +2.4 per mille on r14's residuals, none
+  transferring across suites).
+
+So the eval lever that reached play was capacity that keeps the shipped
+net's function (warm widening), as in the scaling study; feature additions
+did not. The round's full write-up is
+[reports/round16](reports/round16/REPORT.md); the evidence is in
+`datasets/nnue2/FINDINGS.md` (L13, H13, A16-A19) and the round's dated
+log, `datasets/nnue2/r16/README.md`.

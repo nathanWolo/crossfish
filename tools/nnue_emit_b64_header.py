@@ -4,25 +4,46 @@
   python tools/nnue_emit_b64_header.py NET.bin [-o cpp_impl/nnue_b64_net.hpp] [--label NAME]
       [--config enc=14,proj=12,...] [--refit-groups proj,fwd,dense] [--calib datasets/nnue2/d8_a.cfdg]
   python tools/nnue_emit_b64_header.py --check [HEADER]
+  python tools/nnue_emit_b64_header.py --int-eval POS.cfdg OUT.txt [--header HEADER]
 
 NET is the lane-paired BGN1 export of a gen_nnue pattern-generator checkpoint
-(`tools/experiments/fast_nnue/export_bgn.py export NAME OUT --perm`, which rebuilds
-datasets/nnue2/fast/B64_d5M_57ep_perm.bin byte for byte from datasets/nnue2/probe/B64_d5M_57ep.pt); only its
-generator section and its dense head are read. The shipped header came from that file with every default below:
+(`tools/experiments/fast_nnue/export_bgn.py export NAME OUT --perm`); only its
+generator section and its dense head are read. The net's widths come from the file: the accumulator width A
+(A % 16 == 0), an L1 x L2 head (L1 % 16 == 0, L2 % 8 == 0) and a three-layer encoder 27 -> ENC0 -> ENC1 -> E.
+The header declares them (B64_A, B64_L1, B64_L2, B64_E, B64_ENC0, B64_ENC1). cpp_impl/nnue_b64.hpp takes the
+encoder widths from it and static_asserts the B-64 head (A 64, L1 16, L2 32, E 32), so only the encoder may
+differ from B-64 (other A / L1 / L2 need the scaling study's runtime, commit 425aa1a). The shipped header
+(net r16_x128_l2400_s1601_rs: encoder 27 -> 128 -> 128 -> 32, 51,435 parameters; documentation/
+improvement_log.md section 69) came from its export with every default below:
 
-  python tools/nnue_emit_b64_header.py datasets/nnue2/fast/B64_d5M_57ep_perm.bin --label B64_d5M_57ep
+  python tools/experiments/fast_nnue/export_bgn.py export r16_x128_l2400_s1601_rs.pt NET.bin --perm
+  python tools/nnue_emit_b64_header.py NET.bin --label r16_x128_l2400_s1601_rs
 
-which reproduces the verified CodinGame build (datasets/nnue2/cg/d5M57, `quant_gen.py emit --qexp
-9,13,13,13,10 --refit-groups proj,fwd,dense --config enc=14,proj=12,fwd=12,dec=14,con=13,dense=14,psqt=14,
-bias=14`) byte for byte: the same 54,114-byte payload, so the same decoded generator and baked tables.
-Calibration reads datasets/nnue2/d8_a.cfdg (--calib), which is not in the repository. Numerical steps
-(least squares, Cholesky) were checked with numpy 2.5.2.
+(NET.bin = r16_x128_l2400_s1601_rs_perm.bin, sha256 766c4d6d4278aa8d...)
+
+which reproduces W1's verified build (datasets/nnue2/r16/build/r16_x128_l2400_s1601_rs_rtB84db7aa2) byte for
+byte: the same 80,027-byte payload (sha256 c6d0c3ada487e829...), so the same decoded generator and baked tables.
+The first shipped header, B64_d5M_57ep (datasets/nnue2/fast/B64_d5M_57ep_perm.bin, rebuilt byte for byte from
+datasets/nnue2/probe/B64_d5M_57ep.pt), likewise reproduced the verified CodinGame build
+(datasets/nnue2/cg/d5M57, `quant_gen.py emit --qexp 9,13,13,13,10 --refit-groups proj,fwd,dense --config
+enc=14,proj=12,fwd=12,dec=14,con=13,dense=14,psqt=14,bias=14`): the same 54,114-byte payload.
+Calibration reads datasets/nnue2/d8_a.cfdg (--calib) and the float error report datasets/nnue2/fnn1/
+parity_in.cfdg (--sample); neither is in the repository. Numerical steps (least squares, Cholesky) were
+checked with numpy 2.5.2.
 
 --check decodes a header's payload, bakes and quantizes it exactly as nnue_b64.hpp load() does (float32,
 same operation order), recomputes the integer scales and prints the FNV-1a hashes of the 16 integer tables;
 it needs numpy only (tools/test_nnue_emit_b64_header.py runs it in CI).
 
-The net (35,243 parameters, W = 65 lanes: 64 accumulator lanes + 1 PSQT lane):
+--int-eval POS.cfdg OUT.txt is the exporter's integer reference: it decodes a header (--header, default the
+committed one; its widths line sets the shape), bakes like load(), and computes every record's integer eval
+the way scratch() + eval_with() + eval_avx() + finish() do (int16 lane sums, the clamp, the pair madds, the
+rounded shifts, the PSQT difference), asserting that every stored accumulator and every accumulator +
+constraint + forced-board row stays inside int16 and every dense sum inside int32. OUT gets one eval per line
+(INT32_MIN for an undecodable record), to compare with cpp_impl/nnue_parity.cpp.
+
+The net (the B-64 numbers; W = A + 1 lanes: A accumulator lanes + 1 PSQT lane; 35,243 parameters at A = 64,
+48,363 at 96, 61,483 at 128):
   encoder 27 -> 64 -> 64 -> 32 of one miniboard pattern (one-hot 3 x 9), ReLU between layers
   proj_w[9][32][65], proj_b[9][65]: T[m][p] = enc(p) @ proj_w[m] + proj_b[m]  (miniboard m, pattern p)
   fwd_w[32][65], fwd_b[65]:         F[p] = enc(p) @ fwd_w + fwd_b             (the forced board's pattern)
@@ -30,12 +51,13 @@ The net (35,243 parameters, W = 65 lanes: 64 accumulator lanes + 1 PSQT lane):
   dense head 128 -> 16 -> 32 -> 1
 
 Payload: one MSB-first bit stream of 11 matrices, each row one output unit with its bias in column 0:
-  enc0 64x28, enc1 64x65, enc2 32x65   [b | W] of the encoder layers
-  proj 585x33   row 65m + j: [proj_b[m][j] | proj_w[m][:, j]]  (lane j of location m; j = 64 is PSQT)
-  fwd 65x33     row j: [fwd_b[j] | fwd_w[:, j]]
-  dec 65x27, con 65x20   transposed: one row per lane
-  bias 1x65
-  d1 16x129, d2 32x17, do 1x33   [b | W] of the dense head
+  enc0 ENC0x28, enc1 ENC1x(ENC0+1), enc2 Ex(ENC1+1)   [b | W] of the encoder layers
+                (B-64: 64x28, 64x65, 32x65; W1: 128x28, 128x129, 32x129)
+  proj 9Wx33    row W m + j: [proj_b[m][j] | proj_w[m][:, j]]  (lane j of location m; j = A is PSQT)
+  fwd Wx33      row j: [fwd_b[j] | fwd_w[:, j]]
+  dec Wx27, con Wx20   transposed: one row per lane
+  bias 1xW
+  d1 16x(2A+1), d2 32x17, do 1x33   [b | W] of the dense head
 Per matrix: its scales as bf16 (16 bits each; one per row, except proj, whose 9 locations share one per
 lane), two 4-bit Rice parameters (normal rows, PSQT rows), then every code row by row as
 Rice(zigzag(q)). A value is float32(q) * scale. Bits per group (--config) set each row's grid; the PSQT
@@ -55,8 +77,9 @@ row, every stored accumulator and every accumulator + constraint row + forced-bo
 all positions the features can express (per-board extremes by the pattern's stone difference, combined
 under the stone-count balance of a real game: the side to move has as many stones as the other or one
 fewer); the others are the largest with the int32 sums of their layer bounded. `scales()` is a port of the
-experiment loader's choice (tools/experiments/fast_nnue/fast_nnue_b.hpp quantize()): 9, 13, 13, 13, 10 here,
-and 10, 13, 14, 14, 11 on the first CodinGame build's B64_lr1e2, as that loader chose.
+experiment loader's choice (tools/experiments/fast_nnue/fast_nnue_b.hpp quantize()): 9, 12, 13, 13, 10 on the
+shipped net, 9, 13, 13, 13, 10 on B64_d5M_57ep, and 10, 13, 14, 14, 11 on the first CodinGame build's
+B64_lr1e2, as that loader chose.
 """
 from __future__ import annotations
 
@@ -79,7 +102,8 @@ HEADER = ROOT / "cpp_impl" / "nnue_b64_net.hpp"
 CALIB = ROOT / "datasets" / "nnue2" / "d8_a.cfdg"
 SAMPLE = ROOT / "datasets" / "nnue2" / "fnn1" / "parity_in.cfdg"
 
-A, W, E, L1, L2 = 64, 65, 32, 16, 32
+A, W, E, L1, L2 = 64, 65, 32, 16, 32  # the shipped B-64 shape; set_shape() rebinds them for another net
+ENC = (64, 64, 32)  # encoder widths (27 -> ENC[0] -> ENC[1] -> E)
 N_PAT = 19683
 POW3 = 3 ** np.arange(9)
 DIGITS = np.array([(p // POW3) % 3 for p in range(N_PAT)])
@@ -107,9 +131,33 @@ REFIT_GROUPS = ("enc", "proj", "fwd", "dense")
 MATS = ["enc0", "enc1", "enc2", "proj", "fwd", "dec", "con", "bias", "d1", "d2", "do"]
 GROUP = dict(enc0="enc", enc1="enc", enc2="enc", proj="proj", fwd="fwd", dec="dec", con="con", bias="bias",
              d1="dense", d2="dense", do="dense")
-SHAPES = dict(enc0=(64, 28), enc1=(64, 65), enc2=(32, 65), proj=(9 * W, 1 + E), fwd=(W, 1 + E), dec=(W, 27),
-              con=(W, 20), bias=(1, W), d1=(L1, 1 + 2 * A), d2=(L2, 1 + L1), do=(1, 1 + L2))
+SHAPES = {}
 OPTS = dict(refit=True, gptq=True, ridge=1e-6, refit_groups=DEFAULT_REFIT)
+
+
+def set_shape(a=64, l1=16, l2=32, enc=(64, 64, 32)):
+    """Bind the module to a net shape: A accumulator lanes (W = A + 1 with the PSQT lane), an L1 x L2 head
+    and a three-layer encoder 27 -> enc[0] -> enc[1] -> enc[2] = E. The runtime needs A % 16 == 0,
+    L1 % 16 == 0 and L2 % 8 == 0 (nnue_b64.hpp's static_assert)."""
+    global A, W, E, L1, L2, ENC, SHAPES
+    enc = tuple(int(x) for x in enc)
+    if len(enc) != 3:
+        raise SystemExit(f"encoder depth {len(enc)}: the runtime bakes a three-layer encoder")
+    if a % 16 or l1 % 16 or l2 % 8 or l2 <= 0:
+        raise SystemExit(f"shape A={a} L1={l1} L2={l2}: the runtime needs A % 16 == 0, L1 % 16 == 0, L2 % 8 == 0")
+    A, W, E, L1, L2, ENC = int(a), int(a) + 1, enc[2], int(l1), int(l2), enc
+    SHAPES.clear()
+    SHAPES.update(enc0=(ENC[0], 28), enc1=(ENC[1], 1 + ENC[0]), enc2=(E, 1 + ENC[1]), proj=(9 * W, 1 + E),
+                  fwd=(W, 1 + E), dec=(W, 27), con=(W, 20), bias=(1, W), d1=(L1, 1 + 2 * A), d2=(L2, 1 + L1),
+                  do=(1, 1 + L2))
+
+
+def n_params():
+    """Parameters of the current shape (35,243 for B-64)."""
+    return sum(r * c for r, c in SHAPES.values())
+
+
+set_shape()
 
 
 def parse_config(s):
@@ -134,9 +182,19 @@ def read_bgn(path):
     if raw[:4] != b"BGN1":
         raise SystemExit(f"{path}: not a BGN1 file")
     a, l1, l2, forced, ncon, has_gen, e, n_enc = struct.unpack("<8i", raw[4:36])
-    if (a, l1, l2, forced, ncon, has_gen, e, n_enc) != (A, L1, L2, 1, 20, 1, E, 3):
+    if (forced, ncon, has_gen, n_enc) != (1, 20, 1, 3):
         raise SystemExit(f"{path}: shape A={a} L1={l1} L2={l2} forced={forced} ncon={ncon} gen={has_gen} "
-                         f"E={e} n_enc={n_enc}; this emitter is for the B-64 net (64, 16, 32, 1, 20, 1, 32, 3)")
+                         f"E={e} n_enc={n_enc}; this emitter needs a forced-board row, 20 constraint rows, "
+                         f"the generator section and a three-layer encoder")
+    if not l2:
+        raise SystemExit(f"{path}: a 2A -> L1 -> 1 head (L2 = 0) is not supported by the runtime")
+    # the encoder dims sit after the dense head; read them first so that the shape is bound before W is used
+    head_floats = (2 * a + 1) * l1 + (l1 + 1) * l2 + (l2 + 1)
+    ed_off = 36 + 4 * ((a + 1) * (1 + 9 * N_PAT + 27 + ncon + N_PAT) + head_floats)
+    ed = list(np.frombuffer(raw, dtype="<i4", count=n_enc + 1, offset=ed_off))
+    if ed[0] != 27 or ed[-1] != e:
+        raise SystemExit(f"{path}: encoder dims {ed} do not start at 27 and end at E={e}")
+    set_shape(a, l1, l2, ed[1:])
     off = 36
 
     def take(*shape, dt="<f4"):
@@ -154,7 +212,7 @@ def read_bgn(path):
     take(N_PAT, W)  # F (baked; not needed)
     dims = [2 * A, L1, L2, 1]
     b.dense = [(take(o, i), take(o)) for i, o in zip(dims[:-1], dims[1:])]
-    ed = list(take(n_enc + 1, dt="<i4"))
+    assert list(take(n_enc + 1, dt="<i4")) == ed
     b.enc = [(take(o, i), take(o)) for i, o in zip(ed[:-1], ed[1:])]
     b.proj_w = take(9, E, W)
     b.proj_b = take(9, W)
@@ -782,13 +840,24 @@ def table_hashes(t, kind="fnv1a"):
 
 
 # ---------------------------------------------------------------- header
+WIDTHS_RE = (r"B64_A = (\d+), B64_L1 = (\d+), B64_L2 = (\d+), B64_E = (\d+), B64_ENC0 = (\d+), "
+             r"B64_ENC1 = (\d+);")
+
+
 def parse_header(path):
-    """-> (payload bytes, qexp) of a generated header."""
+    """-> (payload bytes, qexp) of a generated header; binds the module to the header's shape (a header
+    from before the generic emitter declares no widths and is B-64)."""
     text = Path(path).read_text(encoding="utf-8")
     m = re.search(r"B64_QA = (\d+), B64_QPS = (\d+), B64_QB = (\d+), B64_Q2 = (\d+), B64_QO = (\d+);", text)
     body = re.search(r'B64_NET_CJK\[\] = R"~\((.*?)\)~"', text, re.S)
     if not m or not body:
         raise SystemExit(f"{path}: not a generated B64 net header")
+    w = re.search(WIDTHS_RE, text)
+    if w:
+        a, l1, l2, e, enc0, enc1 = (int(x) for x in w.groups())
+        set_shape(a, l1, l2, (enc0, enc1, e))
+    else:
+        set_shape()
     payload = decode_u15(body.group(1))  # may carry one zero byte of U15 padding
     payload = payload[:(unpack(payload)["_bits"] + 7) // 8]
     return payload, tuple(int(x) for x in m.groups())
@@ -801,18 +870,20 @@ def write_header(path, data, meta, qexp):
     qa, qps, qb, q2, qo = qexp
     src = f"""#pragma once
 // Generated by tools/nnue_emit_b64_header.py; do not edit. Net {meta["label"]} (lane-paired BGN1
-// {Path(meta["net"]).name}): the B-64 pattern generator, 35,243 parameters, GPTQ-rounded to bits
+// {Path(meta["net"]).name}): the B-{A} pattern generator, {n_params():,} parameters, GPTQ-rounded to bits
 // {", ".join(f"{k} {v}" for k, v in cfg.items())}
 // (pattern weights {meta["weights"]}, refit {meta["refit"]}), Rice-coded: {len(data):,} bytes = {len(text):,} U15 characters
 // (payload sha256 {hashlib.sha256(data).hexdigest()[:16]}). Layout: the emitter's docstring; reader and runtime:
-// nnue_b64.hpp. B64_QA..B64_QO are the power-of-two scales load() quantizes the baked tables and the dense
-// head at; the emitter derives them from the dequantized net so that no int16 accumulator and no int32
-// sum can overflow.
+// nnue_b64.hpp. B64_A.. are the net's widths the runtime compiles for (A accumulator lanes, an L1 x L2
+// head, a 27 -> ENC0 -> ENC1 -> E encoder); B64_QA..B64_QO are the power-of-two scales load() quantizes
+// the baked tables and the dense head at; the emitter derives them from the dequantized net so that no
+// int16 accumulator and no int32 sum can overflow.
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <immintrin.h>
 
+static constexpr int B64_A = {A}, B64_L1 = {L1}, B64_L2 = {L2}, B64_E = {E}, B64_ENC0 = {ENC[0]}, B64_ENC1 = {ENC[1]};
 static constexpr int B64_QA = {qa}, B64_QPS = {qps}, B64_QB = {qb}, B64_Q2 = {q2}, B64_QO = {qo};
 
 static const char B64_NET_CJK[] = R"~(
@@ -853,11 +924,108 @@ def cmd_check(path, hashes):
     dq = unpack(payload)  # parse_header() decoded it once already; cheap next to the bake
     p = generator_params(dq)
     print(f"{path}: payload {len(payload):,} bytes (sha256 {hashlib.sha256(payload).hexdigest()}), "
+          f"shape A {A} head {L1}x{L2} encoder 27->{'->'.join(map(str, ENC))} ({n_params():,} parameters), "
           f"header scales {qexp}")
     got, _, _ = describe_tables(p, qexp, hashes)
     if tuple(got) != tuple(qexp):
         raise SystemExit(f"the header's scales {qexp} are not the ones this net needs {got}")
     print("scales OK")
+
+
+def int_eval(header, pos_path, out_path):
+    """The exporter's integer reference: every record's eval exactly as nnue_b64.hpp computes it from scratch
+    (scratch() + eval_with() + eval_avx() + finish()), with int16 / int32 range assertions. -> (evals, stats).
+    (f357a24's int_eval without the macro-context branch; the header's widths line binds the shape.)"""
+    payload, qexp = parse_header(header)
+    p = generator_params(unpack(payload))
+    T, F = bake_f32(p)
+    t = int_tables(p, T, F, qexp)
+    qa, qps, qb, q2, qo = qexp
+    h1bits = min(14, qa + qb)
+    h1_shift = qa + qb - h1bits
+    h2bits = min(15, h1bits + q2)
+    h2_shift = h1bits + q2 - h2bits
+    h1max, h2max = 1 << (qa + qb), 1 << (h1bits + q2)
+    h1_round = 1 << (h1_shift - 1) if h1_shift > 0 else 0
+    h2_round = 1 << (h2_shift - 1) if h2_shift > 0 else 0
+    out_shift = h2bits + qo
+    fin_shift = max(out_shift, qps + 1)
+    out_mul, ps_mul = 1 << (fin_shift - out_shift), 1 << (fin_shift - qps - 1)
+    rec = load_records(pos_path)
+    raw = np.frombuffer(rec["s"].tobytes(), dtype=np.uint8).reshape(-1, 93).astype(np.int64) - 48
+    n = len(raw)
+    ok = ((raw[:, :81] >= 0) & (raw[:, :81] <= 2)).all(1) & ((raw[:, 81:90] >= 0) & (raw[:, 81:90] <= 3)).all(1) \
+        & ((raw[:, 90] == 1) | (raw[:, 90] == 2)) & (raw[:, 91] >= 0) & (raw[:, 91] <= 9)
+    x = raw[ok]
+    nv = len(x)
+    bits9 = 1 << np.arange(9)
+    cells = x[:, :81].reshape(nv, 9, 9)
+    mk = [((cells == v + 1) * bits9).sum(2) for v in (0, 1)]  # markers[P] per board (absolute players)
+    st = x[:, 81:90]
+    stm = x[:, 90] - 1
+    con = x[:, 91]
+    tern = np.array([sum(3 ** i for i in range(9) if mm >> i & 1) for mm in range(512)], np.int64)
+    I = {k: np.asarray(v, np.int64) for k, v in t.items()}  # noqa: E741
+    acc, ps = [], []
+    i16lo, i16hi = -32768, 32767
+    for P in (0, 1):
+        a = np.repeat(I["BIAS"][None], nv, 0)
+        q = np.full(nv, int(I["BIASP"].reshape(-1)[0]))
+        for m in range(9):
+            dec = st[:, m] != 0
+            stt = np.where(st[:, m] == 3, 2, np.where(st[:, m] == 1, 0, 1))
+            d = 3 * m + np.where(stt == 2, 2, np.where(stt == P, 0, 1))
+            pat = tern[mk[P][:, m]] + 2 * tern[mk[P ^ 1][:, m]]
+            a += np.where(dec[:, None], I["DEC"][d], I["T"][m, pat])
+            q += np.where(dec, I["DECP"][d], I["TP"][m, pat])
+        if a.min() < i16lo or a.max() > i16hi:
+            raise SystemExit(f"stored accumulator of perspective {P} leaves int16: [{a.min()}, {a.max()}]")
+        acc.append(a)
+        ps.append(q)
+    us = np.where((stm == 0)[:, None], acc[0], acc[1])
+    them = np.where((stm == 0)[:, None], acc[1], acc[0])
+    psd = np.where(stm == 0, ps[0] - ps[1], ps[1] - ps[0]) + I["CONP"][con] - I["CONP"][10 + con]
+    forced = con < 9
+    cb = np.minimum(con, 8)
+    t0 = tern[mk[0][np.arange(nv), cb]]
+    t1 = tern[mk[1][np.arange(nv), cb]]
+    pst = np.where(stm == 1, t1 + 2 * t0, t0 + 2 * t1)  # the forced board in stm's view
+    pot = np.where(stm == 1, t0 + 2 * t1, t1 + 2 * t0)
+    fu = np.where(forced[:, None], I["F"][pst], 0)
+    ft = np.where(forced[:, None], I["F"][pot], 0)
+    psd = psd + np.where(forced, I["FP"][pst] - I["FP"][pot], 0)
+    xu = us + I["CON"][con] + fu
+    xt = them + I["CON"][10 + con] + ft
+    for nm, v in (("stm", xu), ("other", xt)):
+        if v.min() < i16lo or v.max() > i16hi:
+            raise SystemExit(f"accumulator + constraint + forced-board row ({nm}) leaves int16: [{v.min()}, {v.max()}]")
+    act = np.clip(np.concatenate([xu, xt], 1), 0, 1 << qa)
+    i16 = lambda w: np.asarray(w, np.int64).astype(np.int16).astype(np.int64)  # noqa: E731
+    w1 = i16(q_round(p["w1"], qb))
+    s1 = q_round(p["b1"], qa + qb)[None] + act @ w1.T
+    w2 = i16(q_round(p["w2"], q2))
+    lim = 2 ** 31
+    if np.abs(s1).max() >= lim:
+        raise SystemExit("first dense layer sum leaves int32")
+    h1 = (np.clip(s1, 0, h1max) + h1_round) >> h1_shift
+    s2 = q_round(p["b2"], h1bits + q2)[None] + h1 @ w2.T
+    if np.abs(s2).max() >= lim:
+        raise SystemExit("second dense layer sum leaves int32")
+    h2 = (np.clip(s2, 0, h2max) + h2_round) >> h2_shift
+    o = h2 @ I["WO"] + int(I["BO"].reshape(-1)[0])
+    if np.abs(o).max() >= lim:
+        raise SystemExit("output sum leaves int32")
+    xx = 1000 * (o * out_mul + psd * ps_mul)
+    ev = np.where(xx >= 0, xx >> fin_shift, -((-xx) >> fin_shift))
+    evals = np.full(n, -2 ** 31, np.int64)
+    evals[ok] = ev
+    ndec = (st != 0).sum(1)
+    stats = dict(records=n, undecodable=int((~ok).sum()), decided3=int((ndec >= 3).sum()), forced=int(forced.sum()),
+                 stm1=int((stm == 0).sum()), stm2=int((stm == 1).sum()), enc=list(ENC),
+                 stored=(int(min(a.min() for a in acc)), int(max(a.max() for a in acc))),
+                 with_con_f=(int(min(xu.min(), xt.min())), int(max(xu.max(), xt.max()))))
+    Path(out_path).write_text("".join(f"{int(e)}\n" for e in evals), encoding="utf-8", newline="\n")
+    return evals, stats
 
 
 def main():
@@ -875,12 +1043,20 @@ def main():
     ap.add_argument("--no-hashes", action="store_true", help="skip the integer table hashes (slow in Python)")
     ap.add_argument("--check", nargs="?", const=HEADER, type=Path, metavar="HEADER",
                     help="decode, bake and check an existing header instead of emitting one")
+    ap.add_argument("--int-eval", nargs=2, type=Path, metavar=("POS", "OUT"),
+                    help="integer evals of eval_data records POS (one per line into OUT) with --header's net")
+    ap.add_argument("--header", type=Path, default=HEADER, help="the header --int-eval reads")
     a = ap.parse_args()
     if a.check:
         cmd_check(a.check, not a.no_hashes)
         return
+    if a.int_eval:
+        t0 = time.time()
+        _, st = int_eval(a.header, *a.int_eval)
+        print(f"int-eval {a.header} on {a.int_eval[0]}: {json.dumps(st)} ({time.time() - t0:.1f} s) -> {a.int_eval[1]}")
+        return
     if not a.net:
-        ap.error("NET is required (or --check)")
+        ap.error("NET is required (or --check / --int-eval)")
     groups = tuple(g for g in a.refit_groups.split(",") if g and g != "none")
     if not set(groups) <= set(REFIT_GROUPS):
         ap.error(f"unknown refit group in {a.refit_groups}")
@@ -888,7 +1064,8 @@ def main():
     t0 = time.time()
     p = gen_params(read_bgn(a.net))
     cfg = parse_config(a.config)
-    print(f"{a.net}: numpy {np.__version__}; config {cfg}; refit {','.join(groups) or 'none'}; weights {a.weights}; "
+    print(f"{a.net}: A {A}, head {L1}x{L2}, encoder 27->{'->'.join(map(str, ENC))} ({n_params():,} parameters); "
+          f"numpy {np.__version__}; config {cfg}; refit {','.join(groups) or 'none'}; weights {a.weights}; "
           f"calibration {a.ncal:,} rows of {a.calib}", flush=True)
     Q, SC, dq = quantize(p, cfg, a.weights, a.calib, a.ncal)
     data = pack(Q, SC)

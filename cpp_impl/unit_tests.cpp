@@ -966,8 +966,74 @@ static uint64_t play_book_table_hash(bool every_move) {
     return h;
 }
 
+// The booked build's pins (test_play_book): hashes of the decoded table (the
+// position hashes with the primary move, and with every stored move), not of
+// the payload. They depend only on the book's positions and moves: a re-pack
+// under another net changes the payload but decodes to the same table (s5
+// restored from 4919ed7 and packed under W1 keeps both values). A different
+// book changes them: update them with the book that ships. These are the s5
+// book's (2026-10-08); the build ships no book since 2026-10-09, so they are
+// checked only when play_book_data.hpp holds a book.
+static constexpr uint64_t PLAY_BOOK_PIN_PRIMARY = 10147742875230593747ull;  // cg_selfcheck's table_checksum
+static constexpr uint64_t PLAY_BOOK_PIN_MOVES = 7272843604574170237ull;     // play_book_check's moves_checksum
+
+// No book (PLAY_BOOK_ENTRIES 0, the payload play_book_pack writes for an empty
+// text book): pb_init decodes nothing, the table stays empty and pb_lookup
+// never supplies a move, from either root or in random games.
+static void test_play_book_none(TestCtx &ctx) {
+    auto nnue = [](const PbView &v, int c) { return b64::evaluate_board(v, c); };
+    CHECK_EQ(PLAY_BOOK_FORMAT, 2);
+    CHECK_EQ(PLAY_BOOK_BYTES, 0);
+    CHECK_EQ(PLAY_BOOK_EVAL_FINGERPRINT, 0ull);  // belongs to no net
+    CHECK_EQ(sizeof(PLAY_BOOK_CJK), (size_t)1);  // the empty payload
+    CHECK(pb_eval_fingerprint(nnue) != PLAY_BOOK_EVAL_FINGERPRINT);
+    const bool was_ready = PB_READY;
+    const auto saved_table = PB_TABLE;
+    PB_READY = false;
+    CHECK(!(pb_init<GlobalBoard, Move>(nnue)));
+    CHECK(!PB_READY);
+    CHECK(PB_TABLE.empty());
+    Move bm;
+    {  // moving second: no reply to center-center
+        GlobalBoard root;
+        root.makeMove(Move{4, 4});
+        CHECK(!pb_lookup(root, bm));
+    }
+    {  // moving first: nothing after 4 4 and any reply
+        GlobalBoard root;
+        root.makeMove(Move{4, 4});
+        Move buf[81];
+        int n = root.fillLegalMoves(buf);
+        for (int i = 0; i < n; i++) {
+            root.makeMove(buf[i]);
+            CHECK(!pb_lookup(root, bm));
+            root.unmakeMove();
+        }
+    }
+    std::mt19937 rng(20261010);
+    Move buf[81];
+    int looked = 0;
+    for (int g = 0; g < 400; g++) {
+        GlobalBoard b;
+        b.makeMove(Move{4, 4});
+        while (b.checkWinner() == -1 && b.n_moves < 26) {
+            CHECK(!pb_lookup(b, bm));
+            looked++;
+            int n = b.fillLegalMoves(buf);
+            b.makeMove(buf[rng() % n]);
+        }
+    }
+    CHECK(looked > 400 * 10);
+    PB_TABLE = saved_table;
+    PB_READY = was_ready;
+}
+
 static void test_play_book(TestCtx &ctx) {
     crossfish_nnue_load_once();
+    if (PLAY_BOOK_ENTRIES == 0) {
+        test_play_book_none(ctx);
+        return;
+    }
     // The payload is coded with this net's move ordering: its fingerprint must
     // match the net, and a different evaluator must be refused before the walk.
     auto nnue = [](const PbView &v, int c) { return b64::evaluate_board(v, c); };
@@ -988,10 +1054,11 @@ static void test_play_book(TestCtx &ctx) {
     }
     CHECK((pb_init<GlobalBoard, Move>(nnue)));
     CHECK_EQ((int)PB_TABLE.size(), PLAY_BOOK_ENTRIES);
-    // Pinned like the network payload hashes: regenerating the book changes
-    // them. The first is the value cg_selfcheck prints (hashes and primaries).
-    CHECK_EQ(play_book_table_hash(false), 10147742875230593747ull);
-    CHECK_EQ(play_book_table_hash(true), 7272843604574170237ull);
+    // Pinned (PLAY_BOOK_PIN_*): the decoded table's hashes, so another book changes them and a
+    // re-pack of the same book under another net does not. The first is the value cg_selfcheck
+    // prints (hashes and primaries).
+    CHECK_EQ(play_book_table_hash(false), PLAY_BOOK_PIN_PRIMARY);
+    CHECK_EQ(play_book_table_hash(true), PLAY_BOOK_PIN_MOVES);
     // Every entry holds 1 to PB_MAX_MOVES moves, nothing above them.
     for (auto &kv : PB_TABLE) {
         uint32_t k = kv.second >> 24;
@@ -1124,6 +1191,17 @@ struct PlayBookTree {
 
 static void test_play_book_moves(TestCtx &ctx) {
     crossfish_nnue_load_once();
+    if (PLAY_BOOK_ENTRIES == 0) {  // no book: an empty tree from both roots
+        CHECK(!(pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); })));
+        CHECK(PB_TABLE.empty());
+        PlayBookTree tree{ctx};
+        GlobalBoard first;
+        first.makeMove(Move{4, 4});
+        tree.their(first);
+        CHECK(tree.ours.empty());
+        CHECK_EQ(tree.multi, 0);
+        return;
+    }
     CHECK((pb_init<GlobalBoard, Move>([](const PbView &v, int c) { return b64::evaluate_board(v, c); })));
     PB_RNG = 20261008;
     PlayBookTree tree{ctx};
@@ -1169,8 +1247,9 @@ static Book play_book_text_read(const std::string &text) {
 }
 
 // The text book and the packer on small books in memory: the loader's rules
-// for several lines of one position, the packer's refusals (illegal moves,
-// more than PB_MAX_MOVES moves, the 25-ply cap), and a pack -> decode round
+// for several lines of one position and for blank and comment lines, the
+// packer's refusals (lines that are not book lines, illegal moves, more than
+// PB_MAX_MOVES moves, the 25-ply cap), the no-book case, and a pack -> decode round
 // trip through the runtime's own walk (pb_init's hooks). Restores PB_TABLE.
 static void test_play_book_text(TestCtx &ctx) {
     crossfish_nnue_load_once();
@@ -1189,11 +1268,14 @@ static void test_play_book_text(TestCtx &ctx) {
         "S 40,36 8\r\n"      // moving first, after 4 4, 3 3: 2 2
         "S 40,44 72\r\n"     // that position rotated (after 4 4, 5 5) by another seq, the same move: merged
         "S 40,44 80\r\n"     // ... another move: not an alternative, counted in `transposed`
-        "\r\n  \r\n";
+        "# a comment line\r\n"
+        "\r\n  \r\n"
+        "  # an indented comment, S 40 37\r\n";
     Book book = play_book_text_read(text);
     CHECK_EQ(book.entries.size(), (size_t)4);
     CHECK_EQ(book.illegal, 0);
     CHECK_EQ(book.too_deep, 0);
+    CHECK_EQ(book.unparsed, 0);  // blank lines and comments are not book lines and not errors
     CHECK_EQ(book.transposed, 1);
     CHECK(book.first_transposed.find("\"S 40,44 80\"") != std::string::npos);
     CHECK(book.first_transposed.find("\"S 40,36 8\"") != std::string::npos);
@@ -1322,6 +1404,51 @@ static void test_play_book_text(TestCtx &ctx) {
             if (idx > PB_TEXT_MAX_INDEX) CHECK(why.find("25-ply cap") != std::string::npos);
         }
     }
+    {  // an empty text book: nothing to refuse; the packer writes the no-book payload
+        Book b = play_book_text_read("\n  \r\n");
+        CHECK(b.entries.empty());
+        int alt = -1;
+        CHECK_EQ(pb_pack_refusal(b, alt), std::string());
+        CHECK_EQ(alt, 0);
+        const std::string h = pb_no_book_header();
+        for (const char *want : {"static constexpr int PLAY_BOOK_FORMAT = 2;\n",
+                                 "static constexpr int PLAY_BOOK_ENTRIES = 0;\n",
+                                 "static constexpr int PLAY_BOOK_BYTES = 0;\n",
+                                 "static constexpr uint64_t PLAY_BOOK_EVAL_FINGERPRINT = 0ull;\n",
+                                 "static const char PLAY_BOOK_CJK[] = \"\";\n"})
+            CHECK(h.find(want) != std::string::npos);
+        CHECK_EQ(h.rfind("#pragma once\n", 0), (size_t)0);
+    }
+    {  // blank lines and # comments only: an empty text book too, so the no-book payload
+        Book b = play_book_text_read("# no book\n\n   # an indented comment\r\n\t\n#\n");
+        CHECK(b.entries.empty());
+        CHECK_EQ(b.unparsed, 0);
+        int alt = -1;
+        CHECK_EQ(pb_pack_refusal(b, alt), std::string());
+    }
+    {  // no book line but other content (README.md passed as the book): refused, never the no-book payload
+        Book b = play_book_text_read("# crossfish\n\nAn Ultimate Tic-Tac-Toe engine.\r\n## Build\nmake test\n");
+        CHECK(b.entries.empty());
+        CHECK_EQ(b.unparsed, 2);
+        CHECK_EQ(b.first_unparsed, std::string("An Ultimate Tic-Tac-Toe engine."));
+        int alt = 0;
+        const std::string why = pb_pack_refusal(b, alt);
+        CHECK(why.find("2 line(s) that are not book lines") != std::string::npos);
+        CHECK(why.find("not a text book") != std::string::npos);
+    }
+    {  // malformed book lines are never positions: counted and refused, next to good book lines too
+        for (const char *bad : {"S", "S 40", "S 40,36 x", "S 40,x 1", "S 40,,36 1", "S 40,99 1", "S 40,-1 1",
+                                "S 40,36a 1", "x.. 1 2"}) {
+            Book b = play_book_text_read(std::string("S 40 36\n") + bad + "\n");
+            CHECK_EQ(b.entries.size(), (size_t)1);
+            CHECK_EQ(b.unparsed, 1);
+            CHECK_EQ(b.first_unparsed, std::string(bad));
+            int alt = 0;
+            const std::string why = pb_pack_refusal(b, alt);
+            CHECK(why.find("not book lines") != std::string::npos);
+            CHECK(why.find("not a text book") == std::string::npos);
+        }
+    }
 }
 
 static void test_cjk14_decoder(TestCtx &ctx) {
@@ -1441,11 +1568,18 @@ static uint64_t nnue_table_hash(const void *p, size_t n) {
     return h;
 }
 
-// load() must bake exactly the tables of the verified build of the committed net (r14_d5_final_s2_rs, the
-// build of improvement log section 65's ship tests; the hashes are nnue_emit_b64_header.py --check's): same
-// payload, same float bake, same quantization.
+// load() must bake exactly the tables of the verified build of the committed net (r16_x128_l2400_s1601_rs,
+// W1, the build of improvement log section 69's ship tests; the hashes are nnue_emit_b64_header.py --check's
+// and that build's): same payload, same float bake, same quantization.
 static void test_nnue_tables_match_verified_build(TestCtx &ctx) {
     b64::load();
+    CHECK_EQ(B64_ENC0, 128);  // the encoder 27 -> 128 -> 128 -> 32; the head is B-64's
+    CHECK_EQ(B64_ENC1, 128);
+    CHECK_EQ(B64_E, 32);
+    CHECK_EQ(B64_A, 64);
+    // The evaluator fingerprint (play_book.hpp): what a book packed under this net carries, and what the
+    // build of record's probe printed. It moves with any change to the evals.
+    CHECK_EQ(pb_eval_fingerprint(pb_nnue_eval), 3846873435862646193ull);
     CHECK_EQ(B64_QA, 9);
     CHECK_EQ(B64_QPS, 12);
     CHECK_EQ(B64_QB, 13);
@@ -1457,22 +1591,22 @@ static void test_nnue_tables_match_verified_build(TestCtx &ctx) {
         size_t n;
         uint64_t want;
     } tables[] = {
-        {"T", b64::T, sizeof(b64::T), 0x9bbaa082f8554047ull},
-        {"TP", b64::TP, sizeof(b64::TP), 0xdd257686df3e3139ull},
-        {"F", b64::F, sizeof(b64::F), 0x08b77ff215924031ull},
-        {"FP", b64::FP, sizeof(b64::FP), 0xa8fb18727ed0c670ull},
-        {"DEC", b64::DEC, sizeof(b64::DEC), 0x38f22f9a6c383aebull},
-        {"DECP", b64::DECP, sizeof(b64::DECP), 0xd64aeb301bcf3babull},
-        {"CON", b64::CON, sizeof(b64::CON), 0x3debb6217730b511ull},
-        {"CONP", b64::CONP, sizeof(b64::CONP), 0x888f865e5c67d11full},
-        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x10cc379b6ed5fc3dull},
+        {"T", b64::T, sizeof(b64::T), 0x1508b99e11f9398aull},
+        {"TP", b64::TP, sizeof(b64::TP), 0x6477c257efc89302ull},
+        {"F", b64::F, sizeof(b64::F), 0x1719ae9206389376ull},
+        {"FP", b64::FP, sizeof(b64::FP), 0xba92cd6962ac309full},
+        {"DEC", b64::DEC, sizeof(b64::DEC), 0x4766c17357e5054eull},
+        {"DECP", b64::DECP, sizeof(b64::DECP), 0xa44ed68d4c3606d6ull},
+        {"CON", b64::CON, sizeof(b64::CON), 0xd0dbaf4efd5111e4ull},
+        {"CONP", b64::CONP, sizeof(b64::CONP), 0x349a2b848d3f5ba0ull},
+        {"BIAS", b64::BIAS, sizeof(b64::BIAS), 0x90c2f9f247591608ull},
         {"BIASP", &b64::BIASP, sizeof(b64::BIASP), 0x9a691300c548b8fbull},
-        {"W1p", b64::W1p, sizeof(b64::W1p), 0x0b0d9ecc90d342cbull},
-        {"B1", b64::B1, sizeof(b64::B1), 0x00c61dcbf7904c1aull},
-        {"W2p", b64::W2p, sizeof(b64::W2p), 0x83a5f9151fe78cc5ull},
-        {"B2", b64::B2, sizeof(b64::B2), 0x6544804488cf5d81ull},
-        {"WO", b64::WO, sizeof(b64::WO), 0xb5d9f93d417af25eull},
-        {"BO", &b64::BO, sizeof(b64::BO), 0x5360ca77c125e377ull},
+        {"W1p", b64::W1p, sizeof(b64::W1p), 0xc4e128ceb1f4faf5ull},
+        {"B1", b64::B1, sizeof(b64::B1), 0xf755960c4bce70efull},
+        {"W2p", b64::W2p, sizeof(b64::W2p), 0xb00a6ec10065dc86ull},
+        {"B2", b64::B2, sizeof(b64::B2), 0x4bf8e6cb92fa4fb9ull},
+        {"WO", b64::WO, sizeof(b64::WO), 0x640607e5087c6bcaull},
+        {"BO", &b64::BO, sizeof(b64::BO), 0x8464289de03c56a4ull},
     };
     for (const auto &t : tables) {
         const uint64_t got = nnue_table_hash(t.p, t.n);
@@ -1595,13 +1729,14 @@ static void nnue_position(int i, GlobalBoard &b) {
     }
 }
 
-// The committed net's (r14_d5_final_s2_rs) evals on those positions, checked against the float net in
-// PyTorch (mean |d| 8.8, max 48; r13w_20's were 6.1 / 30, r13w_11's 8.9 / 31, r12_M2's 4.9 / 28 with a
-// 20,000-position parity of 5.8 / 166): a change to the net, the bake, the quantization or the kernels shows
-// up here.
+// The committed net's (r16_x128_l2400_s1601_rs) evals on those positions: equal to
+// nnue_emit_b64_header.py --int-eval's integer reference, and checked against the float net (its BGN1
+// export, equal to the PyTorch checkpoint to 1e-11) at mean |d| 10.1, max 40 (r14_d5_final_s2_rs's were
+// 8.8 / 48, r13w_20's 6.1 / 30, r13w_11's 8.9 / 31, r12_M2's 4.9 / 28 with a 20,000-position parity of
+// 5.8 / 166): a change to the net, the bake, the quantization or the kernels shows up here.
 static void test_nnue_fixed_positions(TestCtx &ctx) {
-    static const int want[16] = {1433, -1431, -296, -117,  305,  745,  451,  1411,
-                                 1824, -2666, 8745, 11145, 7734, 8526, 5407, 12417};
+    static const int want[16] = {1523, -1441, -266, -77,  351,  907,  560,  1353,
+                                 1526, -2779, 8837, 12419, 7807, 7828, 5100, 11381};
     CrossfishDev dev;
     int drawn = 0, free_moves = 0, decided = 0;
     for (int i = 0; i < 16; i++) {

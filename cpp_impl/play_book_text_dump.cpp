@@ -3,7 +3,8 @@
 // without the generators' toolchains (the uttt.ai fork, the P2 book builder).
 // A position with several book moves (payload format 2) gets one line per
 // move, the primary first, which is how the packer reads them back: packing
-// the output again gives the same payload.
+// the output again gives the same payload. The no-book payload
+// (PLAY_BOOK_ENTRIES 0) dumps as an empty text book.
 //
 //   play_book_text_dump > play_book.txt
 #include <cstdio>
@@ -30,6 +31,10 @@ static void print_line(GlobalBoard &b, const Move &m) {
 
 int main() {
     crossfish_nnue_load_once();
+    if (PLAY_BOOK_ENTRIES == 0) {  // the no-book payload: the empty text book it was packed from
+        std::fprintf(stderr, "no book (PLAY_BOOK_ENTRIES 0): wrote an empty text book\n");
+        return 0;
+    }
     static unsigned char buf[PLAY_BOOK_BYTES + 16];
     int n = d16_mini_cjk_decode(PLAY_BOOK_CJK, buf, (int)sizeof(buf));
     if (n < PLAY_BOOK_BYTES) { std::fprintf(stderr, "payload too short\n"); return 1; }
