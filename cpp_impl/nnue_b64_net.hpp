@@ -4,14 +4,16 @@
 // enc 14, proj 12, fwd 12, dec 14, con 13, dense 14, psqt 14, bias 14
 // (pattern weights freq, refit proj,fwd,dense), Rice-coded: 53,865 bytes = 28,728 U15 characters
 // (payload sha256 cde8c6109b36689e). Layout: the emitter's docstring; reader and runtime:
-// nnue_b64.hpp. B64_QA..B64_QO are the power-of-two scales load() quantizes the baked tables and the dense
-// head at; the emitter derives them from the dequantized net so that no int16 accumulator and no int32
-// sum can overflow.
+// nnue_b64.hpp. B64_A.. are the net's widths the runtime compiles for (A accumulator lanes, an L1 x L2
+// head, a 27 -> ENC0 -> ENC1 -> E encoder); B64_QA..B64_QO are the power-of-two scales load() quantizes
+// the baked tables and the dense head at; the emitter derives them from the dequantized net so that no
+// int16 accumulator and no int32 sum can overflow.
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <immintrin.h>
 
+static constexpr int B64_A = 64, B64_L1 = 16, B64_L2 = 32, B64_E = 32, B64_ENC0 = 64, B64_ENC1 = 64;
 static constexpr int B64_QA = 9, B64_QPS = 12, B64_QB = 13, B64_Q2 = 13, B64_QO = 10;
 
 static const char B64_NET_CJK[] = R"~(
