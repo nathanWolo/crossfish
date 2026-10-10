@@ -4701,5 +4701,7 @@ L13, H13, A16, A17):
 
 So the eval lever that reached play was capacity that keeps the shipped
 net's function (warm widening), as in the scaling study; feature additions
-did not. The evidence is in `datasets/nnue2/FINDINGS.md` (L13, H13,
-A16-A19) and the round's dated log, `datasets/nnue2/r16/README.md`.
+did not. The round's full write-up is
+[reports/round16](reports/round16/REPORT.md); the evidence is in
+`datasets/nnue2/FINDINGS.md` (L13, H13, A16-A19) and the round's dated
+log, `datasets/nnue2/r16/README.md`.
