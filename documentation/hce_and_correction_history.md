@@ -19,6 +19,11 @@ table's prior. Of the HCE, the search keeps only the two-in-a-row threat maps
 HCE of every position, and `test_bots`' tuning and dump modes still use it.
 Everything else below describes the HCE as it ran until then, and as
 `evaluate_hce` still computes it.
+**Since 2026-10-11** the search's constants are W1's SPSA retune: among
+them the margins (`RFP_PAWNS` 47), the correction update (scale and cap
+15,678, clip 1,056, local grain 47) and the macro prior (98%). The numbers
+below are the hand-set values the retune started from; the current ones
+are in `crossfish_dev.hpp` and `codingame_nnue.cpp`.
 The chronology of every change mentioned here, with its SPRT, is in the
 [improvement log](improvement_log.md).
 

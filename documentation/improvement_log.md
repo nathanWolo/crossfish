@@ -4705,3 +4705,80 @@ did not. The round's full write-up is
 [reports/round16](reports/round16/REPORT.md); the evidence is in
 `datasets/nnue2/FINDINGS.md` (L13, H13, A16-A19) and the round's dated
 log, `datasets/nnue2/r16/README.md`.
+
+## 70. The search constants retuned on W1 by SPSA (10-11 October 2026)
+
+### The change
+
+The search's tunable constants are W1's SPSA retune. One SPSA tuned all 51
+of them together on the net W1, at CodinGame compute. Of the 51, 28 changed
+after rounding, every one on a line the tuning patch anchors in
+`cpp_impl/codingame_nnue.cpp` (the readable copies in `crossfish_dev.hpp` and
+`crossfish_prev.hpp` follow). The larger moves:
+
+| Constant | Was | Now |
+| --- | ---: | ---: |
+| `RFP_PAWNS` (late reverse-futility margin) | 50 | 47 |
+| `LMR_DIV` (LMR table divisor, x100) | 100 | 106 |
+| `LMR_BASE` (LMR table offset, x100) | 55 | 52 |
+| `ASP_PAWNS` (aspiration half-window) | 40 | 37 |
+| aspiration growth (x10) | 30 | 29 |
+| `QDELTA_PAWNS` (quiescence delta) | 350 | 344 |
+| `EARLY_MARGIN_MOVES` | 28 | 29 |
+| history bonus / malus (% of depth²) | 100 / 200 | 104 / 211 |
+| history / continuation gravity | 10000 / 10000 | 9570 / 10278 |
+| continuation-history aging (%) | 50 | 53 |
+| correction scale and cap | 16384 | 15678 |
+| correction update clip | 1024 | 1056 |
+
+The rest moved by one or two units: `RFP_EARLY_PAWNS` 24, the futility tiers
+by empty squares (the middle tier now starts at 44 instead of 45, with margin
+19 instead of 20; the 30-43 tier 51 instead of 50), the history divisor 21,
+`CONT_MUL` 3284, the ordering weights (killer 26, counter move 39, global win
+812, two-in-a-row 49, out-of-play square -254), the local correction grain 47
+and the macro prior's scale 98%. The LMR candidate test changed from
+"score below zero" to "score below one" (the named key `MOVE_KEY_LMR`), which
+is the tuning engine's comparison at its tuned threshold. ProbCut's four
+constants, IIR, IID and the pseudo-singular margin stayed at their values
+after rounding.
+
+### How, and the evidence
+
+The study was pre-registered (design v3.1, frozen before any tuning game);
+its full write-up is [reports/search_spsa_w1](reports/search_spsa_w1/REPORT.md).
+
+- **The tuning engine.** A patched copy of the search reads all 51 constants
+  from an environment variable, with one engine restart per game pair. It
+  passed fifteen identity gates before any game: at the shipped values it
+  reproduces W1's bench (`c12bfc8e73c521ca`, 29,208,628 nodes) on the desktop
+  and the Dell, it carries no state between games, and it costs under 1%
+  speed.
+- **The SPSA.** 32,000 pairs of θ+ against θ−, fishtest schedule, at
+  CodinGame compute (desktop 7 workers at 53 ms, Dell 3 at 67 ms), from 01:05
+  to 04:43 on 11 October, 0 forfeits.
+- **The test.** θ_N against the shipped constants, both as normal constexpr
+  builds, at CodinGame compute on openings the SPSA never started from: GSPRT
+  logistic **[0, +5]**, α = β = 0.05, pentanomial. **H1 at 7,356 games** (LLR
+  +2.99; pentanomial 73, 719, 1977, 840, 69): **+5.3 ± 4.3 Elo**. That number
+  is read where the test stopped, so it overstates the gain (by about 2 Elo
+  in simulation); the change is a gainer by the [0, +5] standard.
+- **Where the gain is.** No constant moved a full perturbation step, so the
+  gain is spread over the vector and no single value is interpretable on its
+  own. The tuned search builds a tree 14.9% larger at bench depth 12
+  (33,556,236 nodes), almost all from the gentler LMR divisor.
+
+### Checks
+
+- The ship source equals the tuning build at θ_N byte for byte on the
+  anchored lines; its bench is **`2a98b40db0e87d7e`, 33,556,236 nodes** on
+  desktop clang and on the Dell's g++ CodinGame command, and main's untuned
+  source still gives W1's bench.
+- The paste (`cg_input.cpp`, 82,229 characters) and the native launcher
+  (`cg_input_native.py`, 77,306 characters) were regenerated; `cg-min-check`,
+  `port-check`, `cg_selfcheck` (book=none) at eight settings, the Dell's
+  determinism checks (Zobrist keys, eval fingerprint, bake tables), the native
+  build route (it rebuilds the old launcher byte for byte) and
+  `cg-native-check` (100 protocol games, first turn at most 518 ms) pass.
+
+The constants are tuned for W1. A later net needs a non-regression check of
+them ([-5, 0]) or its own SPSA.

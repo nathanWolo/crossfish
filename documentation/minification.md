@@ -595,10 +595,10 @@ focused minifier test where appropriate.
 The current generation command reports:
 
 ```text
-cpp_impl/codingame_nnue.cpp 118238 (bundled 216073)
--> cpp_impl/cg_input.cpp 82191
-saved 133882
-cap 17809 left
+cpp_impl/codingame_nnue.cpp 118601 (bundled 216436)
+-> cpp_impl/cg_input.cpp 82229
+saved 134207
+cap 17771 left
 ```
 
 The `saved` value compares the minified result with the fully bundled
@@ -607,16 +607,16 @@ translation unit, not with the readable top-level source.
 Sizes are UTF-16 code units, which is what CodinGame counts. Everything
 outside the three payload literals is ASCII, and every payload character is
 one UTF-16 unit, so the unit count equals Python's `len`. It does not equal
-`wc -c`: each payload character is three UTF-8 bytes, and the file is 170,837
+`wc -c`: each payload character is three UTF-8 bytes, and the file is 170,875
 bytes. The CLI exits with failure when output is 100,000 units or larger.
 
 | Part of `cg_input.cpp` | UTF-16 units |
 | --- | ---: |
-| code (minified engine, NNUE runtime, book decoder) | 37,868 |
+| code (minified engine, NNUE runtime, book decoder) | 37,906 |
 | NNUE generator payload (W1) | 42,682 |
 | gameplay opening book payload (no book) | 0 |
 | macro net payload | 1,641 |
-| **total** | **82,191** (17,809 left) |
+| **total** | **82,229** (17,771 left) |
 
 The ASCII85 conversion originally reduced the accepted 96,674-character
 submission to 92,759 characters. Round nine brought it to 96,887, leaving
@@ -645,8 +645,10 @@ multi-move runtime (payload format 2) costs 234 characters of code, for
 **69,861, with 30,139 left**. Round sixteen's W1 (section 69) has a 128-wide
 encoder, a 42,682-character payload (+13,954), and ships without a book
 (-1,895; the runtime's width-generic bake and the no-book guard add about 300
-characters of code): **82,191, with 17,809 left**. A smaller NNUE payload
-configuration would still free about 1,350 (section 3.1).
+characters of code): **82,191, with 17,809 left**. W1's search-constant
+retune (2026-10-11) adds 38 characters of code: **82,229, with 17,771
+left**. A smaller NNUE payload configuration would still free about 1,350
+(section 3.1).
 
 ## 11. Reproducible generation procedure
 

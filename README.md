@@ -30,7 +30,7 @@ Detailed project documentation:
   machine and round-robin ratings
 - The NNUE experiments' own tools and results: [trainers](tools/experiments/nnue2/README.md) and
   [fast inference, candidate builds, checks and two-net matches](tools/experiments/fast_nnue/README.md)
-- [NNUE research reports](documentation/reports/README.md): the full pre-registered write-ups of round 14, the scaling study and round 16
+- [NNUE research reports](documentation/reports/README.md): the full pre-registered write-ups of round 14, the scaling study, round 16 and the search SPSA on W1
 - [CodinGame submission and minifier](documentation/minification.md)
 - [Native submission](documentation/native_build.md): the clang build in a Python 3 launcher that is live on CodinGame
 - [Gameplay opening book](documentation/play_book.md): the book machinery of the CodinGame bot (no book ships since 2026-10-09)
@@ -465,11 +465,11 @@ packed at 15 bits per character on the U15 alphabet (so was the opening book,
 `documentation/minification.md`), so the file is larger in bytes than in
 counted characters; trust the minifier's count, not `wc -c`.
 `cpp_impl/cg_input.cpp` is the C++ submission; the readable source and generated
-headers are intentionally kept separate for review. The file is **82,191
-characters** (17,809 left).
+headers are intentionally kept separate for review. The file is **82,229
+characters** (17,771 left).
 
 **The live submission is `cpp_impl/cg_input_native.py`** (language: Python 3,
-77,297 characters): the same bot as `cg_input.cpp`, built by clang 23 with
+77,306 characters): the same bot as `cg_input.cpp`, built by clang 23 with
 `-O3 -march=haswell`, xz-compressed and U15-encoded into a launcher that execs
 it. It searches the identical tree about 7.5% faster than CodinGame's g++
 build of the paste (GSPRT [0, 5] H1 at 5,400 games at 62 ms, about +6 to +8
@@ -565,13 +565,13 @@ Fancheng, Daporan and Apostolique; FINDINGS A19). W1 (#6 30.55, #6 30.61;
 resubmitted 2026-10-10, #8 30.21 and #9 29.97) is the live build. The first turn, which now bakes the wider
 encoder, takes about 415 ms on the Dell of its 1,000 ms (no timeout on our
 side in the four agents' 1,040 ladder games).
-The paste file is **82,191 characters** (17,809 left) and the
-native launcher **77,297**. `main`'s launcher is not the live file byte for
-byte: the live one (`dd33df97…`, 82,112 characters) was built before the
-no-book mode existed, from runtime B's format-1 book code and a hand-written
-empty book that its fingerprint check refused; it plays identically (the
-selfchecks match at eight settings; only the book line differs, book=FAILED
-there).
+The paste file is **82,229 characters** (17,771 left) and the
+native launcher **77,306**, both with the search constants retuned on W1 on
+2026-10-11. W1's live launcher (`dd33df97…`, 82,112 characters) was built
+before the no-book mode existed, from runtime B's format-1 book code and a
+hand-written empty book that its fingerprint check refused; it played
+identically to `main`'s W1 launcher before the retune (the selfchecks matched
+at eight settings; only the book line differs, book=FAILED there).
 
 On 2026-10-08 the **second player's opening book** became crossfish's own
 deep-search book (improvement log section 68): snapshot s5 of the P2 book

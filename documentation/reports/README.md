@@ -30,9 +30,17 @@ Full write-ups of the NNUE training studies, each with its figures in `fig/` bes
   although it led its controls offline by about +13 per mille) did not gain. On the ladder the
   gain is below resolution: four W1 agents against a same-night r14 control are not shown to be
   worse, but the gain's transfer to second-player games is not shown either.
+- [Search SPSA on W1: all 51 search constants retuned at CodinGame compute](search_spsa_w1/REPORT.md)
+  (10-11 October 2026; report final 11 October). One SPSA tuned every tunable constant of the
+  shipped search (margins, aspiration, ProbCut, LMR, IIR, history and move ordering, the correction
+  histories) on the net W1, over 32,000 game pairs at CodinGame compute on two machines. The rounded
+  result changed 28 constants, none by a full perturbation step, and beat the shipped constants in
+  one pre-registered GSPRT [0, +5] (H1 at 7,356 games; +5.3 ± 4.3 Elo, a stopped estimate biased
+  upward). The gain is diffuse; the tuned search builds a 15% larger tree, mostly through gentler
+  late-move reductions.
 
-All three were pre-registered: the design, hypotheses and decision rules were frozen before the
+All four were pre-registered: the design, hypotheses and decision rules were frozen before the
 results they judge, each report lists its deviations, and "±" is a 95% half-width. The records
-and the training and game logs live under `datasets/nnue2/` (`r14/`, `scaling/` and `r16/`),
+and the training and game logs live under `datasets/nnue2/` (`r14/`, `scaling/`, `r16/` and `search_tune/w1/`),
 which is not in git, as do the numbers scripts behind the round-14 and scaling-study reports'
 tables and figures; paths inside the reports are relative to those directories.
