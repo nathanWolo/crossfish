@@ -17,7 +17,7 @@ language set to C++ (see **Switching back**).
 
 | File | |
 | --- | --- |
-| `cpp_impl/cg_input_native.py` | Generated: the submission (77,297 UTF-16 units, 22,703 under the cap; net W1, no book, built 2026-10-10). Committed, like `cg_input.cpp`. Never hand-edit it. |
+| `cpp_impl/cg_input_native.py` | Generated: the submission (77,306 UTF-16 units, 22,694 under the cap; net W1 with the search constants retuned on 2026-10-11, no book, built 2026-10-11). Committed, like `cg_input.cpp`. Never hand-edit it. |
 | `tools/cg_native/manifest.json` | Generated: the build record. Holds the binary's and the file's sha256, the toolchain, the flags, the symbol versions, and the hashes of the sources it was built from. |
 | `tools/cg_native/build.sh` | Builds the binary, checks it against CodinGame's runtime, then packs it (`make cg-native`). |
 | `tools/cg_native/pack.py` | xz + U15 packer and the launcher template. |
@@ -256,6 +256,15 @@ the same: both launchers give the same selfcheck lines at the eight settings
 of section 4; only the book line differs (`book=none`, exit 0, against
 `book=FAILED`, exit 1).
 
+**W1's search-constant retune (2026-10-11)** was built the same way, on the
+Dell from an LF export of its tree, after the route had rebuilt the W1
+launcher above byte for byte: binary 284,184 B
+(`f0a49f9386af35a56167743fbc68d8823feb30cd6d4ace91d609af0f66a91a51`), xz
+142,964 B, `cg_input_native.py` 77,306 units
+(`0de8de1370b60627d4db07d667e5cd5b5ac1183c6ccd3a57dd548e2c8e75ccea`). It
+searches a different tree from W1's launchers (other constants), so its
+selfcheck lines in section 4 are new.
+
 A different clang, different libstdc++ headers or a different packer give
 another binary. That is acceptable if `make cg-native-check` passes, but the
 change should be deliberate. The fingerprint is the real gate, not the hash.
@@ -274,26 +283,33 @@ same file.
    counts, search checksum, the book line and the book table checksum. The
    book line must read `book=ok`, or `book=none` when `play_book_data.hpp` is
    the no-book payload (`PLAY_BOOK_ENTRIES 0`, [play_book.md](play_book.md)).
-   The current values (main since 2026-10-10: net W1 + ProbCut, no book) are
-   581,761 / 2961480880280574853, 870,788 / 17722219369592891007 and
-   1,933,752 / 17063734611541076025, with `book=none entries=0
-   table_checksum=1469598103934665603` (an empty table). Before it (r14, the
-   deep-search second-player book): 568,480 / 14701287764179133873, 884,055 /
-   7700840096549893098 and 1,891,725 / 2284235251857539044, with book=ok,
-   10,474 entries and table checksum 10147742875230593747. These are the
+   The current values (main since 2026-10-11: net W1 + ProbCut with the
+   retuned search constants, no book) are 587,424 / 649343363213392189,
+   899,798 / 16616221813759025105 and 2,016,697 / 4974377703412071661, with
+   `book=none entries=0 table_checksum=1469598103934665603` (an empty table).
+   Before the retune (W1, 2026-10-10): 581,761 / 2961480880280574853,
+   870,788 / 17722219369592891007 and 1,933,752 / 17063734611541076025, with
+   the same book line. Before W1 (r14, the deep-search second-player book):
+   568,480 / 14701287764179133873, 884,055 / 7700840096549893098 and
+   1,891,725 / 2284235251857539044, with book=ok, 10,474 entries and table
+   checksum 10147742875230593747. These are the
    numbers `port-check`, `cg-min-check` and the CG-flags build give. The table
    checksum covers the position hashes and the primary moves; the book's other
    stored moves (payload format 2, [play_book.md](play_book.md)) are checked
    by `play_book_check` and the unit tests on the readable build, and through
    the launcher only by step 3, in the games that reach and draw them (an
    alternative after which the book ends changes no hashed byte). Outside this
-   check, `selfcheck 30 13` and `selfcheck 20 16` (W1: 2,397,704 /
-   10765171953305468990 and 6,365,625 / 13532556547547119207; r14: 2,791,649 /
-   15576534853043927231 and 5,250,040 / 18090966638842159638) also depend on
-   the Zobrist keys, so comparing them with the live file also catches a
-   build against other keys (libc++). W1 at the other settings checked at its
-   ship: `60 11` 2,175,739 / 6273588726557586242, `25 15` 4,136,091 /
-   657249701197255696, `200 6` 1,147,995 / 9992545704861880294.
+   check, `selfcheck 30 13` and `selfcheck 20 16` (current: 2,933,620 /
+   14044544699962415155 and 5,703,643 / 11045996175094787991; W1 before the
+   retune: 2,397,704 / 10765171953305468990 and 6,365,625 /
+   13532556547547119207; r14: 2,791,649 / 15576534853043927231 and 5,250,040 /
+   18090966638842159638) also depend on the Zobrist keys, so comparing them
+   with the live file also catches a build against other keys (libc++). The
+   current values at the other settings checked at the ship: `60 11`
+   2,326,242 / 5928959802661434632, `25 15` 5,326,536 / 2980245963813591285,
+   `200 6` 1,170,066 / 12262939126896446488 (W1 before the retune: 2,175,739
+   / 6273588726557586242, 4,136,091 / 657249701197255696, 1,147,995 /
+   9992545704861880294).
 3. **Protocol.** It plays 40 CodinGame-protocol games through the launcher
    (`tools/play_book_protocol_check.py`) against the text book that
    `bin/play_book_text_dump` decodes from the payload. The book check is
@@ -309,7 +325,11 @@ same file.
    4-5): 100/100 with 0 `BOOK` replies, every bot-first game opening 4 4,
    later moves median 90.1 ms and at most 90.4 ms, first turn at most
    570.7 ms (median 483.2); the same in 100 further full-length games (first
-   turn at most 505.1 ms).
+   turn at most 505.1 ms). With the retuned search constants (2026-10-11,
+   same layout): 100/100 in `cg-native-check` (first turn at most 518.1 ms,
+   median 480.2) and in 100 full-length games (at most 509.4 ms, median
+   482.6, against 509.2 / 483.6 for the launcher before the retune in 40
+   games of the same run), later moves median 90.1 ms and at most 90.4 ms.
 
 **CI** (`make test` runs `tools/test_cg_native.py`, with no clang):
 

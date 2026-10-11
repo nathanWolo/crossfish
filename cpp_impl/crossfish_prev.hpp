@@ -10,6 +10,10 @@
 #include <mutex>
 #include <vector>
 
+// Frozen 2026-10-11: search constants SPSA-tuned on net W1 (51 parameters,
+// 32,000 pairs at CodinGame compute; 28 changed, each by less than its SPSA
+// end step; aspiration growth x2.9, LMR from score < 1). GSPRT [0, +5] vs
+// the old constants: H1 at 7,356 games, +5.3 +/- 4.3 Elo (stopped early).
 // Frozen 2026-09-30 (section 62): continuation history in move ordering,
 // cont_hist[stm][previous move][move] with history's bonus / malus /
 // gravity / halving, weight ~1/20. Pooled SPRTs at CodinGame-scaled budgets
@@ -499,36 +503,36 @@ class CrossfishPrev {
         // Shadows for vectorised move scoring, written wherever their
         // sources are. killer_bits[ply] has bit sq set iff
         // killer_moves[ply][sq] != 0 (killers are only ever set to 1), and
-        // history_div[stm][mb][sq] == history_table[stm][mb][sq] / 20 with C
+        // history_div[stm][mb][sq] == history_table[stm][mb][sq] / 21 with C
         // truncation, so the ordering score needs no per-move division.
-        // Lanes 9..15 stay zero. History is bounded near +/-10000 by its
-        // gravity update and the -10000 clamp, so /20 fits int16 easily.
+        // Lanes 9..15 stay zero. History is bounded near +/-9570 by its
+        // gravity update and the -9570 clamp, so /21 fits int16 easily.
         std::array<uint16_t, 128> killer_bits{};
         alignas(32) int16_t history_div[2][9][16]{};
         void sync_history_div(int stm, int mb, int sq) {
             history_div[stm][mb][sq] =
-                (int16_t)(history_table[stm][mb][sq] / 20);
+                (int16_t)(history_table[stm][mb][sq] / 21);
         }
         std::array<std::array<std::array<int, 9>, 9>, 2> history_table{};
         // Continuation history: [stm][previous move's cell mb * 9 + sq, or
         // CONT_NONE with no previous move][mb][sq], in history_table's units
         // and with its bonus / malus / gravity rule, so it stays within
-        // +/-10000 and int16 holds it exactly. Lanes 9..15 stay zero, so the
+        // +/-10278 and int16 holds it exactly. Lanes 9..15 stay zero, so the
         // vector move scorer loads one miniboard's nine squares at once and
         // scales them by CONT_MUL / 65536 (about 1/20, history's weight).
         static constexpr int CONT_NONE = 81;
-        static constexpr int CONT_MUL = 3277;
+        static constexpr int CONT_MUL = 3284;
         alignas(32) int16_t cont_hist[2][CONT_NONE + 1][9][16]{};
         static int cont_score(int v) { return (v * CONT_MUL) >> 16; }
         static void cont_bonus(int16_t &e, int bonus) {
             int h = e;
-            h += bonus - h * bonus / 10000;
+            h += bonus - h * bonus / 10278;
             e = (int16_t)h;
         }
         static void cont_malus(int16_t &e, int malus) {
             int h = e;
-            h -= malus + h * malus / 10000;
-            if (h < -10000) h = -10000;
+            h -= malus + h * malus / 10278;
+            if (h < -10278) h = -10278;
             e = (int16_t)h;
         }
         FastMove counter_move[9][9];
@@ -541,14 +545,14 @@ class CrossfishPrev {
         static constexpr int CORR_MASKS = 512;
         // Stored units are CORR_GRAIN x eval units. The gravity term bounds |entry| at
         // CORR_SCALE, so the applied shift never exceeds CORR_SCALE / CORR_GRAIN.
-        static constexpr int CORR_SCALE = 16384;
+        static constexpr int CORR_SCALE = 15678;
         static constexpr int CORR_GRAIN = 24;
-        static constexpr int CORR_MAX = 16384;
+        static constexpr int CORR_MAX = 15678;
         // CORR_DIFF_MAX * CORR_MAX_WEIGHT <= CORR_SCALE keeps the update a contraction.
-        static constexpr int CORR_DIFF_MAX = 1024;
+        static constexpr int CORR_DIFF_MAX = 1056;
         static constexpr int CORR_MAX_WEIGHT = 8;
         static constexpr int CORR_LOCAL_KEYS = 19683 + 1;
-        static constexpr int CORR_LOCAL_GRAIN = 48;
+        static constexpr int CORR_LOCAL_GRAIN = 47;
         static constexpr int CORR_MACRO_KEYS = 1 << 18;
         static constexpr int CORR_MACRO_GRAIN = 12;
 #ifdef CROSSFISH_MOVE_CORRECTION_GRAIN
@@ -729,30 +733,30 @@ class CrossfishPrev {
 #ifdef CROSSFISH_ASP_PAWNS_VALUE
         static constexpr int ASP_PAWNS = CROSSFISH_ASP_PAWNS_VALUE;
 #else
-        static constexpr int ASP_PAWNS = 40;
+        static constexpr int ASP_PAWNS = 37;
 #endif
-#ifdef CROSSFISH_ASP_EXPANSION_FACTOR
-        static constexpr int ASP_EXPANSION_FACTOR =
-            CROSSFISH_ASP_EXPANSION_FACTOR;
+#ifdef CROSSFISH_ASP_EXPANSION_X10
+        static constexpr int ASP_EXPANSION_X10 =
+            CROSSFISH_ASP_EXPANSION_X10;
 #else
-        static constexpr int ASP_EXPANSION_FACTOR = 3;
+        static constexpr int ASP_EXPANSION_X10 = 29;
 #endif
 #ifdef CROSSFISH_RFP_PAWNS_VALUE
         static constexpr int RFP_PAWNS = CROSSFISH_RFP_PAWNS_VALUE;
 #else
-        static constexpr int RFP_PAWNS = 50;
+        static constexpr int RFP_PAWNS = 47;
 #endif
         static constexpr int FP_PAWNS = 80;
-        // Before move 28 the NNUE's static eval almost never misjudges a
+        // Before move 29 the NNUE's static eval almost never misjudges a
         // node by a margin's worth (instrumented depth-9 searches with
         // pruning off: RFP fails <1.2% of the time at 20 pawns, a futility-
         // pruned quiet move raises alpha <0.2% at 20), so early nodes prune
         // on much tighter margins; later the error does not shrink with the
         // margin, and the shipped margins stay.
-        static constexpr int EARLY_MARGIN_MOVES = 28;
-        static constexpr int RFP_EARLY_PAWNS = 25;
+        static constexpr int EARLY_MARGIN_MOVES = 29;
+        static constexpr int RFP_EARLY_PAWNS = 24;
         static constexpr int FP_EARLY_PAWNS = 20;
-        static constexpr int QDELTA_PAWNS = 350;
+        static constexpr int QDELTA_PAWNS = 344;
         static constexpr int FREE_MOVE_PAWNS = 30;
         // Internal iterative reduction: non-PV nodes without a table entry
         // at this depth or more are searched one ply shallower.
@@ -983,12 +987,12 @@ class CrossfishPrev {
 #ifdef CROSSFISH_LMR_BASE_VALUE
         static constexpr int LMR_BASE = CROSSFISH_LMR_BASE_VALUE;
 #else
-        static constexpr int LMR_BASE = 55;
+        static constexpr int LMR_BASE = 52;
 #endif
 #ifdef CROSSFISH_LMR_DIV_VALUE
         static constexpr int LMR_DIV = CROSSFISH_LMR_DIV_VALUE;
 #else
-        static constexpr int LMR_DIV = 100;
+        static constexpr int LMR_DIV = 106;
 #endif
         static constexpr int LMR_MAX_DEPTH = 64;
         static constexpr int LMR_MAX_MOVES = 81;
@@ -1066,7 +1070,7 @@ class CrossfishPrev {
             CorrEntry &entry = corr_macro_hist[key];
             if (entry.raw == 0 && entry.applied == 0
                 && __builtin_popcount((unsigned)board.out_of_play) >= 3) {
-                int raw = evaluate_macro_key(9, key) * CORR_MACRO_GRAIN;
+                int raw = evaluate_macro_key(9, key) * CORR_MACRO_GRAIN * 98 / 100;
                 if (raw > CORR_MAX) raw = CORR_MAX;
                 if (raw < -CORR_MAX) raw = -CORR_MAX;
                 // Keep a zero-valued prior distinguishable from untouched
@@ -1603,7 +1607,7 @@ class CrossfishPrev {
                 for (auto &by_previous : by_player) {
                     for (auto &by_miniboard : by_previous) {
                         for (int16_t &h : by_miniboard) {
-                            h = (int16_t)(h / 2);
+                            h = (int16_t)(h * 53 / 100);
                         }
                     }
                 }
@@ -1630,11 +1634,11 @@ class CrossfishPrev {
                 int eval = search(board, depth, 0, alpha, beta);
                 if (stopped) break;
                 if (eval <= alpha ) {
-                    aspiration_window *= ASP_EXPANSION_FACTOR;
+                    aspiration_window = aspiration_window * ASP_EXPANSION_X10 / 10;
                     alpha -= aspiration_window;
                 }
                 else if (eval >= beta) {
-                    aspiration_window *= ASP_EXPANSION_FACTOR;
+                    aspiration_window = aspiration_window * ASP_EXPANSION_X10 / 10;
                     beta += aspiration_window;
                 }
                 else {
@@ -1722,7 +1726,7 @@ class CrossfishPrev {
                 empties += __builtin_popcount(
                     ~(board.mini_boards[mb].markers[0] | board.mini_boards[mb].markers[1]) & 511);
             }
-            const int open = empties >= 60 ? 15 : empties >= 45 ? 20 : empties >= 30 ? 50 : base;
+            const int open = empties >= 60 ? 15 : empties >= 44 ? 19 : empties >= 30 ? 51 : base;
             return open < base ? open : base;
         }
 
@@ -2163,7 +2167,7 @@ class CrossfishPrev {
                             board.tt_hash & (tt_bucket_count - 1)], 0, 1);
                     int reduction = 0;
                     bool do_lmr =
-                        (move_keys[i] > MOVE_KEY_ZERO || (i >= 2 && !capture));
+                        (move_keys[i] > MOVE_KEY_LMR || (i >= 2 && !capture));
                     if (do_lmr) {
                         reduction = lmr_table[std::min(depth, LMR_MAX_DEPTH - 1)][std::min(i, LMR_MAX_MOVES - 1)];
                         if (pv_node && reduction > 0) reduction--;
@@ -2195,8 +2199,8 @@ class CrossfishPrev {
                     killer_moves[ply][sq] = 1;
                     killer_bits[ply] |= (uint16_t)(1 << sq);
                     int &h = history_table[board.n_moves & 1][mb][sq];
-                    int bonus = depth * depth;
-                    h += bonus - h * bonus / 10000;
+                    int bonus = depth * depth * 104 / 100;
+                    h += bonus - h * bonus / 9570;
                     int stm = board.n_moves & 1;
                     sync_history_div(stm, mb, sq);
                     // Continuation history takes the same bonus and malus in
@@ -2212,9 +2216,9 @@ class CrossfishPrev {
                         FastMove prior = move_from_key(move_keys[j]);
                         if (is_fast_capture(board, prior)) continue;
                         int &hj = history_table[stm][prior >> 4][prior & 15];
-                        int malus = 2 * bonus;
-                        hj -= malus + hj * malus / 10000;
-                        if (hj < -10000) hj = -10000;
+                        int malus = bonus * 211 / 100;
+                        hj -= malus + hj * malus / 9570;
+                        if (hj < -9570) hj = -9570;
                         sync_history_div(stm, prior >> 4, prior & 15);
                         if (cont_row) {
                             cont_malus(cont_row[prior >> 4][prior & 15], malus);
@@ -2564,8 +2568,8 @@ class CrossfishPrev {
         // these keys ascending reproduces the stable insertion sort's exact
         // permutation. Keys are unique, so any total-order sort works.
         static constexpr int MOVE_KEY_BIAS = 1 << 20;
-        // Keys with score < 0, i.e. (BIAS - score) > BIAS, all exceed this.
-        static constexpr int MOVE_KEY_ZERO = (MOVE_KEY_BIAS << 8) | 255;
+        // Keys with score < 1, i.e. (BIAS - score) > BIAS - 1, all exceed this (LMR).
+        static constexpr int MOVE_KEY_LMR = ((MOVE_KEY_BIAS - 1) << 8) | 255;
         static int pack_move_key(int score, FastMove move) {
             return ((MOVE_KEY_BIAS - score) << 8) | move;
         }
@@ -2601,15 +2605,15 @@ class CrossfishPrev {
                     if (mb != last_mb) {
                         last_mb = mb;
                         global_win_bonus =
-                            800 * fast_has_win[
+                            812 * fast_has_win[
                                 board.mini_board_states[stm] | (1 << mb)];
                     }
                     keys[i] = pack_move_key(
                         global_win_bonus
-                        + 25 * killer_moves[ply][sq]
-                        + 40 * (cm == move)
-                        - 250 * ((out_of_play >> sq) & 1)
-                        + history_table[stm][mb][sq] / 20
+                        + 26 * killer_moves[ply][sq]
+                        + 39 * (cm == move)
+                        - 254 * ((out_of_play >> sq) & 1)
+                        + history_table[stm][mb][sq] / 21
                         + cont_score(cont_row[mb][sq]),
                         move);
                 }
@@ -2633,7 +2637,7 @@ class CrossfishPrev {
             };
             // Node-constant part: killers and the dead-destination penalty.
             const __m256i node_base = _mm256_sub_epi16(
-                lanes(killer_bits[ply], 25), lanes(out_of_play, 250));
+                lanes(killer_bits[ply], 26), lanes(out_of_play, 254));
             const __m256i cont_mul = _mm256_set1_epi16((int16_t)CONT_MUL);
             alignas(32) int16_t sq_score[16];
             int last_mb = -1;
@@ -2650,7 +2654,7 @@ class CrossfishPrev {
                         fast_win_moves[board.mini_boards[mb].markers[stm ^ 1]];
                     const int tiar_mask = mini_tiar_sq[idx][stm];
                     const int global_win_bonus =
-                        800 * fast_has_win[board.mini_board_states[stm] | (1 << mb)];
+                        812 * fast_has_win[board.mini_board_states[stm] | (1 << mb)];
                     __m256i v = _mm256_add_epi16(
                         node_base,
                         _mm256_load_si256(
@@ -2658,7 +2662,7 @@ class CrossfishPrev {
                     v = _mm256_add_epi16(
                         v, lanes(capture_mask, global_win_bonus + 100 * !qs));
                     v = _mm256_add_epi16(v, lanes(block_mask, 75));
-                    v = _mm256_add_epi16(v, lanes(tiar_mask, 50));
+                    v = _mm256_add_epi16(v, lanes(tiar_mask, 49));
                     v = _mm256_add_epi16(
                         v, _mm256_mulhi_epi16(
                                _mm256_load_si256(
@@ -2666,7 +2670,7 @@ class CrossfishPrev {
                                cont_mul));
                     _mm256_store_si256((__m256i *)sq_score, v);
                 }
-                keys[i] = pack_move_key(sq_score[sq] + 40 * (cm == move), move);
+                keys[i] = pack_move_key(sq_score[sq] + 39 * (cm == move), move);
             }
         }
 
@@ -2752,17 +2756,17 @@ class CrossfishPrev {
                     block_mask = fast_win_moves[board.mini_boards[mb].markers[stm ^ 1]];
                     tiar_mask = mini_tiar_sq[last_idx][stm];
                     global_win_bonus =
-                        800 * fast_has_win[board.mini_board_states[stm] | (1 << mb)];
+                        812 * fast_has_win[board.mini_board_states[stm] | (1 << mb)];
                 }
                 int capture = (capture_mask >> sq) & 1;
                 int move_score =
-                    25 * killer_moves[ply][sq]
-                    + 40 * (cm.mini_board == mb && cm.square == sq)
+                    26 * killer_moves[ply][sq]
+                    + 39 * (cm.mini_board == mb && cm.square == sq)
                     + capture * (global_win_bonus + 100 * !qs)
                     + 75 * ((block_mask >> sq) & 1)
-                    + 50 * ((tiar_mask >> sq) & 1)
-                    - 250 * ((out_of_play >> sq) & 1)
-                    + history_table[stm][mb][sq] / 20
+                    + 49 * ((tiar_mask >> sq) & 1)
+                    - 254 * ((out_of_play >> sq) & 1)
+                    + history_table[stm][mb][sq] / 21
                     + cont_score(cont_hist[stm][prev_cell][mb][sq]);
                 scores[i] = move_score;
             }
