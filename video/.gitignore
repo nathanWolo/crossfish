@@ -1,0 +1,4 @@
+build/
+/*.mp4
+/*.srt
+node_modules/

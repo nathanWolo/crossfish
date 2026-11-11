@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Crossfish explainer preview</title>
+<style>
+  html, body { margin: 0; background: #000; color: #ccc; font: 14px Inter, sans-serif; }
+  canvas { display: block; width: 100vw; max-height: calc(100vh - 44px); object-fit: contain; }
+  body.render canvas { width: 1920px; height: 1080px; max-height: none; }
+  body.render #bar { display: none; }
+  #bar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; height: 28px; }
+  #seek { flex: 1; }
+  select, button { background: #222; color: #ccc; border: 1px solid #444; border-radius: 4px; padding: 3px 8px; }
+</style>
+<canvas id="c"></canvas>
+<div id="bar">
+  <button id="play">Play</button>
+  <select id="scene"></select>
+  <input id="seek" type="range" min="0" max="1" step="0.001" value="0">
+  <span id="clock"></span>
+</div>
+<script type="module">
+  import './src/main.js';
+  // Preview player: scrub or play the timeline. Narration audio is used when
+  // build/narration.wav and build/timings.json exist (run `make audio`).
+  const q = new URLSearchParams(location.search);
+  if (q.has('render')) document.body.classList.add('render');
+  else {
+    const dur = await fetch('build/timings.json').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+    const info = await cf.init(dur);
+    const audio = new Audio('build/narration.wav'); let hasAudio = false;
+    audio.addEventListener('canplay', () => (hasAudio = true));
+    const seek = document.getElementById('seek'), clock = document.getElementById('clock'), sel = document.getElementById('scene');
+    seek.max = info.total;
+    info.scenes.forEach(s => sel.add(new Option(`${s.id} (${s.dur.toFixed(0)}s)`, s.start)));
+    let t = Number(q.get('t') ?? 0), playing = false, last = 0;
+    const show = () => { cf.frame(t); seek.value = t; clock.textContent = `${t.toFixed(1)} / ${info.total.toFixed(1)} s`; };
+    const go = v => { t = Math.max(0, Math.min(info.total, v)); if (hasAudio) audio.currentTime = t; show(); };
+    seek.oninput = () => go(Number(seek.value));
+    sel.onchange = () => go(Number(sel.value) + 0.4);
+    document.getElementById('play').onclick = e => {
+      playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; last = performance.now();
+      if (hasAudio) { audio.currentTime = t; playing ? audio.play() : audio.pause(); }
+    };
+    const tick = now => {
+      if (playing) { t = hasAudio ? audio.currentTime : t + (now - last) / 1000; last = now; if (t >= info.total) playing = false; show(); }
+      requestAnimationFrame(tick);
+    };
+    show(); requestAnimationFrame(tick);
+  }
+</script>
